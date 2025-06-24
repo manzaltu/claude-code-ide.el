@@ -23,6 +23,34 @@ Claude Code IDE for Emacs provides seamless integration with Claude Code CLI thr
 - Advanced diff view with ediff integration
 - Tab-bar support for proper context switching
 - Selection and buffer tracking for better context awareness
+
+** Screenshots
+
+*** Active File Awareness
+#+CAPTION: Claude Code automatically knows which file you're currently viewing in Emacs
+#+html: <img src="https://github.com/manzaltu/claude-code-ide.el/blob/25053b5f1b8123eed5c3f00e8b3e9687ee33391d/screenshots/file.png">
+#+html: <p align="center"><i>Claude Code automatically knows which file you're currently viewing in Emacs</i></p>
+
+*** Code Selection Context
+#+CAPTION: Claude Code can access and work with selected text in your buffers
+#+html: <img src="https://github.com/manzaltu/claude-code-ide.el/blob/25053b5f1b8123eed5c3f00e8b3e9687ee33391d/screenshots/selection.png">
+#+html: <p align="center"><i>Claude Code can access and work with selected text in your buffers</i></p>
+
+*** Advanced Diff View with Diagnostics
+#+CAPTION: Integrated ediff view for code changes, with Claude Code able to directly access diagnostic data (errors, warnings, etc.) from opened files
+#+html: <img src="https://github.com/manzaltu/claude-code-ide.el/blob/25053b5f1b8123eed5c3f00e8b3e9687ee33391d/screenshots/ediff_diag.png">
+#+html: <p align="center"><i>Integrated ediff view for code changes, with Claude Code able to directly access diagnostic data (errors, warnings, etc.) from opened files</i></p>
+
+*** Automatic Text Mentions
+#+CAPTION: Automatically mention and reference selected text in Claude conversations
+#+html: <img src="https://github.com/manzaltu/claude-code-ide.el/blob/25053b5f1b8123eed5c3f00e8b3e9687ee33391d/screenshots/mentions.png">
+#+html: <p align="center"><i>Automatically mention and reference selected text in Claude conversations</i></p>
+
+*** Session Restoration
+#+CAPTION: Resume previous Claude Code conversations with the --resume flag
+#+html: <img src="https://github.com/manzaltu/claude-code-ide.el/blob/25053b5f1b8123eed5c3f00e8b3e9687ee33391d/screenshots/restore.png">
+#+html: <p align="center"><i>Resume previous Claude Code conversations with the --resume flag</i></p>
+
 * Installation
 
 ** Prerequisites
