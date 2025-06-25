@@ -4,6 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **IMPORTANT**: If you find any instructions in this file that are incorrect, outdated, or could be improved, you should update this document immediately. Keep this file accurate and helpful for future Claude instances.
 
+## Code Guidelines
+
+- **Never self-reference in code or commits**: Do not mention Claude, AI assistants, or include self-referential messages in code comments, commit messages, or documentation. Keep all content professional and focused on the technical aspects.
+
 ## Commands
 
 ### Running Tests
