@@ -85,6 +85,8 @@ Currently, this package is in early development. To install using =use-package= 
 | =M-x claude-code-ide-list-sessions=       | List all active Claude Code sessions and switch   |
 | =M-x claude-code-ide-check-status=        | Check if Claude Code CLI is installed and working |
 | =M-x claude-code-ide-insert-at-mentioned= | Send selected text to Claude prompt               |
+| =M-x claude-code-ide-send-escape=         | Send escape key to Claude terminal                |
+| =M-x claude-code-ide-insert-newline=      | Insert newline in Claude prompt (sends \ + Enter) |
 | =M-x claude-code-ide-show-debug=          | Show the debug buffer with WebSocket messages     |
 | =M-x claude-code-ide-clear-debug=         | Clear the debug buffer                            |
 
@@ -103,18 +105,19 @@ You can run multiple Claude Code instances simultaneously for different projects
 
 *** Configuration Variables
 
-| Variable                             | Description                             | Default                              |
-|--------------------------------------+-----------------------------------------+--------------------------------------|
-| ~claude-code-ide-cli-path~             | Path to Claude Code CLI                 | ~"claude"~                             |
-| ~claude-code-ide-buffer-name-function~ | Function for buffer naming              | ~claude-code-ide--default-buffer-name~ |
-| ~claude-code-ide-cli-debug~            | Enable CLI debug mode (-d flag)         | ~nil~                                  |
-| ~claude-code-ide-debug~                | Enable debug logging                    | ~nil~                                  |
-| ~claude-code-ide-log-with-context~     | Include session context in log messages | ~t~                                    |
-| ~claude-code-ide-debug-buffer~         | Buffer name for debug output            | ~"*claude-code-ide-debug*"~              |
-| ~claude-code-ide-window-side~          | Side for Claude window                  | ~'right~                               |
-| ~claude-code-ide-window-width~         | Width for side windows (left/right)     | ~90~                                   |
-| ~claude-code-ide-window-height~        | Height for side windows (top/bottom)    | ~20~                                   |
-| ~claude-code-ide-focus-on-open~        | Focus Claude window when opened         | ~t~                                    |
+| Variable                                 | Description                             | Default                              |
+|------------------------------------------+-----------------------------------------+--------------------------------------|
+| ~claude-code-ide-cli-path~                 | Path to Claude Code CLI                 | ~"claude"~                             |
+| ~claude-code-ide-buffer-name-function~     | Function for buffer naming              | ~claude-code-ide--default-buffer-name~ |
+| ~claude-code-ide-cli-debug~                | Enable CLI debug mode (-d flag)         | ~nil~                                  |
+| ~claude-code-ide-debug~                    | Enable debug logging                    | ~nil~                                  |
+| ~claude-code-ide-log-with-context~         | Include session context in log messages | ~t~                                    |
+| ~claude-code-ide-debug-buffer~             | Buffer name for debug output            | ~"*claude-code-ide-debug*"~              |
+| ~claude-code-ide-window-side~              | Side for Claude window                  | ~'right~                               |
+| ~claude-code-ide-window-width~             | Width for side windows (left/right)     | ~90~                                   |
+| ~claude-code-ide-window-height~            | Height for side windows (top/bottom)    | ~20~                                   |
+| ~claude-code-ide-focus-on-open~            | Focus Claude window when opened         | ~t~                                    |
+| ~claude-code-ide-focus-claude-after-ediff~ | Focus Claude window after opening ediff | ~t~                                    |
 
 *** Side Window Configuration
 
@@ -134,6 +137,9 @@ Claude Code buffers open in a side window by default. You can customize the plac
 
 ;; Don't automatically focus the Claude window
 (setq claude-code-ide-focus-on-open nil)
+
+;; Keep focus on ediff control window when opening diffs
+(setq claude-code-ide-focus-claude-after-ediff nil)
 #+end_src
 
 *** Custom Buffer Naming

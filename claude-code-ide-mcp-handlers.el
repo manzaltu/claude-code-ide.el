@@ -191,15 +191,24 @@ STARTUP-HOOK-FN is the hook function to remove after use."
     ;; Jump to the first difference if there are any
     (ignore-errors (ediff-next-difference))
 
-    ;; Restore Claude side window (since we deleted all side windows before ediff)
-    (when-let* ((claude-buffer-name (claude-code-ide--get-buffer-name))
-                (claude-buffer (get-buffer claude-buffer-name)))
-      (when (buffer-live-p claude-buffer)
-        ;; Display Claude buffer in side window
-        (let ((claude-window (claude-code-ide--display-buffer-in-side-window claude-buffer)))
-          ;; Move focus to Claude window
-          (when claude-window
-            (select-window claude-window)))))
+    ;; Save the current window before any operations
+    (let ((original-window (selected-window))
+          (claude-window nil))
+      ;; Restore Claude side window (since we deleted all side windows before ediff)
+      (when-let* ((claude-buffer-name (claude-code-ide--get-buffer-name))
+                  (claude-buffer (get-buffer claude-buffer-name)))
+        (when (buffer-live-p claude-buffer)
+          ;; Display Claude buffer in side window and save the window
+          (setq claude-window (claude-code-ide--display-buffer-in-side-window claude-buffer))))
+
+      ;; Handle focus based on user preference
+      (cond
+       ;; If user wants Claude window focus (default), select it
+       ((and claude-code-ide-focus-claude-after-ediff claude-window)
+        (select-window claude-window))
+       ;; Otherwise, restore the original window (which might be one of the ediff windows)
+       (t
+        (select-window original-window))))
 
     ;; Remove this startup hook after use
     (remove-hook 'ediff-startup-hook startup-hook-fn)))

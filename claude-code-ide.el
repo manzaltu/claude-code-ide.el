@@ -112,6 +112,14 @@ Can be `'left', `'right', `'top', or `'bottom'."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-focus-claude-after-ediff t
+  "Whether to focus the Claude Code window after opening ediff.
+When non-nil (default), focus returns to the Claude Code window
+after opening ediff.  When nil, focus remains on the ediff control
+window, allowing direct interaction with the diff controls."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 ;;; Constants
 
 (defconst claude-code-ide--active-editor-notification-delay 0.1
@@ -468,6 +476,28 @@ If the buffer is already visible, switch focus to it."
         (claude-code-ide-mcp-send-at-mentioned)
         (claude-code-ide-debug "Sent selection to Claude Code"))
     (user-error "Claude Code is not connected.  Please start Claude Code first")))
+
+;;;###autoload
+(defun claude-code-ide-send-escape ()
+  "Send escape key to the Claude Code vterm buffer for the current project."
+  (interactive)
+  (let ((buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let ((buffer (get-buffer buffer-name)))
+        (with-current-buffer buffer
+          (vterm-send-escape))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-insert-newline ()
+  "Send newline (backslash + return) to the Claude Code vterm buffer for the current project.
+This simulates typing backslash followed by Enter, which Claude Code interprets as a newline."
+  (interactive)
+  (let ((buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let ((buffer (get-buffer buffer-name)))
+        (with-current-buffer buffer
+          (vterm-send-string "\\")
+          (vterm-send-return))
+      (user-error "No Claude Code session for this project"))))
 
 (provide 'claude-code-ide)
 

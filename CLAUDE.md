@@ -4,10 +4,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **IMPORTANT**: If you find any instructions in this file that are incorrect, outdated, or could be improved, you should update this document immediately. Keep this file accurate and helpful for future Claude instances.
 
-## Code Guidelines
-
-- **Never self-reference in code or commits**: Do not mention Claude, AI assistants, or include self-referential messages in code comments, commit messages, or documentation. Keep all content professional and focused on the technical aspects.
-
 ## Commands
 
 ### Running Tests
@@ -59,6 +55,11 @@ emacs -batch --eval "(progn (dolist (file (directory-files \".\" t \"\\\\.el$\")
 3. The formatter's indentation is ALWAYS correct, so trust it to find your syntax errors
 
 **Trailing Whitespaces**: All code must be free of trailing whitespaces (spaces or tabs at the end of lines). Use the command above or configure your editor to automatically remove them on save.
+
+
+### Self reference in code or commits
+
+- **Important - Never self-reference in code or commits**: Do not mention Claude or include any self-referential messages in code or commit messages. Keep all content strictly professional and focused on the technical aspects.
 
 ### Linting and Code Quality (RUN AFTER FORMATTING)
 
