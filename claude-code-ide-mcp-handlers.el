@@ -94,18 +94,6 @@ Returns the window if found, nil otherwise."
                               claude-buffer-name)))
                 (window-list))))
 
-(defun claude-code-ide-mcp--setup-ediff-windows ()
-  "Set up ediff windows while preserving Claude side window."
-  ;; This function is called from ediff-before-setup-hook
-  ;; Currently, we don't need to do anything here as ediff respects side windows
-  ;; But we keep this function for potential future enhancements
-  (let ((claude-window (claude-code-ide-mcp--find-claude-side-window)))
-    (when (and claude-window (not (window-live-p claude-window)))
-      ;; If Claude window was somehow closed, restore it
-      (when-let* ((claude-buffer-name (claude-code-ide--get-buffer-name))
-                  (claude-buffer (get-buffer claude-buffer-name)))
-        (when (buffer-live-p claude-buffer)
-          (claude-code-ide--display-buffer-in-side-window claude-buffer))))))
 
 (defun claude-code-ide-mcp--get-active-diffs (&optional session)
   "Get the active diffs hash table for the current session.
@@ -155,11 +143,9 @@ Returns a cons cell (before-setup-hook-fn . startup-hook-fn)."
          (before-setup-hook-fn nil)
          (startup-hook-fn nil))
 
-    ;; Define the before-setup hook function to arrange windows
+    ;; Define the before-setup hook function
     (setq before-setup-hook-fn
           (lambda ()
-            ;; Set up our custom window arrangement
-            (claude-code-ide-mcp--setup-ediff-windows)
             ;; Remove this hook after use
             (remove-hook 'ediff-before-setup-hook before-setup-hook-fn)))
 
@@ -205,9 +191,15 @@ STARTUP-HOOK-FN is the hook function to remove after use."
     ;; Jump to the first difference if there are any
     (ignore-errors (ediff-next-difference))
 
-    ;; Move focus to Claude window
-    (when-let ((claude-window (claude-code-ide-mcp--find-claude-side-window)))
-      (select-window claude-window))
+    ;; Restore Claude side window (since we deleted all side windows before ediff)
+    (when-let* ((claude-buffer-name (claude-code-ide--get-buffer-name))
+                (claude-buffer (get-buffer claude-buffer-name)))
+      (when (buffer-live-p claude-buffer)
+        ;; Display Claude buffer in side window
+        (let ((claude-window (claude-code-ide--display-buffer-in-side-window claude-buffer)))
+          ;; Move focus to Claude window
+          (when claude-window
+            (select-window claude-window)))))
 
     ;; Remove this startup hook after use
     (remove-hook 'ediff-startup-hook startup-hook-fn)))
@@ -507,10 +499,11 @@ ARGUMENTS should contain:
         ;; Start ediff
         (condition-case err
             (progn
-
-              ;; Make sure we're in a regular window, not a side window
-              (when (window-parameter (selected-window) 'window-side)
-                (select-window (frame-first-window)))
+              ;; Delete all side windows before starting ediff
+              ;; This prevents "Cannot split side window" errors
+              (dolist (window (window-list))
+                (when (window-parameter window 'window-side)
+                  (delete-window window)))
 
               ;; Start ediff with plain window setup (control panel at bottom)
               ;; Set a unique control buffer suffix to avoid conflicts with other ediff sessions
