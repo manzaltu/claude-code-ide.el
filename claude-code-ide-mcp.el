@@ -662,7 +662,6 @@ Optional SESSION contains the MCP session context."
 (defun claude-code-ide-mcp-start (&optional project-directory)
   "Start the MCP server for PROJECT-DIRECTORY."
   (claude-code-ide-debug "=== Starting MCP server ===")
-  (claude-code-ide-clear-debug)
 
   (let* ((project-dir (expand-file-name (or project-directory default-directory)))
          (existing-session (gethash project-dir claude-code-ide-mcp--sessions)))
