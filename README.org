@@ -113,6 +113,7 @@ You can run multiple Claude Code instances simultaneously for different projects
 | ~claude-code-ide-debug~                    | Enable debug logging                    | ~nil~                                  |
 | ~claude-code-ide-log-with-context~         | Include session context in log messages | ~t~                                    |
 | ~claude-code-ide-debug-buffer~             | Buffer name for debug output            | ~"*claude-code-ide-debug*"~              |
+| ~claude-code-ide-use-side-window~          | Use side window vs regular buffer       | ~t~                                    |
 | ~claude-code-ide-window-side~              | Side for Claude window                  | ~'right~                               |
 | ~claude-code-ide-window-width~             | Width for side windows (left/right)     | ~90~                                   |
 | ~claude-code-ide-window-height~            | Height for side windows (top/bottom)    | ~20~                                   |
@@ -140,6 +141,13 @@ Claude Code buffers open in a side window by default. You can customize the plac
 
 ;; Keep focus on ediff control window when opening diffs
 (setq claude-code-ide-focus-claude-after-ediff nil)
+#+end_src
+
+Or, if you'd prefer to use a regular window:
+
+#+begin_src emacs-lisp
+;; Use regular window instead of side window
+(setq claude-code-ide-use-side-window nil)
 #+end_src
 
 *** Custom Buffer Naming

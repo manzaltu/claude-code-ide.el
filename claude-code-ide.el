@@ -120,6 +120,15 @@ window, allowing direct interaction with the diff controls."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-use-side-window t
+  "Whether to display Claude Code in a side window.
+When non-nil (default), Claude Code opens in a dedicated side window
+controlled by `claude-code-ide-window-side' and related settings.
+When nil, Claude Code opens in a regular buffer that follows standard
+display-buffer behavior."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 ;;; Constants
 
 (defconst claude-code-ide--active-editor-notification-delay 0.1
@@ -186,26 +195,31 @@ The window is displayed on the side specified by
 `claude-code-ide-window-side' with dimensions from
 `claude-code-ide-window-width' or `claude-code-ide-window-height'.
 If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
-  (let* ((side claude-code-ide-window-side)
-         (slot 0)
-         (window-parameters '((no-delete-other-windows . t)))
-         (display-buffer-alist
-          `((,(regexp-quote (buffer-name buffer))
-             (display-buffer-in-side-window)
-             (side . ,side)
-             (slot . ,slot)
-             (window-width . ,(if (memq side '(left right))
-                                  claude-code-ide-window-width
-                                'fit-window-to-buffer))
-             (window-height . ,(if (memq side '(top bottom))
-                                   claude-code-ide-window-height
-                                 'fit-window-to-buffer))
-             (window-parameters . ,window-parameters)))))
-    (let ((window (display-buffer buffer)))
-      ;; Select the window to give it focus if configured to do so
-      (when (and window claude-code-ide-focus-on-open)
-        (select-window window))
-      window)))
+  (let ((window
+         (if claude-code-ide-use-side-window
+             ;; Use side window
+             (let* ((side claude-code-ide-window-side)
+                    (slot 0)
+                    (window-parameters '((no-delete-other-windows . t)))
+                    (display-buffer-alist
+                     `((,(regexp-quote (buffer-name buffer))
+                        (display-buffer-in-side-window)
+                        (side . ,side)
+                        (slot . ,slot)
+                        (window-width . ,(if (memq side '(left right))
+                                             claude-code-ide-window-width
+                                           'fit-window-to-buffer))
+                        (window-height . ,(if (memq side '(top bottom))
+                                              claude-code-ide-window-height
+                                            'fit-window-to-buffer))
+                        (window-parameters . ,window-parameters)))))
+               (display-buffer buffer))
+           ;; Use regular buffer
+           (display-buffer buffer))))
+    ;; Select the window to give it focus if configured to do so
+    (when (and window claude-code-ide-focus-on-open)
+      (select-window window))
+    window))
 
 (defvar claude-code-ide--cleanup-in-progress nil
   "Flag to prevent recursive cleanup calls.")
