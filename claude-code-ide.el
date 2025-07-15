@@ -88,6 +88,12 @@ and should return a string to use as the buffer name."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-cli-extra-flags ""
+  "Additional flags to pass to the Claude Code CLI.
+This should be a string of space-separated flags, e.g. \"--model opus\"."
+  :type 'string
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-window-side 'right
   "Side of the frame where the Claude Code window should appear.
 Can be `'left', `'right', `'top', or `'bottom'."
@@ -284,7 +290,8 @@ If the window is not visible, it will be shown in a side window."
 (defun claude-code-ide--build-claude-command (&optional resume)
   "Build the Claude command with optional flags.
 If RESUME is non-nil, add the -r flag.
-If `claude-code-ide-cli-debug' is non-nil, add the -d flag."
+If `claude-code-ide-cli-debug' is non-nil, add the -d flag.
+Additional flags from `claude-code-ide-cli-extra-flags' are also included."
   (let ((claude-cmd claude-code-ide-cli-path))
     ;; Add debug flag if enabled
     (when claude-code-ide-cli-debug
@@ -292,6 +299,10 @@ If `claude-code-ide-cli-debug' is non-nil, add the -d flag."
     ;; Add resume flag if requested
     (when resume
       (setq claude-cmd (concat claude-cmd " -r")))
+    ;; Add any extra flags
+    (when (and claude-code-ide-cli-extra-flags
+               (not (string-empty-p claude-code-ide-cli-extra-flags)))
+      (setq claude-cmd (concat claude-cmd " " claude-code-ide-cli-extra-flags)))
     claude-cmd))
 
 (defun claude-code-ide--create-vterm-session (buffer-name working-dir port resume)

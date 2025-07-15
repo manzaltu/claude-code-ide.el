@@ -110,6 +110,7 @@ You can run multiple Claude Code instances simultaneously for different projects
 | ~claude-code-ide-cli-path~                 | Path to Claude Code CLI                 | ~"claude"~                             |
 | ~claude-code-ide-buffer-name-function~     | Function for buffer naming              | ~claude-code-ide--default-buffer-name~ |
 | ~claude-code-ide-cli-debug~                | Enable CLI debug mode (-d flag)         | ~nil~                                  |
+| ~claude-code-ide-cli-extra-flags~          | Additional CLI flags (e.g. "--model")   | ~""~                                   |
 | ~claude-code-ide-debug~                    | Enable debug logging                    | ~nil~                                  |
 | ~claude-code-ide-log-with-context~         | Include session context in log messages | ~t~                                    |
 | ~claude-code-ide-debug-buffer~             | Buffer name for debug output            | ~"*claude-code-ide-debug*"~              |
@@ -161,6 +162,22 @@ You can customize how Claude Code buffers are named:
             (format "*Claude:%s*" (file-name-nondirectory (directory-file-name directory)))
           "*Claude:Global*")))
 #+end_src
+
+*** Custom CLI Flags
+
+You can pass additional flags to the Claude Code CLI:
+
+#+begin_src emacs-lisp
+;; Use a specific model
+(setq claude-code-ide-cli-extra-flags "--model opus")
+
+;; Pass multiple flags
+(setq claude-code-ide-cli-extra-flags "--model opus --no-cache")
+
+;; Flags are added to all Claude Code sessions
+#+end_src
+
+Note: These flags are appended to the Claude command after any built-in flags like =-d= (debug) or =-r= (resume).
 
 *** Debugging
 
