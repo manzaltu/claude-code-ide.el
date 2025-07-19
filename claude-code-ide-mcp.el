@@ -116,6 +116,14 @@ Returns the session if found, nil otherwise."
              claude-code-ide-mcp--sessions)
     found-session))
 
+(defun claude-code-ide-mcp--active-sessions ()
+  "Return a list of all active MCP sessions."
+  (let ((sessions '()))
+    (maphash (lambda (_project-dir session)
+               (push session sessions))
+             claude-code-ide-mcp--sessions)
+    sessions))
+
 ;;; Backward Compatibility Layer
 
 ;;; Lockfile Management
