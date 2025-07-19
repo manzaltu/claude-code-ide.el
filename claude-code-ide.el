@@ -4,7 +4,7 @@
 
 ;; Author: Yoav Orot
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (vterm "0.0.1") (websocket "1.12"))
+;; Package-Requires: ((emacs "28.1") (vterm "0.0.1") (websocket "1.12") (transient "0.3.0"))
 ;; Keywords: ai, claude, code, assistant, mcp, websocket
 ;; URL: https://github.com/manzaltu/claude-code-ide.el
 
@@ -56,6 +56,7 @@
 (require 'project)
 (require 'claude-code-ide-mcp)
 (require 'claude-code-ide-debug)
+(require 'claude-code-ide-transient)
 
 (declare-function claude-code-ide-mcp-stop-session "claude-code-ide-mcp" (project-dir))
 (declare-function claude-code-ide-mcp--get-session-for-project "claude-code-ide-mcp" (project-dir))
@@ -511,6 +512,17 @@ This simulates typing backslash followed by Enter, which Claude Code interprets 
         (with-current-buffer buffer
           (vterm-send-string "\\")
           (vterm-send-return))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-toggle ()
+  "Toggle visibility of Claude Code window for the current project."
+  (interactive)
+  (let* ((working-dir (claude-code-ide--get-working-directory))
+         (buffer-name (claude-code-ide--get-buffer-name))
+         (buffer (get-buffer buffer-name)))
+    (if buffer
+        (claude-code-ide--toggle-existing-window buffer working-dir)
       (user-error "No Claude Code session for this project"))))
 
 (provide 'claude-code-ide)
