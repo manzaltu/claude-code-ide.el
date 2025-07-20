@@ -62,6 +62,7 @@
 (defvar claude-code-ide-focus-claude-after-ediff)
 (defvar claude-code-ide-use-side-window)
 (defvar claude-code-ide-cli-debug)
+(defvar claude-code-ide-cli-extra-flags)
 
 ;;; Helper Functions
 
@@ -207,6 +208,13 @@ Otherwise, if multiple sessions exist, prompt for selection."
   (setq claude-code-ide-cli-path path)
   (claude-code-ide-log "CLI path set to %s" path))
 
+(transient-define-suffix claude-code-ide--set-cli-extra-flags (flags)
+  "Set additional CLI flags."
+  :description "Set additional CLI flags"
+  (interactive (list (read-string "Additional CLI flags: " claude-code-ide-cli-extra-flags)))
+  (setq claude-code-ide-cli-extra-flags flags)
+  (claude-code-ide-log "CLI extra flags set to %s" flags))
+
 ;;; Transient Suffix Functions
 
 (transient-define-suffix claude-code-ide--toggle-focus-on-open ()
@@ -243,6 +251,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
   (customize-save-variable 'claude-code-ide-focus-claude-after-ediff claude-code-ide-focus-claude-after-ediff)
   (customize-save-variable 'claude-code-ide-use-side-window claude-code-ide-use-side-window)
   (customize-save-variable 'claude-code-ide-cli-path claude-code-ide-cli-path)
+  (customize-save-variable 'claude-code-ide-cli-extra-flags claude-code-ide-cli-extra-flags)
   (claude-code-ide-log "Configuration saved to custom file"))
 
 ;;; Transient Menus
@@ -285,7 +294,8 @@ Otherwise, if multiple sessions exist, prompt for selection."
      :description (lambda () (format "Use side window (%s)"
                                      (if claude-code-ide-use-side-window "ON" "OFF"))))]
    ["CLI Settings"
-    ("p" "Set CLI path" claude-code-ide--set-cli-path)]]
+    ("p" "Set CLI path" claude-code-ide--set-cli-path)
+    ("x" "Set extra CLI flags" claude-code-ide--set-cli-extra-flags)]]
   ["Save"
    ("S" "Save configuration" claude-code-ide--save-config)])
 
