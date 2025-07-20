@@ -213,12 +213,10 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
                         (display-buffer-in-side-window)
                         (side . ,side)
                         (slot . ,slot)
-                        (window-width . ,(if (memq side '(left right))
-                                             claude-code-ide-window-width
-                                           'fit-window-to-buffer))
-                        (window-height . ,(if (memq side '(top bottom))
-                                              claude-code-ide-window-height
-                                            'fit-window-to-buffer))
+                        ,@(when (memq side '(left right))
+                            `((window-width . ,claude-code-ide-window-width)))
+                        ,@(when (memq side '(top bottom))
+                            `((window-height . ,claude-code-ide-window-height)))
                         (window-parameters . ,window-parameters)))))
                (display-buffer buffer))
            ;; Use regular buffer
@@ -226,6 +224,12 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
     ;; Select the window to give it focus if configured to do so
     (when (and window claude-code-ide-focus-on-open)
       (select-window window))
+    ;; For bottom/top windows, explicitly set and preserve the height
+    (when (and window
+               claude-code-ide-use-side-window
+               (memq claude-code-ide-window-side '(top bottom)))
+      (set-window-text-height window claude-code-ide-window-height)
+      (set-window-dedicated-p window t))
     window))
 
 (defvar claude-code-ide--cleanup-in-progress nil
