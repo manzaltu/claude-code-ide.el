@@ -75,7 +75,7 @@
 (defun claude-code-ide-log (format-string &rest args)
   "Log message with FORMAT-STRING and ARGS."
   (let ((message (apply #'format format-string args)))
-    (message "%s%s" (claude-code-ide--get-session-context) message)))
+    (message "%s %s" (claude-code-ide--get-session-context) message)))
 
 ;;;###autoload
 (defun claude-code-ide-show-debug ()
