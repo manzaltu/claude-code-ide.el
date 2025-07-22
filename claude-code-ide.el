@@ -389,6 +389,10 @@ This function handles:
           ;; Set up process sentinel to clean up when Claude exits
           (set-process-sentinel process
                                 (lambda (_proc event)
+                                  ;; Check for abnormal exit with error code
+                                  (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
+                                    (let ((exit-code (match-string 1 event)))
+                                      (message "Claude exited with error code %s" exit-code)))
                                   (when (or (string-match "finished" event)
                                             (string-match "exited" event)
                                             (string-match "killed" event)
