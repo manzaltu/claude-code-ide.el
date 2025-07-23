@@ -57,6 +57,7 @@
 (require 'claude-code-ide-mcp)
 (require 'claude-code-ide-debug)
 (require 'claude-code-ide-transient)
+(require 'claude-code-ide-mcp-server)
 
 (declare-function claude-code-ide-mcp-stop-session "claude-code-ide-mcp" (project-dir))
 (declare-function claude-code-ide-mcp--get-session-for-project "claude-code-ide-mcp" (project-dir))
@@ -64,6 +65,10 @@
 (declare-function claude-code-ide-mcp--get-buffer-project "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp-session-client "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-send-at-mentioned "claude-code-ide-mcp" ())
+(declare-function claude-code-ide-mcp-server-ensure-server "claude-code-ide-mcp-server" ())
+(declare-function claude-code-ide-mcp-server-get-config "claude-code-ide-mcp-server" ())
+(declare-function claude-code-ide-mcp-server-session-started "claude-code-ide-mcp-server" ())
+(declare-function claude-code-ide-mcp-server-session-ended "claude-code-ide-mcp-server" ())
 
 ;;; Customization
 
@@ -148,6 +153,9 @@ display-buffer behavior."
 
 (defvar claude-code-ide--processes (make-hash-table :test 'equal)
   "Hash table mapping project/directory roots to their Claude Code processes.")
+
+
+
 
 ;;; Helper Functions
 
@@ -245,6 +253,9 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
           (remhash directory claude-code-ide--processes)
           ;; Stop MCP server for this project directory
           (claude-code-ide-mcp-stop-session directory)
+          ;; Notify MCP tools server about session end
+          (when (fboundp 'claude-code-ide-mcp-server-session-ended)
+            (claude-code-ide-mcp-server-session-ended))
           ;; Kill the vterm buffer if it exists
           (let ((buffer-name (claude-code-ide--get-buffer-name directory)))
             (when-let ((buffer (get-buffer buffer-name)))
@@ -308,7 +319,20 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
     (when (and claude-code-ide-cli-extra-flags
                (not (string-empty-p claude-code-ide-cli-extra-flags)))
       (setq claude-cmd (concat claude-cmd " " claude-code-ide-cli-extra-flags)))
+    ;; Add MCP tools config if enabled
+    (when (and (fboundp 'claude-code-ide-mcp-server-ensure-server)
+               (fboundp 'claude-code-ide-mcp-server-get-config)
+               (claude-code-ide-mcp-server-ensure-server))
+      (when-let ((config (claude-code-ide-mcp-server-get-config)))
+        (let ((json-str (json-encode config)))
+          (claude-code-ide-debug "MCP tools config JSON: %s" json-str)
+          ;; For vterm, we need to escape for sh -c context
+          ;; First escape backslashes, then quotes
+          (setq json-str (replace-regexp-in-string "\\\\" "\\\\\\\\" json-str))
+          (setq json-str (replace-regexp-in-string "\"" "\\\\\"" json-str))
+          (setq claude-cmd (concat claude-cmd " --mcp-config \"" json-str "\"")))))
     claude-cmd))
+
 
 (defun claude-code-ide--create-vterm-session (buffer-name working-dir port resume)
   "Create a new vterm session for Claude Code.
@@ -322,7 +346,7 @@ Signals an error if vterm fails to initialize."
   (let* ((claude-cmd (claude-code-ide--build-claude-command resume))
          (vterm-buffer-name buffer-name)
          (default-directory working-dir)
-         ;; Set vterm-shell to run Claude directly instead of a shell
+         ;; Set vterm-shell to run Claude directly
          (vterm-shell claude-cmd)
          ;; vterm uses vterm-environment for passing env vars
          (vterm-environment (append
@@ -384,6 +408,9 @@ This function handles:
         (claude-code-ide--toggle-existing-window existing-buffer working-dir)
       ;; Start MCP server with project directory
       (let ((port (claude-code-ide-mcp-start working-dir)))
+        ;; Notify MCP tools server about new session
+        (when (fboundp 'claude-code-ide-mcp-server-session-started)
+          (claude-code-ide-mcp-server-session-started))
         ;; Create new vterm session
         (let* ((buffer-and-process (claude-code-ide--create-vterm-session
                                     buffer-name working-dir port resume))
@@ -396,7 +423,7 @@ This function handles:
                                   ;; Check for abnormal exit with error code
                                   (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
                                     (let ((exit-code (match-string 1 event)))
-                                      (claude-code-ide-debug "Claude process exited with code %s, event: %s" 
+                                      (claude-code-ide-debug "Claude process exited with code %s, event: %s"
                                                              exit-code event)
                                       (message "Claude exited with error code %s" exit-code)))
                                   (when (or (string-match "finished" event)

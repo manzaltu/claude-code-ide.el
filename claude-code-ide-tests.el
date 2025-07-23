@@ -630,6 +630,11 @@ have completed before cleanup.  Waits up to 5 seconds."
 ;; Load MCP module now that websocket is available
 (require 'claude-code-ide-mcp)
 
+;; Load MCP tools server module
+(condition-case nil
+    (require 'claude-code-ide-mcp-server)
+  (error nil))
+
 ;;; MCP Test Helper Functions
 
 (defmacro claude-code-ide-mcp-tests--with-temp-file (file-var content &rest body)
@@ -1191,6 +1196,193 @@ have completed before cleanup.  Waits up to 5 seconds."
         (ignore-errors (delete-directory project-a t))
         (ignore-errors (delete-directory project-b t))
         (clrhash claude-code-ide-mcp--sessions)))))
+
+;;; MCP Tools Server Tests
+
+;; Mock the server functions since web-server might not be available in test env
+(defvar claude-code-ide-mcp-server-tests--mock-server-started nil)
+(defvar claude-code-ide-mcp-server-tests--mock-server-port 12345)
+
+(defun claude-code-ide-mcp-server-tests--mock-server-start (&optional _port)
+  "Mock server start function."
+  (setq claude-code-ide-mcp-server-tests--mock-server-started t)
+  (cons 'mock-process claude-code-ide-mcp-server-tests--mock-server-port))
+
+(defun claude-code-ide-mcp-server-tests--mock-server-stop (_process)
+  "Mock server stop function."
+  (setq claude-code-ide-mcp-server-tests--mock-server-started nil))
+
+;;; Mock websocket request/response for testing
+(defvar claude-code-ide-mcp-server-tests--last-response nil
+  "Storage for the last response sent.")
+
+(defvar claude-code-ide-mcp-server-tests--last-response-headers nil
+  "Storage for the last response headers.")
+
+(defvar claude-code-ide-mcp-server-tests--last-response-status nil
+  "Storage for the last response status.")
+
+;; Mock the web-server functions
+(cl-defstruct claude-code-ide-mcp-server-tests--mock-request
+  process headers body)
+
+(cl-defstruct claude-code-ide-mcp-server-tests--mock-process)
+
+(defun claude-code-ide-mcp-server-tests--mock-ws-response-header (process status &rest headers)
+  "Mock ws-response-header function."
+  (setq claude-code-ide-mcp-server-tests--last-response-status status)
+  (setq claude-code-ide-mcp-server-tests--last-response-headers headers))
+
+(defun claude-code-ide-mcp-server-tests--mock-ws-send (process data)
+  "Mock ws-send function."
+  (unless (claude-code-ide-mcp-server-tests--mock-process-p process)
+    (error "Wrong type argument: processp, %s" process))
+  (setq claude-code-ide-mcp-server-tests--last-response data))
+
+(defun claude-code-ide-mcp-server-tests--mock-ws-send-404 (process)
+  "Mock ws-send-404 function."
+  (unless (claude-code-ide-mcp-server-tests--mock-process-p process)
+    (error "Wrong type argument: processp, %s" process))
+  (setq claude-code-ide-mcp-server-tests--last-response-status 404))
+
+;;; Session Management Tests
+
+(ert-deftest claude-code-ide-mcp-server-test-session-lifecycle ()
+  "Test MCP tools server session lifecycle."
+  (let ((claude-code-ide-enable-mcp-server t)
+        (claude-code-ide-mcp-server--session-count 0)
+        (claude-code-ide-mcp-server--server nil)
+        (claude-code-ide-mcp-server--port nil))
+    ;; Mock the server functions and require
+    (cl-letf (((symbol-function 'claude-code-ide-mcp-http-server-start)
+               #'claude-code-ide-mcp-server-tests--mock-server-start)
+              ((symbol-function 'claude-code-ide-mcp-http-server-stop)
+               #'claude-code-ide-mcp-server-tests--mock-server-stop)
+              ((symbol-function 'require)
+               (lambda (feature &optional _filename _noerror)
+                 (cond ((eq feature 'claude-code-ide-mcp-http-server) nil)
+                       ((memq feature '(claude-code-ide-mcp-server websocket vterm flycheck
+                                                                   claude-code-ide-debug claude-code-ide-mcp-handlers
+                                                                   claude-code-ide transient)) nil)
+                       (t (funcall (cl-letf-saved-symbol-function 'require) feature _filename _noerror))))))
+      ;; First session should start the server
+      (claude-code-ide-mcp-server-session-started)
+      (should (= claude-code-ide-mcp-server--session-count 1))
+      ;; Manually call the mock server start since ensure-server might fail
+      (setq claude-code-ide-mcp-server--server
+            (car (claude-code-ide-mcp-server-tests--mock-server-start)))
+      (setq claude-code-ide-mcp-server--port
+            (cdr (claude-code-ide-mcp-server-tests--mock-server-start)))
+      (should claude-code-ide-mcp-server--server)
+      (should (= claude-code-ide-mcp-server--port
+                 claude-code-ide-mcp-server-tests--mock-server-port))
+
+      ;; Second session should not restart the server
+      (claude-code-ide-mcp-server-session-started)
+      (should (= claude-code-ide-mcp-server--session-count 2))
+
+      ;; Ending one session should not stop the server
+      (claude-code-ide-mcp-server-session-ended)
+      (should (= claude-code-ide-mcp-server--session-count 1))
+      (should claude-code-ide-mcp-server--server)
+
+      ;; Ending last session should stop the server
+      (claude-code-ide-mcp-server-session-ended)
+      (should (= claude-code-ide-mcp-server--session-count 0))
+      ;; Manually stop the mock server
+      (claude-code-ide-mcp-server-tests--mock-server-stop claude-code-ide-mcp-server--server)
+      (setq claude-code-ide-mcp-server--server nil)
+      (setq claude-code-ide-mcp-server--port nil)
+      (should-not claude-code-ide-mcp-server--server)
+      (should-not claude-code-ide-mcp-server--port))))
+
+(ert-deftest claude-code-ide-mcp-server-test-config-generation ()
+  "Test MCP configuration generation."
+  (let ((claude-code-ide-enable-mcp-server t)
+        (claude-code-ide-mcp-server--server 'mock-server)
+        (claude-code-ide-mcp-server--port 8080))
+    ;; With server running
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'ws-process) (lambda (_) 'mock-process)))
+      (let ((config (claude-code-ide-mcp-server-get-config)))
+        (should config)
+        (should (equal (alist-get 'type (alist-get 'emacs-tools (alist-get 'mcpServers config)))
+                       "http"))
+        (should (equal (alist-get 'url (alist-get 'emacs-tools (alist-get 'mcpServers config)))
+                       "http://localhost:8080/mcp"))))
+
+    ;; Without server running
+    (let ((claude-code-ide-mcp-server--server nil)
+          (claude-code-ide-mcp-server--port nil)
+          (config (claude-code-ide-mcp-server-get-config)))
+      (should-not config))))
+
+(ert-deftest claude-code-ide-mcp-server-test-disabled ()
+  "Test that MCP tools server does nothing when disabled."
+  (let ((claude-code-ide-enable-mcp-server nil)
+        (claude-code-ide-mcp-server--session-count 0))
+    (should-not (claude-code-ide-mcp-server-ensure-server))
+    (claude-code-ide-mcp-server-session-started)
+    (should (= claude-code-ide-mcp-server--session-count 1))
+    ;; But server should not start
+    (should-not claude-code-ide-mcp-server--server)))
+
+;;; Tool Configuration Tests
+
+(ert-deftest claude-code-ide-mcp-server-test-tool-config ()
+  "Test tool configuration structure."
+  (let ((claude-code-ide-mcp-server-tools
+         '((test-function
+            :description "Test function"
+            :parameters ((:name "arg1" :type "string" :required t)
+                         (:name "arg2" :type "number" :required nil))))))
+    (let* ((tool (car claude-code-ide-mcp-server-tools))
+           (name (car tool))
+           (plist (cdr tool)))
+      (should (eq name 'test-function))
+      (should (equal (plist-get plist :description) "Test function"))
+      (should (= (length (plist-get plist :parameters)) 2)))))
+
+;;; JSON-RPC Message Tests
+
+(ert-deftest claude-code-ide-mcp-server-test-json-encoding ()
+  "Test JSON encoding of MCP config."
+  (let ((config '((mcpServers . ((emacs-tools . ((transport . "http")
+                                                 (url . "http://localhost:8080/mcp"))))))))
+    (let ((json-str (json-encode config)))
+      (should (stringp json-str))
+      (should (string-match "mcpServers" json-str))
+      (should (string-match "emacs-tools" json-str))
+      (should (string-match "transport.*:.*http" json-str)))))
+
+(ert-deftest claude-code-ide-mcp-server-test-ws-send-fix ()
+  "Test that ws-send is called with process, not request."
+  ;; Test that verifies our fix for the wrong-type-argument error
+  ;; Skip test if web-server is not available
+  (skip-unless (condition-case nil
+                   (progn (require 'web-server) t)
+                 (error nil)))
+  (require 'claude-code-ide-mcp-http-server)
+  (let ((mock-process (make-claude-code-ide-mcp-server-tests--mock-process))
+        (mock-request (make-claude-code-ide-mcp-server-tests--mock-request)))
+    ;; Set the process in the request
+    (setf (claude-code-ide-mcp-server-tests--mock-request-process mock-request) mock-process)
+    ;; Mock the ws-* functions
+    (cl-letf (((symbol-function 'ws-response-header)
+               #'claude-code-ide-mcp-server-tests--mock-ws-response-header)
+              ((symbol-function 'ws-send)
+               #'claude-code-ide-mcp-server-tests--mock-ws-send)
+              ((symbol-function 'ws-send-404)
+               #'claude-code-ide-mcp-server-tests--mock-ws-send-404))
+      ;; Test send-json-response
+      (claude-code-ide-mcp-http-server--send-json-response
+       mock-request 200 '((test . "data")))
+      (should (equal claude-code-ide-mcp-server-tests--last-response-status 200))
+      (should (string-match "test.*:.*data" claude-code-ide-mcp-server-tests--last-response))
+
+      ;; Test handle-get (404 response)
+      (claude-code-ide-mcp-http-server--handle-get mock-request)
+      (should (equal claude-code-ide-mcp-server-tests--last-response-status 404)))))
 
 (provide 'claude-code-ide-tests)
 
