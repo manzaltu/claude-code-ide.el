@@ -331,6 +331,10 @@ Signals an error if vterm fails to initialize."
                                    "TERM_PROGRAM=emacs"
                                    "FORCE_CODE_TERMINAL=true")
                              vterm-environment)))
+    ;; Log the command for debugging
+    (claude-code-ide-debug "Starting Claude with command: %s" claude-cmd)
+    (claude-code-ide-debug "Working directory: %s" working-dir)
+    (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%d" port)
     ;; Create vterm buffer without switching to it
     (let ((buffer (save-window-excursion
                     (vterm vterm-buffer-name))))
@@ -392,6 +396,8 @@ This function handles:
                                   ;; Check for abnormal exit with error code
                                   (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
                                     (let ((exit-code (match-string 1 event)))
+                                      (claude-code-ide-debug "Claude process exited with code %s, event: %s" 
+                                                             exit-code event)
                                       (message "Claude exited with error code %s" exit-code)))
                                   (when (or (string-match "finished" event)
                                             (string-match "exited" event)
