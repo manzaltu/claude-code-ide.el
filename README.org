@@ -19,6 +19,7 @@ Claude Code IDE for Emacs provides seamless integration with Claude Code CLI thr
 - Terminal integration with full color support using =vterm=
 - MCP protocol implementation for IDE integration
 - Tool support for file operations, editor state, and workspace info
+- Extensible MCP tools server for accessing Emacs commands (xrefs and project info)
 - Diagnostic integration with Flycheck
 - Advanced diff view with ediff integration
 - Tab-bar support for proper context switching
@@ -69,7 +70,11 @@ Currently, this package is in early development. To install using =use-package= 
 
 #+begin_src emacs-lisp
 (use-package claude-code-ide
-  :straight (:type git :host github :repo "manzaltu/claude-code-ide.el"))
+  :after vterm
+  :straight (:type git :host github :repo "manzaltu/claude-code-ide.el")
+  :bind ("C-c C-'" . claude-code-ide-menu) ; Set your favorite keybinding
+  :config
+  (claude-code-ide-emacs-tools-setup)) ; Optionally enable Emacs MCP tools
 #+end_src
 
 * Usage
@@ -81,6 +86,7 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | Command                                 | Description                                       |
 |-----------------------------------------+---------------------------------------------------|
 | =M-x claude-code-ide-menu=                | Open transient menu with all Claude Code commands |
+| =M-x claude-code-ide-emacs-tools-setup=   | Set up built-in MCP tools (e.g. xref, project)    |
 | =M-x claude-code-ide=                     | Start Claude Code for the current project         |
 | =M-x claude-code-ide-resume=              | Resume Claude Code with previous conversation     |
 | =M-x claude-code-ide-stop=                | Stop Claude Code for the current project          |
@@ -90,6 +96,7 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-insert-at-mentioned= | Send selected text to Claude prompt               |
 | =M-x claude-code-ide-send-escape=         | Send escape key to Claude terminal                |
 | =M-x claude-code-ide-insert-newline=      | Insert newline in Claude prompt (sends \ + Enter) |
+| =M-x claude-code-ide-toggle=              | Toggle visibility of Claude Code window           |
 | =M-x claude-code-ide-show-debug=          | Show the debug buffer with WebSocket messages     |
 | =M-x claude-code-ide-clear-debug=         | Clear the debug buffer                            |
 
@@ -123,6 +130,9 @@ You can run multiple Claude Code instances simultaneously for different projects
 | ~claude-code-ide-window-height~            | Height for side windows (top/bottom)    | ~20~                                   |
 | ~claude-code-ide-focus-on-open~            | Focus Claude window when opened         | ~t~                                    |
 | ~claude-code-ide-focus-claude-after-ediff~ | Focus Claude window after opening ediff | ~t~                                    |
+| ~claude-code-ide-enable-mcp-server~        | Enable MCP tools server                 | ~nil~                                  |
+| ~claude-code-ide-mcp-server-port~          | Port for MCP tools server               | ~nil~ (auto-select)                    |
+| ~claude-code-ide-mcp-server-tools~         | Alist of exposed Emacs functions        | ~nil~                                  |
 
 *** Side Window Configuration
 
@@ -209,6 +219,74 @@ The debug buffer shows:
 - All JSON-RPC messages (requests/responses)
 - Error messages and diagnostics
 - General debug information with session context
+
+** Emacs MCP Tools
+
+Claude Code IDE includes built-in MCP tools that expose Emacs functionality to Claude, enabling powerful code navigation and analysis capabilities:
+
+*** Built-in Tools
+
+- =xref-find-references= - Find all references to a symbol throughout the project
+- =xref-find-apropos= - Find symbols matching a pattern across the entire project
+- =imenu-list-symbols= - List all symbols (functions, classes, variables) in a file using imenu
+- =project-info= - Get information about the current project (directory, files, etc.)
+
+*** Enabling MCP Tools
+
+To enable these tools, add to your configuration:
+
+#+begin_src emacs-lisp
+;; Set up the built-in Emacs tools
+(claude-code-ide-emacs-tools-setup)
+#+end_src
+
+Once enabled, Claude can use these tools to navigate your codebase. For example:
+- "Find the definition of function foo"
+- "Show me all places where this variable is used"
+- "List all functions and variables in this file"
+- "How many files are in this project?"
+
+** Creating Custom MCP Tools
+
+You can expose your own Emacs functions to Claude through the MCP tools system. This allows Claude to interact with specialized Emacs features, custom commands, or domain-specific functionality.
+
+*** Tool Definition Format
+
+Each tool definition in =claude-code-ide-mcp-server-tools= follows this format:
+
+#+begin_src emacs-lisp
+'(function-name
+  :description "Human-readable description for Claude"
+  :parameters ((:name "param1"
+                :type "string"
+                :required t
+                :description "What this parameter does")
+               (:name "param2"
+                :type "number"
+                :required nil
+                :description "Optional parameter")))
+#+end_src
+
+*** Context-Aware Tool Example
+
+#+begin_src emacs-lisp
+(defun my-project-grep (pattern)
+  "Search for PATTERN in the current session's project."
+  (claude-code-ide-mcp-server-with-session-context nil
+    ;; This executes with the session's project directory as default-directory
+    (let* ((project-dir default-directory)
+           (results (shell-command-to-string
+                    (format "rg -n '%s' %s" pattern project-dir))))
+      results)))
+
+(add-to-list 'claude-code-ide-mcp-server-tools
+             '(my-project-grep
+               :description "Search for pattern in project files"
+               :parameters ((:name "pattern"
+                            :type "string"
+                            :required t
+                            :description "Pattern to search for"))))
+#+end_src
 
 * License
 
