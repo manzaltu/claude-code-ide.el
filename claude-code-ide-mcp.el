@@ -254,9 +254,6 @@ turn into {}. Recursively processes nested structures."
   "Handle the tools/list request with ID."
   (claude-code-ide-debug "Handling tools/list request with id: %s" id)
   ;; Ensure handlers are loaded
-  (unless (boundp 'claude-code-ide-mcp-tools)
-    (claude-code-ide-debug "Loading MCP handlers...")
-    (require 'claude-code-ide-mcp-handlers))
   (claude-code-ide-debug "Building tools list from %d registered tools"
                          (length claude-code-ide-mcp-tools))
   (let ((tools '()))
@@ -288,9 +285,6 @@ turn into {}. Recursively processes nested structures."
 Optional SESSION contains the MCP session context."
   (claude-code-ide-debug "Handling tools/call request with id: %s" id)
   ;; Ensure handlers are loaded
-  (unless (boundp 'claude-code-ide-mcp-tools)
-    (claude-code-ide-debug "Loading MCP handlers...")
-    (require 'claude-code-ide-mcp-handlers))
   (let* ((tool-name (alist-get 'name params))
          (arguments (alist-get 'arguments params))
          (handler (alist-get tool-name claude-code-ide-mcp-tools nil nil #'string=)))
@@ -502,10 +496,8 @@ Optional SESSION contains the MCP session context."
                                         (expand-file-name file-path)))
               (setf (claude-code-ide-mcp-session-last-buffer session) (current-buffer))
               ;; Update MCP tools server's last active buffer
-              (when (and (fboundp 'claude-code-ide-mcp-server-update-last-active-buffer)
-                         (boundp 'claude-code-ide--session-ids))
-                (when-let ((session-id (gethash project-dir claude-code-ide--session-ids)))
-                  (claude-code-ide-mcp-server-update-last-active-buffer session-id (current-buffer))))
+              (when-let ((session-id (gethash project-dir claude-code-ide--session-ids)))
+                (claude-code-ide-mcp-server-update-last-active-buffer session-id (current-buffer)))
               (run-at-time claude-code-ide-mcp-initial-notification-delay nil
                            (lambda ()
                              (when-let ((s (gethash project-dir claude-code-ide-mcp--sessions)))
@@ -668,10 +660,8 @@ Optional SESSION contains the MCP session context."
                                   (expand-file-name file-path)))
         (setf (claude-code-ide-mcp-session-last-buffer session) current-buffer)
         ;; Update MCP tools server's last active buffer
-        (when (and (fboundp 'claude-code-ide-mcp-server-update-last-active-buffer)
-                   (boundp 'claude-code-ide--session-ids))
-          (when-let ((session-id (gethash project-dir claude-code-ide--session-ids)))
-            (claude-code-ide-mcp-server-update-last-active-buffer session-id current-buffer)))
+        (when-let ((session-id (gethash project-dir claude-code-ide--session-ids)))
+          (claude-code-ide-mcp-server-update-last-active-buffer session-id current-buffer))
         ;; Send notification
         (claude-code-ide-mcp--send-notification
          "workspace/didChangeActiveEditor"

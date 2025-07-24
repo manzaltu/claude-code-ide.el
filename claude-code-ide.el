@@ -276,12 +276,11 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
           ;; Stop MCP server for this project directory
           (claude-code-ide-mcp-stop-session directory)
           ;; Notify MCP tools server about session end with session ID
-          (when (fboundp 'claude-code-ide-mcp-server-session-ended)
-            (let ((session-id (gethash directory claude-code-ide--session-ids)))
-              (claude-code-ide-mcp-server-session-ended session-id)
-              ;; Clean up session ID mapping
-              (when session-id
-                (remhash directory claude-code-ide--session-ids))))
+          (let ((session-id (gethash directory claude-code-ide--session-ids)))
+            (claude-code-ide-mcp-server-session-ended session-id)
+            ;; Clean up session ID mapping
+            (when session-id
+              (remhash directory claude-code-ide--session-ids)))
           ;; Kill the vterm buffer if it exists
           (let ((buffer-name (claude-code-ide--get-buffer-name directory)))
             (when-let ((buffer (get-buffer buffer-name)))
@@ -347,9 +346,7 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
                (not (string-empty-p claude-code-ide-cli-extra-flags)))
       (setq claude-cmd (concat claude-cmd " " claude-code-ide-cli-extra-flags)))
     ;; Add MCP tools config if enabled
-    (when (and (fboundp 'claude-code-ide-mcp-server-ensure-server)
-               (fboundp 'claude-code-ide-mcp-server-get-config)
-               (claude-code-ide-mcp-server-ensure-server))
+    (when (claude-code-ide-mcp-server-ensure-server)
       (when-let ((config (claude-code-ide-mcp-server-get-config session-id)))
         (let ((json-str (json-encode config)))
           (claude-code-ide-debug "MCP tools config JSON: %s" json-str)
@@ -373,7 +370,7 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
                   (t claude-code-ide-mcp-allowed-tools))))
             (when allowed-tools
               (setq claude-cmd (concat claude-cmd " --allowedTools " allowed-tools)))))))
-  claude-cmd))
+    claude-cmd))
 
 
 (defun claude-code-ide--create-vterm-session (buffer-name working-dir port resume session-id)
@@ -461,8 +458,7 @@ This function handles:
                (buffer (car buffer-and-process))
                (process (cdr buffer-and-process)))
           ;; Notify MCP tools server about new session with session info
-          (when (fboundp 'claude-code-ide-mcp-server-session-started)
-            (claude-code-ide-mcp-server-session-started session-id working-dir buffer))
+          (claude-code-ide-mcp-server-session-started session-id working-dir buffer)
           (claude-code-ide--set-process process working-dir)
           ;; Store session ID for cleanup
           (puthash working-dir session-id claude-code-ide--session-ids)
