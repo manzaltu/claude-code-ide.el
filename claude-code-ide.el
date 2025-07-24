@@ -154,6 +154,9 @@ display-buffer behavior."
 (defvar claude-code-ide--processes (make-hash-table :test 'equal)
   "Hash table mapping project/directory roots to their Claude Code processes.")
 
+(defvar claude-code-ide--session-ids (make-hash-table :test 'equal)
+  "Hash table mapping project/directory roots to their session IDs.")
+
 
 
 
@@ -253,9 +256,13 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
           (remhash directory claude-code-ide--processes)
           ;; Stop MCP server for this project directory
           (claude-code-ide-mcp-stop-session directory)
-          ;; Notify MCP tools server about session end
+          ;; Notify MCP tools server about session end with session ID
           (when (fboundp 'claude-code-ide-mcp-server-session-ended)
-            (claude-code-ide-mcp-server-session-ended))
+            (let ((session-id (gethash directory claude-code-ide--session-ids)))
+              (claude-code-ide-mcp-server-session-ended session-id)
+              ;; Clean up session ID mapping
+              (when session-id
+                (remhash directory claude-code-ide--session-ids))))
           ;; Kill the vterm buffer if it exists
           (let ((buffer-name (claude-code-ide--get-buffer-name directory)))
             (when-let ((buffer (get-buffer buffer-name)))
@@ -303,9 +310,10 @@ If the window is not visible, it will be shown in a side window."
             (setf (claude-code-ide-mcp-session-original-tab session) (tab-bar--current-tab))))
         (claude-code-ide-debug "Claude Code window shown")))))
 
-(defun claude-code-ide--build-claude-command (&optional resume)
+(defun claude-code-ide--build-claude-command (&optional resume session-id)
   "Build the Claude command with optional flags.
 If RESUME is non-nil, add the -r flag.
+If SESSION-ID is provided, it's included in the MCP server URL path.
 If `claude-code-ide-cli-debug' is non-nil, add the -d flag.
 Additional flags from `claude-code-ide-cli-extra-flags' are also included."
   (let ((claude-cmd claude-code-ide-cli-path))
@@ -323,7 +331,7 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
     (when (and (fboundp 'claude-code-ide-mcp-server-ensure-server)
                (fboundp 'claude-code-ide-mcp-server-get-config)
                (claude-code-ide-mcp-server-ensure-server))
-      (when-let ((config (claude-code-ide-mcp-server-get-config)))
+      (when-let ((config (claude-code-ide-mcp-server-get-config session-id)))
         (let ((json-str (json-encode config)))
           (claude-code-ide-debug "MCP tools config JSON: %s" json-str)
           ;; For vterm, we need to escape for sh -c context
@@ -334,16 +342,17 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
     claude-cmd))
 
 
-(defun claude-code-ide--create-vterm-session (buffer-name working-dir port resume)
+(defun claude-code-ide--create-vterm-session (buffer-name working-dir port resume session-id)
   "Create a new vterm session for Claude Code.
 BUFFER-NAME is the name for the vterm buffer.
 WORKING-DIR is the working directory.
 PORT is the MCP server port.
 RESUME is whether to resume a previous conversation.
+SESSION-ID is the unique identifier for this session.
 
 Returns a cons cell of (buffer . process) on success.
 Signals an error if vterm fails to initialize."
-  (let* ((claude-cmd (claude-code-ide--build-claude-command resume))
+  (let* ((claude-cmd (claude-code-ide--build-claude-command resume session-id))
          (vterm-buffer-name buffer-name)
          (default-directory working-dir)
          ;; Set vterm-shell to run Claude directly
@@ -359,6 +368,7 @@ Signals an error if vterm fails to initialize."
     (claude-code-ide-debug "Starting Claude with command: %s" claude-cmd)
     (claude-code-ide-debug "Working directory: %s" working-dir)
     (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%d" port)
+    (claude-code-ide-debug "Session ID: %s" session-id)
     ;; Create vterm buffer without switching to it
     (let ((buffer (save-window-excursion
                     (vterm vterm-buffer-name))))
@@ -407,16 +417,21 @@ This function handles:
              existing-process)
         (claude-code-ide--toggle-existing-window existing-buffer working-dir)
       ;; Start MCP server with project directory
-      (let ((port (claude-code-ide-mcp-start working-dir)))
-        ;; Notify MCP tools server about new session
-        (when (fboundp 'claude-code-ide-mcp-server-session-started)
-          (claude-code-ide-mcp-server-session-started))
-        ;; Create new vterm session
+      (let ((port (claude-code-ide-mcp-start working-dir))
+            (session-id (format "claude-%s-%s"
+                                (file-name-nondirectory (directory-file-name working-dir))
+                                (format-time-string "%Y%m%d-%H%M%S"))))
+        ;; Create new vterm session first
         (let* ((buffer-and-process (claude-code-ide--create-vterm-session
-                                    buffer-name working-dir port resume))
+                                    buffer-name working-dir port resume session-id))
                (buffer (car buffer-and-process))
                (process (cdr buffer-and-process)))
+          ;; Notify MCP tools server about new session with session info
+          (when (fboundp 'claude-code-ide-mcp-server-session-started)
+            (claude-code-ide-mcp-server-session-started session-id working-dir buffer))
           (claude-code-ide--set-process process working-dir)
+          ;; Store session ID for cleanup
+          (puthash working-dir session-id claude-code-ide--session-ids)
           ;; Set up process sentinel to clean up when Claude exits
           (set-process-sentinel process
                                 (lambda (_proc event)

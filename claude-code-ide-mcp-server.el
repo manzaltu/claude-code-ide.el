@@ -87,6 +87,17 @@ Each entry is (FUNCTION . PLIST) where PLIST contains:
 (defvar claude-code-ide-mcp-server--session-count 0
   "Number of active Claude sessions using the MCP tools server.")
 
+(defvar claude-code-ide-mcp-server--sessions (make-hash-table :test 'equal)
+  "Hash table mapping session IDs to session contexts.
+Each entry contains a plist with session information:
+  :project-dir - The project directory for the session
+  :buffer - The Claude Code buffer
+  :start-time - When the session was started")
+
+(defvar claude-code-ide-mcp-server--current-session-id nil
+  "The session ID for the current MCP tool request.
+This is dynamically bound during tool execution.")
+
 ;;; Public Functions
 
 (defun claude-code-ide-mcp-server-ensure-server ()
@@ -108,16 +119,22 @@ Returns nil if server is not running."
              (claude-code-ide-mcp-server--server-alive-p))
     claude-code-ide-mcp-server--port))
 
-(defun claude-code-ide-mcp-server-session-started ()
+(defun claude-code-ide-mcp-server-session-started (&optional session-id project-dir buffer)
   "Notify that a Claude session has started.
+If SESSION-ID, PROJECT-DIR and BUFFER are provided, register the session.
 Increments the session counter."
   (cl-incf claude-code-ide-mcp-server--session-count)
   (claude-code-ide-debug "MCP session started. Count: %d"
-                         claude-code-ide-mcp-server--session-count))
+                         claude-code-ide-mcp-server--session-count)
+  (when (and session-id project-dir buffer)
+    (claude-code-ide-mcp-server-register-session session-id project-dir buffer)))
 
-(defun claude-code-ide-mcp-server-session-ended ()
+(defun claude-code-ide-mcp-server-session-ended (&optional session-id)
   "Notify that a Claude session has ended.
+If SESSION-ID is provided, unregister that specific session.
 Decrements the session counter and stops server if no sessions remain."
+  (when session-id
+    (claude-code-ide-mcp-server-unregister-session session-id))
   (when (> claude-code-ide-mcp-server--session-count 0)
     (cl-decf claude-code-ide-mcp-server--session-count)
     (claude-code-ide-debug "MCP session ended. Count: %d"
@@ -125,12 +142,77 @@ Decrements the session counter and stops server if no sessions remain."
     (when (= claude-code-ide-mcp-server--session-count 0)
       (claude-code-ide-mcp-server--stop-server))))
 
-(defun claude-code-ide-mcp-server-get-config ()
+(defun claude-code-ide-mcp-server-get-config (&optional session-id)
   "Get the MCP configuration for the tools server.
+If SESSION-ID is provided, includes it in the URL path.
 Returns an alist suitable for JSON encoding."
   (when-let ((port (claude-code-ide-mcp-server-get-port)))
-    `((mcpServers . ((emacs-tools . ((type . "http")
-                                     (url . ,(format "http://localhost:%d/mcp" port)))))))))
+    (let* ((path (if session-id
+                     (format "/mcp/%s" session-id)
+                   "/mcp"))
+           (url (format "http://localhost:%d%s" port path))
+           (config `((type . "http")
+                     (url . ,url))))
+      `((mcpServers . ((emacs-tools . ,config)))))))
+
+;;; Session Management Functions
+
+(defun claude-code-ide-mcp-server-register-session (session-id project-dir buffer)
+  "Register a new session with SESSION-ID, PROJECT-DIR, and BUFFER."
+  (puthash session-id
+           (list :project-dir project-dir
+                 :buffer buffer
+                 :last-active-buffer nil
+                 :start-time (current-time))
+           claude-code-ide-mcp-server--sessions)
+  (claude-code-ide-debug "Registered MCP session %s for project %s" session-id project-dir))
+
+(defun claude-code-ide-mcp-server-unregister-session (session-id)
+  "Unregister the session with SESSION-ID."
+  (when (gethash session-id claude-code-ide-mcp-server--sessions)
+    (remhash session-id claude-code-ide-mcp-server--sessions)
+    (claude-code-ide-debug "Unregistered MCP session %s" session-id)))
+
+(defun claude-code-ide-mcp-server-get-session-context (&optional session-id)
+  "Get the context for SESSION-ID or the current session.
+Returns a plist with :project-dir and :buffer, or nil if not found."
+  (let ((id (or session-id claude-code-ide-mcp-server--current-session-id)))
+    (when id
+      (gethash id claude-code-ide-mcp-server--sessions))))
+
+(defun claude-code-ide-mcp-server-update-last-active-buffer (session-id buffer)
+  "Update the last active buffer for SESSION-ID to BUFFER.
+This should be called when the user switches to a different buffer
+in the project to ensure MCP tools execute in the correct context."
+  (when-let ((session (gethash session-id claude-code-ide-mcp-server--sessions)))
+    (plist-put session :last-active-buffer buffer)
+    (claude-code-ide-debug "Updated last active buffer for session %s to %s"
+                           session-id (buffer-name buffer))))
+
+(defmacro claude-code-ide-mcp-server-with-session-context (session-id &rest body)
+  "Execute BODY with the context of SESSION-ID.
+Sets the default-directory to the session's project directory
+and makes the session's buffer current if it exists.
+Prefers the last active buffer over the registered buffer."
+  (declare (indent 1))
+  `(let* ((context (claude-code-ide-mcp-server-get-session-context ,session-id))
+          (project-dir (plist-get context :project-dir))
+          (last-active-buffer (plist-get context :last-active-buffer))
+          (registered-buffer (plist-get context :buffer))
+          ;; Prefer last active buffer, fall back to registered buffer
+          (buffer (or (and last-active-buffer
+                           (buffer-live-p last-active-buffer)
+                           last-active-buffer)
+                      (and registered-buffer
+                           (buffer-live-p registered-buffer)
+                           registered-buffer))))
+     (if (not context)
+         (error "No session context found for session %s" ,session-id)
+       (let ((default-directory (or project-dir default-directory)))
+         (if buffer
+             (with-current-buffer buffer
+               ,@body)
+           ,@body)))))
 
 ;;; Internal Functions
 
@@ -172,6 +254,8 @@ Returns an alist suitable for JSON encoding."
           (claude-code-ide-mcp-http-server-stop claude-code-ide-mcp-server--server)
           (setq claude-code-ide-mcp-server--server nil
                 claude-code-ide-mcp-server--port nil)
+          ;; Clear all registered sessions
+          (clrhash claude-code-ide-mcp-server--sessions)
           (claude-code-ide-debug "MCP server stopped"))
       (error
        (claude-code-ide-debug "Error stopping MCP server: %s"

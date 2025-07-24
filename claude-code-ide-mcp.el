@@ -38,6 +38,10 @@
 (require 'claude-code-ide-debug)
 (require 'claude-code-ide-mcp-handlers)
 
+;; External declarations
+(declare-function claude-code-ide-mcp-server-update-last-active-buffer "claude-code-ide-mcp-server" (session-id buffer))
+(defvar claude-code-ide--session-ids)
+
 ;;; Constants
 
 (defconst claude-code-ide-mcp-version "2024-11-05"
@@ -497,6 +501,11 @@ Optional SESSION contains the MCP session context."
                        (string-prefix-p (expand-file-name project-dir)
                                         (expand-file-name file-path)))
               (setf (claude-code-ide-mcp-session-last-buffer session) (current-buffer))
+              ;; Update MCP tools server's last active buffer
+              (when (and (fboundp 'claude-code-ide-mcp-server-update-last-active-buffer)
+                         (boundp 'claude-code-ide--session-ids))
+                (when-let ((session-id (gethash project-dir claude-code-ide--session-ids)))
+                  (claude-code-ide-mcp-server-update-last-active-buffer session-id (current-buffer))))
               (run-at-time claude-code-ide-mcp-initial-notification-delay nil
                            (lambda ()
                              (when-let ((s (gethash project-dir claude-code-ide-mcp--sessions)))
@@ -658,6 +667,11 @@ Optional SESSION contains the MCP session context."
                  (string-prefix-p (expand-file-name project-dir)
                                   (expand-file-name file-path)))
         (setf (claude-code-ide-mcp-session-last-buffer session) current-buffer)
+        ;; Update MCP tools server's last active buffer
+        (when (and (fboundp 'claude-code-ide-mcp-server-update-last-active-buffer)
+                   (boundp 'claude-code-ide--session-ids))
+          (when-let ((session-id (gethash project-dir claude-code-ide--session-ids)))
+            (claude-code-ide-mcp-server-update-last-active-buffer session-id current-buffer)))
         ;; Send notification
         (claude-code-ide-mcp--send-notification
          "workspace/didChangeActiveEditor"

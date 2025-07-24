@@ -1384,6 +1384,115 @@ have completed before cleanup.  Waits up to 5 seconds."
       (claude-code-ide-mcp-http-server--handle-get mock-request)
       (should (equal claude-code-ide-mcp-server-tests--last-response-status 404)))))
 
+;;; MCP Server Session Context Tests
+
+(ert-deftest claude-code-ide-mcp-server-test-session-registration ()
+  "Test session registration and retrieval."
+  (let ((session-id "test-session-123")
+        (project-dir "/tmp/test-project")
+        (buffer (get-buffer-create "*test-buffer*")))
+    (unwind-protect
+        (progn
+          ;; Register a session
+          (claude-code-ide-mcp-server-register-session session-id project-dir buffer)
+
+          ;; Retrieve and verify session context
+          (let ((context (gethash session-id claude-code-ide-mcp-server--sessions)))
+            (should context)
+            (should (equal (plist-get context :project-dir) project-dir))
+            (should (eq (plist-get context :buffer) buffer))
+            (should (plist-get context :start-time)))
+
+          ;; Test get-session-context function
+          (let ((claude-code-ide-mcp-server--current-session-id session-id))
+            (let ((context (claude-code-ide-mcp-server-get-session-context)))
+              (should context)
+              (should (equal (plist-get context :project-dir) project-dir))))
+
+          ;; Unregister session
+          (claude-code-ide-mcp-server-unregister-session session-id)
+          (should-not (gethash session-id claude-code-ide-mcp-server--sessions)))
+
+      ;; Cleanup
+      (kill-buffer buffer)
+      (clrhash claude-code-ide-mcp-server--sessions))))
+
+(ert-deftest claude-code-ide-mcp-server-test-with-session-context-macro ()
+  "Test the with-session-context macro."
+  (let ((session-id "test-session-456")
+        (project-dir "/tmp/test-project-2/")
+        (buffer (get-buffer-create "*test-buffer-2*"))
+        (original-dir default-directory))
+    (unwind-protect
+        (progn
+          ;; Set up the buffer with the project directory
+          (with-current-buffer buffer
+            (setq default-directory project-dir))
+
+          ;; Register a session
+          (claude-code-ide-mcp-server-register-session session-id project-dir buffer)
+
+          ;; Test macro with valid session
+          (let ((claude-code-ide-mcp-server--current-session-id session-id))
+            (claude-code-ide-mcp-server-with-session-context nil
+              ;; Inside the macro, default-directory should be the project dir
+              (should (equal default-directory project-dir))
+              ;; Current buffer should be the session buffer
+              (should (eq (current-buffer) buffer))))
+
+          ;; Verify we're back to original context
+          (should (equal default-directory original-dir))
+
+          ;; Test error handling with invalid session
+          (let ((claude-code-ide-mcp-server--current-session-id "invalid-session"))
+            (should-error
+             (claude-code-ide-mcp-server-with-session-context nil
+               (error "Should not reach here")))))
+
+      ;; Cleanup
+      (kill-buffer buffer)
+      (clrhash claude-code-ide-mcp-server--sessions))))
+
+(ert-deftest claude-code-ide-mcp-server-test-session-lifecycle-detailed ()
+  "Test complete session lifecycle with detailed tracking."
+  (let ((session-id "test-session-789")
+        (project-dir "/tmp/test-project-3")
+        (buffer (get-buffer-create "*test-buffer-3*")))
+    (unwind-protect
+        (progn
+          ;; Start session
+          (claude-code-ide-mcp-server-session-started session-id project-dir buffer)
+          (should (= claude-code-ide-mcp-server--session-count 1))
+          (should (gethash session-id claude-code-ide-mcp-server--sessions))
+
+          ;; End session
+          (claude-code-ide-mcp-server-session-ended session-id)
+          (should (= claude-code-ide-mcp-server--session-count 0))
+          (should-not (gethash session-id claude-code-ide-mcp-server--sessions)))
+
+      ;; Cleanup
+      (kill-buffer buffer)
+      (setq claude-code-ide-mcp-server--session-count 0)
+      (clrhash claude-code-ide-mcp-server--sessions))))
+
+(ert-deftest claude-code-ide-mcp-server-test-config-with-session-id ()
+  "Test MCP config generation with session ID."
+  ;; Mock the server port
+  (cl-letf (((symbol-function 'claude-code-ide-mcp-server-get-port)
+             (lambda () 12345)))
+    ;; Test without session ID
+    (let ((config (claude-code-ide-mcp-server-get-config)))
+      (should config)
+      (let ((url (alist-get 'url (alist-get 'emacs-tools (alist-get 'mcpServers config)))))
+        (should (equal url "http://localhost:12345/mcp"))))
+
+    ;; Test with session ID
+    (let ((config (claude-code-ide-mcp-server-get-config "my-session-123")))
+      (should config)
+      (let* ((emacs-tools (alist-get 'emacs-tools (alist-get 'mcpServers config)))
+             (url (alist-get 'url emacs-tools)))
+        (should (equal url "http://localhost:12345/mcp/my-session-123"))))))
+
 (provide 'claude-code-ide-tests)
 
 ;;; claude-code-ide-tests.el ends here

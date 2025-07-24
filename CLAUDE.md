@@ -40,10 +40,10 @@ M-x claude-code-ide-show-debug
 
 ```bash
 # Format all Elisp files - RUN THIS AFTER EVERY CHANGE
-emacs -batch -L . --eval "(progn (require 'transient nil t) (setq indent-tabs-mode nil) (dolist (file (directory-files \".\" t \"\\\\.el$\")) (find-file file) (setq indent-tabs-mode nil) (indent-region (point-min) (point-max)) (save-buffer) (kill-buffer)))"
+emacs -batch -L . --eval "(progn (require 'transient nil t) (require 'claude-code-ide-mcp-server nil t) (dolist (file (directory-files \".\" t \"\\\\.el$\")) (find-file file) (emacs-lisp-mode) (setq-local indent-tabs-mode nil) (setq-local lisp-indent-function 'lisp-indent-function) (indent-region (point-min) (point-max)) (save-buffer) (kill-buffer)))"
 
 # Alternative: Format a specific file
-emacs -batch -L . --eval "(progn (require 'transient nil t) (find-file \"claude-code-ide.el\") (setq indent-tabs-mode nil) (indent-region (point-min) (point-max)) (save-buffer))"
+emacs -batch -L . --eval "(progn (require 'transient nil t) (require 'claude-code-ide-mcp-server nil t) (find-file \"claude-code-ide.el\") (emacs-lisp-mode) (setq-local indent-tabs-mode nil) (setq-local lisp-indent-function 'lisp-indent-function) (indent-region (point-min) (point-max)) (save-buffer))"
 
 # Remove trailing whitespaces from all Elisp files
 emacs -batch --eval "(progn (dolist (file (directory-files \".\" t \"\\\\.el$\")) (find-file file) (delete-trailing-whitespace) (save-buffer) (kill-buffer)))"

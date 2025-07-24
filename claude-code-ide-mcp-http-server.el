@@ -27,13 +27,19 @@
 ;; This module implements the HTTP server for the MCP tools server.
 ;; It uses the web-server package to handle HTTP requests and implements
 ;; the MCP Streamable HTTP transport protocol.
+;;
+;; Session IDs are passed via URL paths (e.g., /mcp/session-id) to enable
+;; context-aware operations for multiple concurrent Claude sessions.
 
 ;;; Code:
 
 (require 'json)
 (require 'cl-lib)
+(require 'url-parse)
 (require 'claude-code-ide-debug)
 (require 'claude-code-ide-mcp-server)
+
+(defvar claude-code-ide-mcp-server--current-session-id)
 
 ;; Require web-server at runtime to avoid batch mode issues
 (unless (featurep 'web-server)
@@ -50,8 +56,20 @@
 (defvar claude-code-ide-mcp-http-server--server nil
   "The web-server instance.")
 
-(defvar claude-code-ide-mcp-http-server--session-id nil
-  "The current MCP session ID.")
+
+;;; Helper Functions
+
+(defun claude-code-ide-mcp-http-server--extract-session-id-from-path (headers)
+  "Extract session ID from URL path in HEADERS.
+The web-server package stores the URL path in headers with the
+HTTP method as the key (e.g., :POST -> \"/mcp/session-id\").
+Returns the session ID or nil if not found."
+  (let* ((url (or (cdr (assoc :POST headers))
+                  (cdr (assoc :GET headers))))
+         (_ (when url (claude-code-ide-debug "MCP request URL: %s" url))))
+    ;; Match /mcp/session-id pattern
+    (when (and url (string-match "^/mcp/\\([^/?]+\\)" url))
+      (match-string 1 url))))
 
 ;;; Public Functions
 
@@ -65,8 +83,8 @@ Returns a cons cell of (server . port)."
   (condition-case err
       (let* ((selected-port (or port 0))  ; 0 means auto-select
              (server (ws-start
-                      `(((:GET . "/mcp") . ,#'claude-code-ide-mcp-http-server--handle-get)
-                        ((:POST . "/mcp") . ,#'claude-code-ide-mcp-http-server--handle-post))
+                      `(((:GET . "^/mcp\\(/.*\\)?$") . ,#'claude-code-ide-mcp-http-server--handle-get)
+                        ((:POST . "^/mcp\\(/.*\\)?$") . ,#'claude-code-ide-mcp-http-server--handle-post))
                       selected-port
                       nil  ; log buffer
                       :host "127.0.0.1")))  ; local only
@@ -90,8 +108,7 @@ Returns a cons cell of (server . port)."
   "Stop the MCP HTTP server SERVER."
   (when server
     (ws-stop server)
-    (setq claude-code-ide-mcp-http-server--server nil
-          claude-code-ide-mcp-http-server--session-id nil)))
+    (setq claude-code-ide-mcp-http-server--server nil)))
 
 ;;; Request Handlers
 
@@ -103,27 +120,22 @@ Returns a cons cell of (server . port)."
     (ws-send-404 process)))
 
 (defun claude-code-ide-mcp-http-server--handle-post (request)
-  "Handle POST request to /mcp endpoint."
+  "Handle POST request to /mcp/* endpoints.
+Extracts session ID from the URL path and processes the request
+with the appropriate session context."
   (claude-code-ide-debug "MCP server received POST request")
   (condition-case err
       (let* ((headers (ws-headers request))
              (body (ws-body request))
-             (session-id (cdr (assoc "Mcp-Session-Id" headers)))
+             ;; Extract session ID from URL path
+             (url-session-id (claude-code-ide-mcp-http-server--extract-session-id-from-path headers))
              (json-object (json-parse-string body :object-type 'alist))
              (method (alist-get 'method json-object))
              (params (alist-get 'params json-object))
              (id (alist-get 'id json-object)))
 
         (claude-code-ide-debug "MCP request - method: %s, id: %s, session-id: %s"
-                               method id session-id)
-
-        ;; Check session ID if we have one
-        (when (and claude-code-ide-mcp-http-server--session-id
-                   session-id
-                   (not (string= session-id claude-code-ide-mcp-http-server--session-id)))
-          (claude-code-ide-debug "Session ID mismatch: expected %s, got %s"
-                                 claude-code-ide-mcp-http-server--session-id
-                                 session-id))
+                               method id url-session-id)
 
         ;; Check if this is a notification (no id field)
         (if (null id)
@@ -132,17 +144,16 @@ Returns a cons cell of (server . port)."
               (claude-code-ide-debug "Received notification: %s" method)
               ;; Still close the connection for HTTP transport
               (claude-code-ide-mcp-http-server--send-empty-response request))
-          ;; Process the request
-          (let ((result (claude-code-ide-mcp-http-server--dispatch method params)))
+          ;; Process the request with session context
+          (let* ((claude-code-ide-mcp-server--current-session-id url-session-id)
+                 (result (claude-code-ide-mcp-http-server--dispatch method params)))
             (claude-code-ide-debug "MCP response result computed")
             ;; Send response
             (claude-code-ide-mcp-http-server--send-json-response
              request 200
              `((jsonrpc . "2.0")
                (id . ,id)
-               (result . ,result))
-             (when (string= method "initialize")
-               claude-code-ide-mcp-http-server--session-id))
+               (result . ,result)))
             (claude-code-ide-debug "MCP response sent"))))
 
     (json-parse-error
@@ -178,11 +189,6 @@ PARAMS is the parameters alist."
 
 (defun claude-code-ide-mcp-http-server--handle-initialize (_params)
   "Handle the initialize method."
-  ;; Generate a session ID if we don't have one
-  (unless claude-code-ide-mcp-http-server--session-id
-    (setq claude-code-ide-mcp-http-server--session-id
-          (format "emacs-mcp-%s" (format-time-string "%Y%m%d%H%M%S"))))
-
   `((protocolVersion . "2024-11-05")
     (capabilities . ((tools . ((listChanged . :json-false)))
                      (logging . ,(make-hash-table :test 'equal))))
@@ -286,14 +292,11 @@ Returns a list of arguments in the correct order."
                result "\n"))
    (t (format "%s" result))))
 
-(defun claude-code-ide-mcp-http-server--send-json-response (request status body &optional session-id)
-  "Send JSON response to REQUEST with STATUS and BODY.
-If SESSION-ID is provided, include it in the Mcp-Session-Id header."
+(defun claude-code-ide-mcp-http-server--send-json-response (request status body)
+  "Send JSON response to REQUEST with STATUS and BODY."
   (with-slots (process) request
     (let ((headers (list (cons "Content-Type" "application/json")
                          (cons "Access-Control-Allow-Origin" "*"))))
-      (when session-id
-        (setq headers (append headers (list (cons "Mcp-Session-Id" session-id)))))
       (apply #'ws-response-header process status headers)
       (ws-send process (json-encode body))
       ;; Close the connection after sending response

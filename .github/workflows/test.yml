@@ -32,7 +32,7 @@ jobs:
           # Format all elisp files and check if anything changed
           for file in *.el; do
             cp "$file" "$file.orig"
-            emacs -batch -L . --eval "(progn (require 'transient nil t) (find-file \"$file\") (setq indent-tabs-mode nil) (indent-region (point-min) (point-max)) (save-buffer))"
+            emacs -batch -L . --eval "(progn (require 'transient nil t) (require 'claude-code-ide-mcp-server nil t) (find-file \"$file\") (emacs-lisp-mode) (setq-local indent-tabs-mode nil) (setq-local lisp-indent-function 'lisp-indent-function) (indent-region (point-min) (point-max)) (save-buffer))"
             if ! diff -q "$file.orig" "$file" > /dev/null; then
               echo "Error: $file is not properly formatted"
               echo "Differences:"
