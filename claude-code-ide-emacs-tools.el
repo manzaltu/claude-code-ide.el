@@ -226,6 +226,17 @@ Returns a list of symbols with their types and positions."
                          :description "Path to the file to analyze for symbols"))))
   "Emacs MCP tools configuration.")
 
+;;; Helper Functions
+
+(defun claude-code-ide-emacs-tools-get-all-names ()
+  "Get a list of all Emacs MCP tool names in the format expected by --allowedTools."
+  (mapcar (lambda (tool-spec)
+            (let* ((func-symbol (car tool-spec))
+                   (func-name (symbol-name func-symbol)))
+              ;; Convert function name to MCP tool name format
+              (concat "mcp__emacs-tools__" func-name)))
+          claude-code-ide-emacs-tools))
+
 ;;; Setup Function
 
 (defun claude-code-ide-emacs-tools-setup ()

@@ -106,6 +106,19 @@ This should be a string of space-separated flags, e.g. \"--model opus\"."
   :type 'string
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-mcp-allowed-tools 'auto
+  "Configuration for allowed MCP tools when MCP server is enabled.
+Can be one of:
+  'auto - Automatically allow all configured emacs-tools (default)
+  nil - Disable the --allowedTools flag
+  A string - Custom pattern/tools passed directly to --allowedTools
+  A list of strings - List of specific tool names to allow"
+  :type '(choice (const :tag "Auto (all emacs-tools)" auto)
+                 (const :tag "Disabled" nil)
+                 (string :tag "Custom pattern")
+                 (repeat :tag "Specific tools" string))
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-window-side 'right
   "Side of the frame where the Claude Code window should appear.
 Can be `'left', `'right', `'top', or `'bottom'."
@@ -344,8 +357,23 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
           ;; First escape backslashes, then quotes
           (setq json-str (replace-regexp-in-string "\\\\" "\\\\\\\\" json-str))
           (setq json-str (replace-regexp-in-string "\"" "\\\\\"" json-str))
-          (setq claude-cmd (concat claude-cmd " --mcp-config \"" json-str "\"")))))
-    claude-cmd))
+          (setq claude-cmd (concat claude-cmd " --mcp-config \"" json-str "\""))
+          ;; Add allowedTools flag if configured
+          (let ((allowed-tools
+                 (cond
+                  ;; Auto mode: get all emacs-tools names
+                  ((eq claude-code-ide-mcp-allowed-tools 'auto)
+                   ;; Try to load emacs-tools if available
+                   (require 'claude-code-ide-emacs-tools nil t)
+                   (mapconcat 'identity (claude-code-ide-emacs-tools-get-all-names) " "))
+                  ;; List of specific tools
+                  ((listp claude-code-ide-mcp-allowed-tools)
+                   (mapconcat 'identity claude-code-ide-mcp-allowed-tools " "))
+                  ;; String pattern or nil
+                  (t claude-code-ide-mcp-allowed-tools))))
+            (when allowed-tools
+              (setq claude-cmd (concat claude-cmd " --allowedTools " allowed-tools)))))))
+  claude-cmd))
 
 
 (defun claude-code-ide--create-vterm-session (buffer-name working-dir port resume session-id)
