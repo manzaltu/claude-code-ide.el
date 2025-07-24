@@ -130,7 +130,13 @@ Returns a cons cell (buffer-A . buffer-B)."
       ;; Set the mode based on the file extension
       (let ((mode (assoc-default old-file-path auto-mode-alist 'string-match)))
         (when mode
-          (funcall mode))))
+          (condition-case err
+              (funcall mode)
+            (error
+             ;; If mode activation fails (e.g., syntax errors), use fundamental-mode
+             (claude-code-ide-debug "Failed to activate %s for diff buffer: %s. Using fundamental-mode."
+                                    mode (error-message-string err))
+             (fundamental-mode))))))
 
     (cons buffer-A buffer-B)))
 
