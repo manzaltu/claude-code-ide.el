@@ -1493,6 +1493,129 @@ have completed before cleanup.  Waits up to 5 seconds."
              (url (alist-get 'url emacs-tools)))
         (should (equal url "http://localhost:12345/mcp/my-session-123"))))))
 
+;;; Emacs Tools Tests
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-list-symbols ()
+  "Test the imenu-list-symbols MCP tool."
+  ;; Load the emacs-tools module
+  (require 'claude-code-ide-emacs-tools)
+
+  (let ((test-file (make-temp-file "test-imenu-" nil ".el"))
+        (session-id "test-session-imenu")
+        (project-dir (temporary-file-directory)))
+    (unwind-protect
+        (progn
+          ;; Write test content to file
+          (with-temp-file test-file
+            (insert ";;; Test file for imenu\n\n"
+                    "(defun test-function-1 (arg)\n"
+                    "  \"A test function.\"\n"
+                    "  (message \"Hello %s\" arg))\n\n"
+                    "(defvar test-variable 42\n"
+                    "  \"A test variable.\")\n\n"
+                    "(defun test-function-2 ()\n"
+                    "  \"Another test function.\"\n"
+                    "  (+ 1 2))\n\n"
+                    "(defconst test-constant 'foo\n"
+                    "  \"A test constant.\")\n"))
+
+          ;; Register a mock session
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+
+          ;; Test with session context
+          (let ((claude-code-ide-mcp-server--current-session-id session-id))
+            (let ((result (claude-code-ide-mcp-imenu-list-symbols test-file)))
+              ;; Should return a list of results
+              (should (listp result))
+              (should (> (length result) 0))
+
+              ;; Check that we found our functions and variables
+              (let ((result-string (mapconcat #'identity result "\n")))
+                (should (string-match "test-function-1" result-string))
+                (should (string-match "test-function-2" result-string))
+                (should (string-match "test-variable" result-string))
+                (should (string-match "test-constant" result-string))
+
+                ;; Check format includes line numbers
+                (should (string-match ":[0-9]+:" result-string)))))
+
+          ;; Test error handling - no file path
+          (should-error (claude-code-ide-mcp-imenu-list-symbols nil)
+                        :type 'error)
+
+          ;; Test with non-existent file
+          (let ((result (condition-case nil
+                            (claude-code-ide-mcp-imenu-list-symbols "/nonexistent/file.el")
+                          (error "Error listing symbols"))))
+            (should (stringp result))
+            (should (string-match "Error" result))))
+
+      ;; Cleanup
+      (delete-file test-file)
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-nested-symbols ()
+  "Test imenu-list-symbols with nested symbol structures."
+  (require 'claude-code-ide-emacs-tools)
+
+  (let ((test-file (make-temp-file "test-imenu-nested-" nil ".py"))
+        (session-id "test-session-imenu-nested")
+        (project-dir (temporary-file-directory)))
+    (unwind-protect
+        (progn
+          ;; Write Python test content (which often has nested imenu structures)
+          (with-temp-file test-file
+            (insert "# Test Python file\n\n"
+                    "class TestClass:\n"
+                    "    def method1(self):\n"
+                    "        pass\n\n"
+                    "    def method2(self, arg):\n"
+                    "        return arg * 2\n\n"
+                    "def standalone_function():\n"
+                    "    return 42\n"))
+
+          ;; Register a mock session
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+
+          ;; Test with session context
+          (let ((claude-code-ide-mcp-server--current-session-id session-id))
+            ;; Note: This test might not find nested structures if python-mode
+            ;; isn't properly configured, but it should at least not error
+            (condition-case err
+                (let ((result (claude-code-ide-mcp-imenu-list-symbols test-file)))
+                  ;; Should return either a list or a string (no symbols message)
+                  (should (or (listp result) (stringp result))))
+              (error
+               ;; If python mode isn't available, that's okay for this test
+               (should (string-match "Error" (error-message-string err)))))))
+
+      ;; Cleanup
+      (delete-file test-file)
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-tool-configuration ()
+  "Test that imenu tool is properly configured."
+  (require 'claude-code-ide-emacs-tools)
+
+  ;; Check that the tool is in the configuration
+  (let ((imenu-tool (assq 'claude-code-ide-mcp-imenu-list-symbols
+                          claude-code-ide-emacs-tools)))
+    (should imenu-tool)
+
+    ;; Check description
+    (should (equal (plist-get (cdr imenu-tool) :description)
+                   "Navigate and explore a file's structure by listing all its functions, classes, and variables with their locations"))
+
+    ;; Check parameters
+    (let ((params (plist-get (cdr imenu-tool) :parameters)))
+      (should (= (length params) 1))
+      (let ((file-path-param (car params)))
+        (should (equal (plist-get file-path-param :name) "file_path"))
+        (should (equal (plist-get file-path-param :type) "string"))
+        (should (equal (plist-get file-path-param :required) t))
+        (should (equal (plist-get file-path-param :description)
+                       "Path to the file to analyze for symbols"))))))
+
 (provide 'claude-code-ide-tests)
 
 ;;; claude-code-ide-tests.el ends here

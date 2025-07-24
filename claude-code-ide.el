@@ -39,6 +39,7 @@
 ;; - Clean session management with automatic cleanup on exit
 ;; - Selection and buffer state tracking
 ;; - Tool support for file operations, diagnostics, and more
+;; - Emacs MCP tools for xref and project navigation
 ;;
 ;; Usage:
 ;; M-x claude-code-ide - Start Claude Code for current project
@@ -48,6 +49,10 @@
 ;; M-x claude-code-ide-list-sessions - List and switch between all sessions
 ;; M-x claude-code-ide-check-status - Check CLI availability and version
 ;; M-x claude-code-ide-insert-at-mentioned - Send selected text to Claude
+;;
+;; Emacs MCP Tools:
+;; To enable Emacs tools for Claude, add to your config:
+;;   (claude-code-ide-emacs-tools-setup)
 
 ;;; Code:
 
@@ -58,6 +63,7 @@
 (require 'claude-code-ide-debug)
 (require 'claude-code-ide-transient)
 (require 'claude-code-ide-mcp-server)
+(require 'claude-code-ide-emacs-tools)
 
 (declare-function claude-code-ide-mcp-stop-session "claude-code-ide-mcp" (project-dir))
 (declare-function claude-code-ide-mcp--get-session-for-project "claude-code-ide-mcp" (project-dir))
