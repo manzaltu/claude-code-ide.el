@@ -3,6 +3,9 @@
 ;; Copyright (C) 2025
 
 ;; Author: Yoav Orot
+;; Version: 0.2.0
+;; Package-Requires: ((emacs "28.1") (transient "0.9.0"))
+;; Keywords: ai, claude, transient, menu
 
 ;; This file is not part of GNU Emacs.
 
