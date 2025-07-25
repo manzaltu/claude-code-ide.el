@@ -707,8 +707,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                                                      (should selection)
                                                      (let ((start (alist-get 'start selection))
                                                            (end (alist-get 'end selection)))
-                                                       (should (= (alist-get 'line start) 0))  ; 0-based
-                                                       (should (= (alist-get 'line end) 2)))))))  ; 0-based
+                                                       (should (= (alist-get 'line start) 1))  ; 1-based
+                                                       (should (= (alist-get 'line end) 3)))))))  ; 1-based
 
   ;; Test without selection
   (claude-code-ide-mcp-tests--with-temp-buffer "Test"
