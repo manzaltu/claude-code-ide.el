@@ -189,6 +189,144 @@ Returns a list of symbols with their types and positions."
          (format "Error listing symbols in %s: %s"
                  file-path (error-message-string err)))))))
 
+(defun claude-code-ide-mcp-treesit--format-tree (node level max-depth)
+  "Format NODE and its children as a tree string.
+LEVEL is the current indentation level.
+MAX-DEPTH is the maximum depth to traverse."
+  (if (or (not node) (>= level max-depth))
+      ""
+    (let* ((indent (make-string (* level 2) ?\s))
+           (type (treesit-node-type node))
+           (named (if (treesit-node-check node 'named) " (named)" ""))
+           (start (treesit-node-start node))
+           (end (treesit-node-end node))
+           (field-name (treesit-node-field-name node))
+           (field-str (if field-name (format " [%s]" field-name) ""))
+           (text (treesit-node-text node t))
+           (text-preview (if (and (< (length text) 40)
+                                  (not (string-match-p "\n" text)))
+                             (format " \"%s\"" text)
+                           ""))
+           (result (format "%s%s%s%s (%d-%d)%s\n"
+                           indent type named field-str
+                           start end text-preview))
+           (child-count (treesit-node-child-count node)))
+      ;; Add children
+      (dotimes (i child-count)
+        (when-let ((child (treesit-node-child node i)))
+          (setq result (concat result
+                               (claude-code-ide-mcp-treesit--format-tree
+                                child (1+ level) max-depth)))))
+      result)))
+
+(defun claude-code-ide-mcp-treesit-info (file-path &optional position include-ancestors include-children)
+  "Get tree-sitter parse tree information for FILE-PATH.
+POSITION can be:
+  - A number: get info for node at that specific position
+  - The symbol `whole-file' or string \"whole-file\": show the entire file's syntax tree
+  - Omitted/not provided: defaults to current cursor position (point)
+If INCLUDE-ANCESTORS is non-nil, include parent node hierarchy.
+If INCLUDE-CHILDREN is non-nil, include child nodes."
+  (if (not file-path)
+      (error "file_path parameter is required")
+    (claude-code-ide-mcp-server-with-session-context nil
+      (condition-case err
+          (if (not (treesit-available-p))
+              "Tree-sitter is not available in this Emacs build"
+            (let ((target-buffer (or (find-buffer-visiting file-path)
+                                     (find-file-noselect file-path))))
+              (with-current-buffer target-buffer
+                (let* ((parsers (treesit-parser-list))
+                       (parser (car parsers)))
+                  (if (not parser)
+                      (format "No tree-sitter parser available for %s" file-path)
+                    (let* ((root-node (treesit-parser-root-node parser))
+                           ;; Handle position parameter which may come as string from MCP
+                           (position-value (cond ((stringp position)
+                                                  (if (equal position "whole-file")
+                                                      'whole-file
+                                                    (string-to-number position)))
+                                                 (t position)))
+                           (show-whole-file (or (eq position-value 'whole-file)
+                                                (equal position "whole-file")))
+                           (pos (cond (show-whole-file nil)
+                                      ((numberp position-value) position-value)
+                                      ;; Use current point in the target buffer
+                                      (t (point))))
+                           (node (if show-whole-file
+                                     root-node
+                                   (treesit-node-at pos parser)))
+                           (results '()))
+                      (if (not node)
+                          "No tree-sitter node found"
+                        ;; For full tree, use a different display function
+                        (if show-whole-file
+                            (claude-code-ide-mcp-treesit--format-tree root-node 0 20)
+                          ;; Basic node information for specific position
+                          (push (format "Node Type: %s" (treesit-node-type node)) results)
+                          (push (format "Range: %d-%d"
+                                        (treesit-node-start node)
+                                        (treesit-node-end node)) results)
+                          (push (format "Text: %s"
+                                        (truncate-string-to-width
+                                         (treesit-node-text node t)
+                                         80 nil nil "...")) results)
+
+                          ;; Check if node is named
+                          (when (treesit-node-check node 'named)
+                            (push "Named: yes" results))
+
+                          ;; Field name if available
+                          (let ((field-name (treesit-node-field-name node)))
+                            (when field-name
+                              (push (format "Field: %s" field-name) results)))
+
+                          ;; Include ancestors if requested
+                          (when include-ancestors
+                            (push "\nAncestors:" results)
+                            (let ((parent (treesit-node-parent node))
+                                  (level 1))
+                              (while (and parent (< level 10))
+                                (push (format "  %s[%d] %s (%d-%d)"
+                                              (make-string level ?-)
+                                              level
+                                              (treesit-node-type parent)
+                                              (treesit-node-start parent)
+                                              (treesit-node-end parent))
+                                      results)
+                                (setq parent (treesit-node-parent parent))
+                                (cl-incf level))))
+
+                          ;; Include children if requested
+                          (when include-children
+                            (push "\nChildren:" results)
+                            (let ((child-count (treesit-node-child-count node))
+                                  (i 0))
+                              (if (= child-count 0)
+                                  (push "  (no children)" results)
+                                (while (< i (min child-count 20))
+                                  (let ((child (treesit-node-child node i)))
+                                    (when child
+                                      (push (format "  [%d] %s%s (%d-%d)"
+                                                    i
+                                                    (treesit-node-type child)
+                                                    (if (treesit-node-check child 'named)
+                                                        " (named)" "")
+                                                    (treesit-node-start child)
+                                                    (treesit-node-end child))
+                                            results)))
+                                  (cl-incf i))
+                                (when (> child-count 20)
+                                  (push (format "  ... and %d more children"
+                                                (- child-count 20))
+                                        results)))))
+
+                          ;; Return formatted results
+                          (string-join (nreverse results) "\n")))))))))
+        (error
+         (format "Error getting tree-sitter info for %s: %s"
+                 file-path (error-message-string err)))))))
+
 ;;; Tool Configuration
 
 (defvar claude-code-ide-emacs-tools
@@ -223,7 +361,26 @@ Returns a list of symbols with their types and positions."
      :parameters ((:name "file_path"
                          :type "string"
                          :required t
-                         :description "Path to the file to analyze for symbols"))))
+                         :description "Path to the file to analyze for symbols")))
+
+    (claude-code-ide-mcp-treesit-info
+     :description "Get tree-sitter syntax tree information for a file, including node types, ranges, and hierarchical structure. Useful for understanding code structure and AST analysis"
+     :parameters ((:name "file_path"
+                         :type "string"
+                         :required t
+                         :description "Path to the file to analyze")
+                  (:name "position"
+                         :type "string"
+                         :required nil
+                         :description "Position in file: number for specific position, \"whole-file\" for entire tree, or omit to use cursor position")
+                  (:name "include_ancestors"
+                         :type "boolean"
+                         :required nil
+                         :description "Include parent node hierarchy")
+                  (:name "include_children"
+                         :type "boolean"
+                         :required nil
+                         :description "Include child nodes"))))
   "Emacs MCP tools configuration.")
 
 ;;; Helper Functions

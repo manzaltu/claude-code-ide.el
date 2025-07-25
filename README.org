@@ -19,7 +19,7 @@ Claude Code IDE for Emacs provides native integration with Claude Code CLI throu
 - Terminal integration with full color support using =vterm=
 - MCP protocol implementation for IDE integration
 - Tool support for file operations, editor state, and workspace info
-- Extensible MCP tools server for accessing Emacs commands (xrefs and project info)
+- Extensible MCP tools server for accessing Emacs commands (xrefs, tree-sitter, project info, e.g.)
 - Diagnostic integration with Flycheck
 - Advanced diff view with ediff integration
 - Tab-bar support for proper context switching
@@ -30,6 +30,7 @@ Claude Code IDE for Emacs provides native integration with Claude Code CLI throu
 This package enables Claude Code to leverage the full power of Emacs through MCP tools integration. Claude can directly access and utilize Emacs capabilities including:
 
 - *Language Server Protocol (LSP)* integration through xref commands for intelligent code navigation (eglot, lsp-mode and others)
+- *Tree-sitter* for syntax tree analysis and understanding code structure at the AST level
 - *Imenu* for structured symbol listing and navigation within files
 - *Project* integration for project-aware operations
 - *Any Emacs command or function* can be exposed as an MCP tool, allowing Claude to:
@@ -241,6 +242,7 @@ Claude Code IDE includes built-in MCP tools that expose Emacs functionality to C
 
 - =xref-find-references= - Find all references to a symbol throughout the project
 - =xref-find-apropos= - Find symbols matching a pattern across the entire project
+- =treesit-info= - Get tree-sitter syntax tree information for deep code structure analysis
 - =imenu-list-symbols= - List all symbols (functions, classes, variables) in a file using imenu
 - =project-info= - Get information about the current project (directory, files, etc.)
 
@@ -256,6 +258,8 @@ To enable these tools, add to your configuration:
 Once enabled, Claude can use these tools to navigate your codebase. For example:
 - "Find the definition of function foo"
 - "Show me all places where this variable is used"
+- "What type of AST node is under the cursor?"
+- "Analyze the parse tree of this entire file"
 - "List all functions and variables in this file"
 - "How many files are in this project?"
 
