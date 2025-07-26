@@ -43,6 +43,7 @@
 ;;
 ;; Usage:
 ;; M-x claude-code-ide - Start Claude Code for current project
+;; M-x claude-code-ide-continue - Continue most recent conversation in directory
 ;; M-x claude-code-ide-resume - Resume Claude Code with previous conversation
 ;; M-x claude-code-ide-stop - Stop Claude Code for current project
 ;; M-x claude-code-ide-switch-to-buffer - Switch to project's Claude buffer
@@ -328,8 +329,9 @@ If the window is not visible, it will be shown in a side window."
             (setf (claude-code-ide-mcp-session-original-tab session) (tab-bar--current-tab))))
         (claude-code-ide-debug "Claude Code window shown")))))
 
-(defun claude-code-ide--build-claude-command (&optional resume session-id)
+(defun claude-code-ide--build-claude-command (&optional continue resume session-id)
   "Build the Claude command with optional flags.
+If CONTINUE is non-nil, add the -c flag.
 If RESUME is non-nil, add the -r flag.
 If SESSION-ID is provided, it's included in the MCP server URL path.
 If `claude-code-ide-cli-debug' is non-nil, add the -d flag.
@@ -341,6 +343,9 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
     ;; Add resume flag if requested
     (when resume
       (setq claude-cmd (concat claude-cmd " -r")))
+    ;; Add continue flag if requested
+    (when continue
+      (setq claude-cmd (concat claude-cmd " -c")))
     ;; Add any extra flags
     (when (and claude-code-ide-cli-extra-flags
                (not (string-empty-p claude-code-ide-cli-extra-flags)))
@@ -373,17 +378,18 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
     claude-cmd))
 
 
-(defun claude-code-ide--create-vterm-session (buffer-name working-dir port resume session-id)
+(defun claude-code-ide--create-vterm-session (buffer-name working-dir port continue resume session-id)
   "Create a new vterm session for Claude Code.
 BUFFER-NAME is the name for the vterm buffer.
 WORKING-DIR is the working directory.
 PORT is the MCP server port.
+CONTINUE is whether to continue the most recent conversation.
 RESUME is whether to resume a previous conversation.
 SESSION-ID is the unique identifier for this session.
 
 Returns a cons cell of (buffer . process) on success.
 Signals an error if vterm fails to initialize."
-  (let* ((claude-cmd (claude-code-ide--build-claude-command resume session-id))
+  (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
          (vterm-buffer-name buffer-name)
          (default-directory working-dir)
          ;; Set vterm-shell to run Claude directly
@@ -415,8 +421,9 @@ Signals an error if vterm fails to initialize."
           (error "Vterm buffer was killed during initialization"))
         (cons buffer process)))))
 
-(defun claude-code-ide--start-session (&optional resume)
+(defun claude-code-ide--start-session (&optional continue resume)
   "Start a Claude Code session for the current project.
+If CONTINUE is non-nil, start Claude with the -c (continue) flag.
 If RESUME is non-nil, start Claude with the -r (resume) flag.
 
 This function handles:
@@ -454,7 +461,7 @@ This function handles:
                                 (format-time-string "%Y%m%d-%H%M%S"))))
         ;; Create new vterm session first
         (let* ((buffer-and-process (claude-code-ide--create-vterm-session
-                                    buffer-name working-dir port resume session-id))
+                                    buffer-name working-dir port continue resume session-id))
                (buffer (car buffer-and-process))
                (process (cdr buffer-and-process)))
           ;; Notify MCP tools server about new session with session info
@@ -492,7 +499,9 @@ This function handles:
           ;; Display the buffer in a side window
           (claude-code-ide--display-buffer-in-side-window buffer)
           (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"
-                               (if resume "resumed and " "")
+                               (cond (continue "continued and ")
+                                     (resume "resumed and ")
+                                     (t ""))
                                (file-name-nondirectory (directory-file-name working-dir))
                                port
                                (if claude-code-ide-cli-debug " (debug mode enabled)" "")))))))
@@ -508,6 +517,14 @@ This function handles:
   "Resume Claude Code in a terminal for the current project or directory.
 This starts Claude with the -r (resume) flag to continue the previous
 conversation."
+  (interactive)
+  (claude-code-ide--start-session nil t))
+
+;;;###autoload
+(defun claude-code-ide-continue ()
+  "Continue the most recent Claude Code conversation in the current directory.
+This starts Claude with the -c (continue) flag to continue the most recent
+conversation in the current directory."
   (interactive)
   (claude-code-ide--start-session t))
 

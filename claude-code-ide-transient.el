@@ -34,6 +34,7 @@
 ;; Declare functions from other files to avoid circular dependencies
 (declare-function claude-code-ide "claude-code-ide" ())
 (declare-function claude-code-ide-resume "claude-code-ide" ())
+(declare-function claude-code-ide-continue "claude-code-ide" ())
 (declare-function claude-code-ide-stop "claude-code-ide" ())
 (declare-function claude-code-ide-list-sessions "claude-code-ide" ())
 (declare-function claude-code-ide-switch-to-buffer "claude-code-ide" ())
@@ -80,13 +81,6 @@
                   'face 'transient-inactive-value)
     "Start new Claude Code session"))
 
-(defun claude-code-ide--resume-description ()
-  "Dynamic description for resume command based on session status."
-  (if (claude-code-ide--has-active-session-p)
-      (propertize "Resume session (session already running)"
-                  'face 'transient-inactive-value)
-    "Resume session (from previous conversation)"))
-
 (defun claude-code-ide--start-if-no-session ()
   "Start Claude Code only if no session is active for current buffer."
   (interactive)
@@ -95,6 +89,29 @@
         (claude-code-ide-log "Claude Code session already running in %s"
                              (abbreviate-file-name working-dir)))
     (claude-code-ide)))
+
+(defun claude-code-ide--continue-description ()
+  "Dynamic description for continue command based on session status."
+  (if (claude-code-ide--has-active-session-p)
+      (propertize "Continue most recent conversation (session already running)"
+                  'face 'transient-inactive-value)
+    "Continue most recent conversation"))
+
+(defun claude-code-ide--continue-if-no-session ()
+  "Continue Claude Code only if no session is active for current buffer."
+  (interactive)
+  (if (claude-code-ide--has-active-session-p)
+      (let ((working-dir (claude-code-ide--get-working-directory)))
+        (claude-code-ide-log "Claude Code session already running in %s"
+                             (abbreviate-file-name working-dir)))
+    (claude-code-ide-continue)))
+
+(defun claude-code-ide--resume-description ()
+  "Dynamic description for resume command based on session status."
+  (if (claude-code-ide--has-active-session-p)
+      (propertize "Resume session (session already running)"
+                  'face 'transient-inactive-value)
+    "Resume session (from previous conversation)"))
 
 (defun claude-code-ide--resume-if-no-session ()
   "Resume Claude Code only if no session is active for current buffer."
@@ -266,6 +283,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
   ["Claude Code IDE"
    ["Session Management"
     ("s" claude-code-ide--start-description claude-code-ide--start-if-no-session)
+    ("c" claude-code-ide--continue-description claude-code-ide--continue-if-no-session)
     ("r" claude-code-ide--resume-description claude-code-ide--resume-if-no-session)
     ("q" "Stop current session" claude-code-ide-stop)
     ("l" "List all sessions" claude-code-ide-list-sessions)]
@@ -277,7 +295,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("e" "Send escape key" claude-code-ide-send-escape)
     ("n" "Insert newline" claude-code-ide-insert-newline)]
    ["Submenus"
-    ("c" "Configuration" claude-code-ide-config-menu)
+    ("C" "Configuration" claude-code-ide-config-menu)
     ("d" "Debugging" claude-code-ide-debug-menu)]])
 
 (transient-define-prefix claude-code-ide-config-menu ()

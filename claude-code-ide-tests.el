@@ -569,7 +569,8 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test debug mode CLI flag."
   (let ((claude-code-ide-cli-debug t))
     (should (string-match "-d" (claude-code-ide--build-claude-command)))
-    (should (string-match "-d.*-r" (claude-code-ide--build-claude-command t)))))
+    (should (string-match "-d.*-c" (claude-code-ide--build-claude-command t)))
+    (should (string-match "-d.*-r" (claude-code-ide--build-claude-command nil t)))))
 
 (ert-deftest claude-code-ide-test-error-handling ()
   "Test error handling in various scenarios."
