@@ -572,6 +572,33 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (string-match "-d.*-c" (claude-code-ide--build-claude-command t)))
     (should (string-match "-d.*-r" (claude-code-ide--build-claude-command nil t)))))
 
+(ert-deftest claude-code-ide-test-build-command-with-system-prompt ()
+  "Test building command with append-system-prompt flag."
+  (let ((claude-code-ide-cli-path "claude")
+        (claude-code-ide-system-prompt "You are a helpful assistant")
+        (claude-code-ide-cli-debug nil)
+        (claude-code-ide-cli-extra-flags ""))
+    (let ((cmd (claude-code-ide--build-claude-command)))
+      (should (string-match-p "--append-system-prompt" cmd))
+      ;; shell-quote-argument may escape spaces differently on different systems
+      (should (or (string-match-p "You are a helpful assistant" cmd)
+                  (string-match-p "You\\\\ are\\\\ a\\\\ helpful\\\\ assistant" cmd)))))
+  ;; Test with nil value (should not add the flag)
+  (let ((claude-code-ide-cli-path "claude")
+        (claude-code-ide-system-prompt nil)
+        (claude-code-ide-cli-debug nil)
+        (claude-code-ide-cli-extra-flags ""))
+    (should-not (string-match-p "--append-system-prompt" (claude-code-ide--build-claude-command))))
+  ;; Test with special characters that need quoting
+  (let ((claude-code-ide-cli-path "claude")
+        (claude-code-ide-system-prompt "You're a \"helpful\" assistant!")
+        (claude-code-ide-cli-debug nil)
+        (claude-code-ide-cli-extra-flags ""))
+    (let ((cmd (claude-code-ide--build-claude-command)))
+      (should (string-match-p "--append-system-prompt" cmd))
+      ;; The command should contain the escaped version (shell-quote-argument escapes quotes and apostrophes)
+      (should (string-match-p "You\\\\'re\\\\ a\\\\ \\\\\"helpful\\\\\"\\\\ assistant\\\\!" cmd)))))
+
 (ert-deftest claude-code-ide-test-error-handling ()
   "Test error handling in various scenarios."
   ;; Test with nil CLI path

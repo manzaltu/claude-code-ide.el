@@ -145,6 +145,7 @@ You can run multiple Claude Code instances simultaneously for different projects
 | ~claude-code-ide-window-height~            | Height for side windows (top/bottom)    | ~20~                                   |
 | ~claude-code-ide-focus-on-open~            | Focus Claude window when opened         | ~t~                                    |
 | ~claude-code-ide-focus-claude-after-ediff~ | Focus Claude window after opening ediff | ~t~                                    |
+| ~claude-code-ide-system-prompt~            | Custom system prompt to append          | ~nil~                                  |
 | ~claude-code-ide-enable-mcp-server~        | Enable MCP tools server                 | ~nil~                                  |
 | ~claude-code-ide-mcp-server-port~          | Port for MCP tools server               | ~nil~ (auto-select)                    |
 | ~claude-code-ide-mcp-server-tools~         | Alist of exposed Emacs functions        | ~nil~                                  |
@@ -206,6 +207,23 @@ You can pass additional flags to the Claude Code CLI:
 #+end_src
 
 Note: These flags are appended to the Claude command after any built-in flags like =-d= (debug) or =-r= (resume).
+
+*** Custom System Prompt
+
+You can append a custom system prompt to Claude's default prompt, allowing you to customize Claude's behavior for specific projects or contexts:
+
+#+begin_src emacs-lisp
+;; Set a custom system prompt
+(setq claude-code-ide-system-prompt "You are an expert in Elisp and Emacs development.")
+
+;; Or configure it per-project using dir-locals.el
+;; In .dir-locals.el:
+((nil . ((claude-code-ide-system-prompt . "Focus on functional programming patterns and avoid mutations."))))
+
+;; Set via the transient menu: M-x claude-code-ide-menu → Configuration → Set system prompt
+#+end_src
+
+When set, this adds the =--append-system-prompt= flag to the Claude command. Set to =nil= to disable (default).
 
 *** Debugging
 

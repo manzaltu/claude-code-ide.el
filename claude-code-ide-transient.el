@@ -67,6 +67,7 @@
 (defvar claude-code-ide-use-side-window)
 (defvar claude-code-ide-cli-debug)
 (defvar claude-code-ide-cli-extra-flags)
+(defvar claude-code-ide-system-prompt)
 
 ;;; Helper Functions
 
@@ -235,6 +236,19 @@ Otherwise, if multiple sessions exist, prompt for selection."
   (setq claude-code-ide-cli-extra-flags flags)
   (claude-code-ide-log "CLI extra flags set to %s" flags))
 
+(transient-define-suffix claude-code-ide--set-system-prompt (prompt)
+  "Set the system prompt to append."
+  :description "Set system prompt"
+  (interactive (list (if claude-code-ide-system-prompt
+                         (read-string "System prompt (leave empty to disable): "
+                                      claude-code-ide-system-prompt)
+                       (read-string "System prompt: "))))
+  (setq claude-code-ide-system-prompt (if (string-empty-p prompt) nil prompt))
+  (claude-code-ide-log "System prompt %s"
+                       (if claude-code-ide-system-prompt
+                           (format "set to: %s" claude-code-ide-system-prompt)
+                         "disabled")))
+
 ;;; Transient Suffix Functions
 
 (transient-define-suffix claude-code-ide--toggle-focus-on-open ()
@@ -272,6 +286,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
   (customize-save-variable 'claude-code-ide-use-side-window claude-code-ide-use-side-window)
   (customize-save-variable 'claude-code-ide-cli-path claude-code-ide-cli-path)
   (customize-save-variable 'claude-code-ide-cli-extra-flags claude-code-ide-cli-extra-flags)
+  (customize-save-variable 'claude-code-ide-system-prompt claude-code-ide-system-prompt)
   (claude-code-ide-log "Configuration saved to custom file"))
 
 ;;; Transient Menus
@@ -316,7 +331,8 @@ Otherwise, if multiple sessions exist, prompt for selection."
                                      (if claude-code-ide-use-side-window "ON" "OFF"))))]
    ["CLI Settings"
     ("p" "Set CLI path" claude-code-ide--set-cli-path)
-    ("x" "Set extra CLI flags" claude-code-ide--set-cli-extra-flags)]]
+    ("x" "Set extra CLI flags" claude-code-ide--set-cli-extra-flags)
+    ("a" "Set system prompt" claude-code-ide--set-system-prompt)]]
   ["Save"
    ("S" "Save configuration" claude-code-ide--save-config)])
 

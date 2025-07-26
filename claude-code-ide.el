@@ -107,6 +107,14 @@ This should be a string of space-separated flags, e.g. \"--model opus\"."
   :type 'string
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-system-prompt nil
+  "System prompt to append to Claude's default system prompt.
+When non-nil, the --append-system-prompt flag will be added with this value.
+Set to nil to disable (default)."
+  :type '(choice (const :tag "Disabled" nil)
+                 (string :tag "System prompt text"))
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-mcp-allowed-tools 'auto
   "Configuration for allowed MCP tools when MCP server is enabled.
 Can be one of:
@@ -335,6 +343,7 @@ If CONTINUE is non-nil, add the -c flag.
 If RESUME is non-nil, add the -r flag.
 If SESSION-ID is provided, it's included in the MCP server URL path.
 If `claude-code-ide-cli-debug' is non-nil, add the -d flag.
+If `claude-code-ide-system-prompt' is non-nil, add the --append-system-prompt flag.
 Additional flags from `claude-code-ide-cli-extra-flags' are also included."
   (let ((claude-cmd claude-code-ide-cli-path))
     ;; Add debug flag if enabled
@@ -346,6 +355,10 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
     ;; Add continue flag if requested
     (when continue
       (setq claude-cmd (concat claude-cmd " -c")))
+    ;; Add append-system-prompt flag if set
+    (when claude-code-ide-system-prompt
+      (setq claude-cmd (concat claude-cmd " --append-system-prompt "
+                               (shell-quote-argument claude-code-ide-system-prompt))))
     ;; Add any extra flags
     (when (and claude-code-ide-cli-extra-flags
                (not (string-empty-p claude-code-ide-cli-extra-flags)))
