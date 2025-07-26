@@ -42,6 +42,7 @@
 (declare-function claude-code-ide-mcp--get-buffer-project "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp-session-active-diffs "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-original-tab "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp--setup-buffer-cache-hooks "claude-code-ide-mcp" ())
 (declare-function ediff-really-quit "ediff-util" (reverse-default-keep-variants))
 (declare-function claude-code-ide-diagnostics-handler "claude-code-ide-diagnostics" (params &optional session))
 (declare-function claude-code-ide--get-buffer-name "claude-code-ide" (&optional directory))
@@ -239,6 +240,9 @@ ARGUMENTS should contain:
     (condition-case err
         (progn
           (find-file path)
+          ;; Set up buffer cache hooks for the newly opened file
+          (with-current-buffer (current-buffer)
+            (claude-code-ide-mcp--setup-buffer-cache-hooks))
           ;; Text pattern selection takes precedence over line numbers
           (cond
            ;; Both start and end text patterns provided
