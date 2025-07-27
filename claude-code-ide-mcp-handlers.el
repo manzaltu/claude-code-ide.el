@@ -413,12 +413,20 @@ ARGUMENTS should contain `path' or `tab_name' of the file to close."
                   (setf (alist-get 'quit-from-claude found-diff-info) t)
                   (puthash tab-name found-diff-info (claude-code-ide-mcp-session-active-diffs found-session))
                   ;; Use ediff's proper quit mechanism if available
-                  (if (fboundp 'ediff-really-quit)
-                      ;; Properly quit ediff which will run our quit hooks
-                      (with-current-buffer control-buf
-                        (ediff-really-quit nil))
-                    ;; Fallback: just kill the control buffer
-                    (kill-buffer control-buf))))
+                  (condition-case err
+                      (if (fboundp 'ediff-really-quit)
+                          ;; Properly quit ediff which will run our quit hooks
+                          (with-current-buffer control-buf
+                            (ediff-really-quit nil))
+                        ;; Fallback: just kill the control buffer
+                        (kill-buffer control-buf))
+                    (error
+                     ;; If ediff-really-quit fails (e.g., side window issues),
+                     ;; just kill the control buffer directly
+                     (claude-code-ide-debug "Error quitting ediff: %s. Killing control buffer directly."
+                                            (error-message-string err))
+                     (when (buffer-live-p control-buf)
+                       (kill-buffer control-buf))))))
 
               ;; Clean up the diff buffers with the found session
               (claude-code-ide-mcp--cleanup-diff tab-name found-session)
