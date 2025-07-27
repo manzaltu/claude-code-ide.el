@@ -62,15 +62,16 @@
                          "no-project"))
     ""))
 
-(defun claude-code-ide-debug (format-string &rest args)
-  "Log debug message with FORMAT-STRING and ARGS if debug is enabled."
-  (when claude-code-ide-debug
-    (let ((message (apply #'format format-string args))
-          (timestamp (format-time-string "%Y-%m-%d %H:%M:%S"))
-          (context (claude-code-ide--get-session-context)))
-      (with-current-buffer (get-buffer-create claude-code-ide-debug-buffer)
-        (goto-char (point-max))
-        (insert (format "%s %s%s\n" timestamp context message))))))
+(defmacro claude-code-ide-debug (format-string &rest args)
+  "Log debug message with FORMAT-STRING and ARGS if debug is enabled.
+This is a macro to avoid evaluating ARGS when debugging is disabled."
+  `(when claude-code-ide-debug
+     (let ((message (format ,format-string ,@args))
+           (timestamp (format-time-string "%Y-%m-%d %H:%M:%S"))
+           (context (claude-code-ide--get-session-context)))
+       (with-current-buffer (get-buffer-create claude-code-ide-debug-buffer)
+         (goto-char (point-max))
+         (insert (format "%s %s%s\n" timestamp context message))))))
 
 (defun claude-code-ide-log (format-string &rest args)
   "Log message with FORMAT-STRING and ARGS."
