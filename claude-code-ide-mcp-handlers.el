@@ -411,6 +411,16 @@ ARGUMENTS should contain `path' or `tab_name' of the file to close."
                 (when (buffer-live-p control-buf)
                   ;; Set a flag in diff-info to indicate this quit is from Claude
                   (setf (alist-get 'quit-from-claude found-diff-info) t)
+                  ;; Store all ediff buffer references in diff-info before quitting
+                  (with-current-buffer control-buf
+                    (when (and (boundp 'ediff-error-buffer) ediff-error-buffer)
+                      (setf (alist-get 'error-buffer found-diff-info) ediff-error-buffer))
+                    (when (and (boundp 'ediff-diff-buffer) ediff-diff-buffer)
+                      (setf (alist-get 'diff-buffer found-diff-info) ediff-diff-buffer))
+                    (when (and (boundp 'ediff-fine-diff-buffer) ediff-fine-diff-buffer)
+                      (setf (alist-get 'fine-diff-buffer found-diff-info) ediff-fine-diff-buffer))
+                    (when (and (boundp 'ediff-custom-diff-buffer) ediff-custom-diff-buffer)
+                      (setf (alist-get 'custom-diff-buffer found-diff-info) ediff-custom-diff-buffer)))
                   (puthash tab-name found-diff-info (claude-code-ide-mcp-session-active-diffs found-session))
                   ;; Use ediff's proper quit mechanism if available
                   (condition-case err
@@ -636,12 +646,32 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
       (let ((buffer-A (alist-get 'buffer-A diff-info))
             (buffer-B (alist-get 'buffer-B diff-info))
             (control-buf (alist-get 'control-buffer diff-info))
-            (file-exists (alist-get 'file-exists diff-info)))
-        ;; Kill the control buffer if it still exists
+            (file-exists (alist-get 'file-exists diff-info))
+            ;; First try to get buffers from diff-info (stored during close_tab)
+            (error-buffer (alist-get 'error-buffer diff-info))
+            (diff-buffer (alist-get 'diff-buffer diff-info))
+            (fine-diff-buffer (alist-get 'fine-diff-buffer diff-info))
+            (custom-diff-buffer (alist-get 'custom-diff-buffer diff-info)))
+        ;; Get all ediff buffers from control buffer before killing it
         (when (and control-buf (buffer-live-p control-buf))
           (with-current-buffer control-buf
+            ;; Capture all ediff-related buffers
+            (claude-code-ide-debug "Capturing ediff buffers from control buffer")
+            (when (and (boundp 'ediff-error-buffer) ediff-error-buffer (not error-buffer))
+              (setq error-buffer ediff-error-buffer))
+            (when (and (boundp 'ediff-diff-buffer) ediff-diff-buffer (not diff-buffer))
+              (setq diff-buffer ediff-diff-buffer))
+            (when (and (boundp 'ediff-fine-diff-buffer) ediff-fine-diff-buffer (not fine-diff-buffer))
+              (setq fine-diff-buffer ediff-fine-diff-buffer))
+            (when (and (boundp 'ediff-custom-diff-buffer) ediff-custom-diff-buffer (not custom-diff-buffer))
+              (setq custom-diff-buffer ediff-custom-diff-buffer))
             (setq ediff-quit-hook nil))  ; Prevent quit hooks from running
           (kill-buffer control-buf))
+        ;; Kill all the auxiliary buffers
+        (dolist (buf (list error-buffer diff-buffer fine-diff-buffer custom-diff-buffer))
+          (when (and buf (buffer-live-p buf))
+            (claude-code-ide-debug "Killing ediff auxiliary buffer: %s" (buffer-name buf))
+            (kill-buffer buf)))
         ;; Kill the temporary buffer (buffer B)
         (when (and buffer-B (buffer-live-p buffer-B))
           (kill-buffer buffer-B))
