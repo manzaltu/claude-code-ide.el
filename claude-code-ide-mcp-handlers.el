@@ -633,8 +633,10 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
       ;; If session wasn't provided, try to get it from diff-info
       (unless session
         (setq session (alist-get 'session diff-info)))
-      (let ((buffer-B (alist-get 'buffer-B diff-info))
-            (control-buf (alist-get 'control-buffer diff-info)))
+      (let ((buffer-A (alist-get 'buffer-A diff-info))
+            (buffer-B (alist-get 'buffer-B diff-info))
+            (control-buf (alist-get 'control-buffer diff-info))
+            (file-exists (alist-get 'file-exists diff-info)))
         ;; Kill the control buffer if it still exists
         (when (and control-buf (buffer-live-p control-buf))
           (with-current-buffer control-buf
@@ -643,6 +645,10 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
         ;; Kill the temporary buffer (buffer B)
         (when (and buffer-B (buffer-live-p buffer-B))
           (kill-buffer buffer-B))
+        ;; Kill buffer A only if it was created for a new file
+        (when (and buffer-A (buffer-live-p buffer-A) (not file-exists))
+          ;; This is a *New file: buffer that we created
+          (kill-buffer buffer-A))
         ;; Remove from active diffs
         (remhash tab-name active-diffs)))))
 
