@@ -257,6 +257,27 @@ The debug buffer shows:
 - Error messages and diagnostics
 - General debug information with session context
 
+** Multiple Claude Code Instances on One Project
+
+Using git worktrees is the recommended way for running multiple Claude Code instances on different branches of the same project. This allows you to develop features or fix bugs in parallel:
+
+#+begin_src bash
+# Create a new worktree for a feature branch
+git worktree add ../myproject-worktree feature-branch
+#+end_src
+
+#+begin_src elisp
+;; Start Claude Code in the main project
+find-file /path/to/myproject
+M-x claude-code-ide
+
+;; Start another Claude Code instance in the worktree
+find-file /path/to/myproject-worktree
+M-x claude-code-ide
+#+end_src
+
+Each worktree is treated as a separate project by =project.el=, allowing you to have independent Claude Code sessions with their own buffers (e.g., =*claude-code[myproject]*= and =*claude-code[myproject-worktree]*=).
+
 ** Emacs MCP Tools
 
 Claude Code IDE includes built-in MCP tools that expose Emacs functionality to Claude, enabling powerful code navigation and analysis capabilities:
