@@ -297,9 +297,9 @@ Otherwise, if multiple sessions exist, prompt for selection."
   [:description claude-code-ide--session-status]
   ["Claude Code IDE"
    ["Session Management"
-    ("s" claude-code-ide--start-description claude-code-ide--start-if-no-session)
-    ("c" claude-code-ide--continue-description claude-code-ide--continue-if-no-session)
-    ("r" claude-code-ide--resume-description claude-code-ide--resume-if-no-session)
+    ("s" claude-code-ide--start-if-no-session :description claude-code-ide--start-description)
+    ("c" claude-code-ide--continue-if-no-session :description claude-code-ide--continue-description)
+    ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
     ("q" "Stop current session" claude-code-ide-stop)
     ("l" "List all sessions" claude-code-ide-list-sessions)]
    ["Navigation"
