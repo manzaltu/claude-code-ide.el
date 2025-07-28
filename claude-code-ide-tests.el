@@ -1081,6 +1081,75 @@ have completed before cleanup.  Waits up to 5 seconds."
       ;; Restore original transient-mark-mode
       (setq transient-mark-mode orig-tmm))))
 
+;; Test claude-code-ide-show-claude-window-in-ediff option
+(ert-deftest claude-code-ide-test-show-claude-window-in-ediff ()
+  "Test that Claude window visibility is controlled correctly during ediff."
+  (claude-code-ide-tests--with-temp-directory
+   (lambda ()
+     (let* ((session (make-claude-code-ide-mcp-session
+                      :project-dir default-directory
+                      :active-diffs (make-hash-table :test 'equal)))
+            (test-file (expand-file-name "test.txt" default-directory))
+            (claude-buffer-created nil)
+            (claude-window-displayed nil))
+
+       ;; Register session in global hash table
+       (puthash default-directory session claude-code-ide-mcp--sessions)
+
+       ;; Create a test file
+       (with-temp-file test-file (insert "Original content"))
+
+       ;; Create a .git directory to make this a project
+       (make-directory (expand-file-name ".git" default-directory) t)
+
+       ;; Mock relevant functions
+       (cl-letf* (((symbol-function 'claude-code-ide--get-buffer-name)
+                   (lambda (&optional _dir) "*Claude Code Test*"))
+                  ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+                   (lambda (buffer)
+                     (setq claude-window-displayed t)
+                     (selected-window)))
+                  ((symbol-function 'ediff-buffers)
+                   (lambda (_buf-A _buf-B)
+                     ;; Simulate successful ediff start
+                     (setq ediff-control-buffer (get-buffer-create "*Ediff Control*"))))
+                  ((symbol-function 'ediff-next-difference)
+                   (lambda () nil))
+                  ((symbol-function 'claude-code-ide-mcp--get-current-session)
+                   (lambda () session)))
+
+         ;; Create a Claude buffer
+         (setq claude-buffer-created (get-buffer-create "*Claude Code Test*"))
+
+         ;; Test 1: With claude-code-ide-show-claude-window-in-ediff = t (default)
+         (let ((claude-code-ide-show-claude-window-in-ediff t)
+               (ediff-control-buffer (get-buffer-create "*Ediff Control*")))
+           (setq claude-window-displayed nil)
+           ;; Call the startup handler
+           (claude-code-ide-mcp--handle-ediff-startup "test-diff" session nil
+                                                      (lambda () nil))
+           ;; Should display Claude window
+           (should claude-window-displayed))
+
+         ;; Test 2: With claude-code-ide-show-claude-window-in-ediff = nil
+         (let ((claude-code-ide-show-claude-window-in-ediff nil)
+               (ediff-control-buffer (get-buffer-create "*Ediff Control*")))
+           (setq claude-window-displayed nil)
+           ;; Call the startup handler
+           (claude-code-ide-mcp--handle-ediff-startup "test-diff" session nil
+                                                      (lambda () nil))
+           ;; Should NOT display Claude window
+           (should-not claude-window-displayed))
+
+         ;; Cleanup
+         (when (buffer-live-p claude-buffer-created)
+           (kill-buffer claude-buffer-created))
+         (when (get-buffer "*Ediff Control*")
+           (kill-buffer "*Ediff Control*"))
+         (when (file-exists-p test-file)
+           (delete-file test-file))
+         (remhash default-directory claude-code-ide-mcp--sessions))))))
+
 ;; Test multiple ediff sessions
 (ert-deftest claude-code-ide-test-multiple-ediff-sessions ()
   "Test that multiple ediff sessions can run simultaneously without conflicts."

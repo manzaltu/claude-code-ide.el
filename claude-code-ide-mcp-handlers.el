@@ -52,6 +52,8 @@
 (defvar ediff-split-window-function)
 (defvar ediff-control-buffer-suffix)
 (defvar claude-code-ide-mcp--sessions)
+(defvar claude-code-ide-show-claude-window-in-ediff)
+(defvar claude-code-ide-focus-claude-after-ediff)
 
 ;;; Tool Registry - Define variables first to ensure they're available
 
@@ -201,16 +203,17 @@ STARTUP-HOOK-FN is the hook function to remove after use."
     ;; Save the current window before any operations
     (let ((original-window (selected-window))
           (claude-window nil))
-      ;; Restore Claude side window (since we deleted all side windows before ediff)
-      (when-let* ((claude-buffer-name (claude-code-ide--get-buffer-name))
-                  (claude-buffer (get-buffer claude-buffer-name)))
-        (when (buffer-live-p claude-buffer)
-          ;; Display Claude buffer in side window and save the window
-          (setq claude-window (claude-code-ide--display-buffer-in-side-window claude-buffer))))
+      ;; Restore Claude side window only if user wants it shown during ediff
+      (when claude-code-ide-show-claude-window-in-ediff
+        (when-let* ((claude-buffer-name (claude-code-ide--get-buffer-name))
+                    (claude-buffer (get-buffer claude-buffer-name)))
+          (when (buffer-live-p claude-buffer)
+            ;; Display Claude buffer in side window and save the window
+            (setq claude-window (claude-code-ide--display-buffer-in-side-window claude-buffer)))))
 
       ;; Handle focus based on user preference
       (cond
-       ;; If user wants Claude window focus (default), select it
+       ;; If user wants Claude window focus and it's visible, select it
        ((and claude-code-ide-focus-claude-after-ediff claude-window)
         (select-window claude-window))
        ;; Otherwise, restore the original window (which might be one of the ediff windows)

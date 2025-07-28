@@ -160,6 +160,15 @@ window, allowing direct interaction with the diff controls."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-show-claude-window-in-ediff t
+  "Whether to show the Claude Code side window when viewing diffs.
+When non-nil (default), the Claude Code side window is restored
+after opening ediff.  When nil, the Claude Code window remains
+hidden during diff viewing, giving you more screen space for the
+diff comparison."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-use-side-window t
   "Whether to display Claude Code in a side window.
 When non-nil (default), Claude Code opens in a dedicated side window
