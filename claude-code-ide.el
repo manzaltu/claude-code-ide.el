@@ -4,7 +4,7 @@
 
 ;; Author: Yoav Orot
 ;; Version: 0.2.0
-;; Package-Requires: ((emacs "28.1") (vterm "0.0.1") (websocket "1.12") (transient "0.9.0"))
+;; Package-Requires: ((emacs "28.1") (vterm "0.0.1") (eat "0.9.4") (websocket "1.12") (transient "0.9.0"))
 ;; Keywords: ai, claude, code, assistant, mcp, websocket
 ;; URL: https://github.com/manzaltu/claude-code-ide.el
 
@@ -57,7 +57,6 @@
 
 ;;; Code:
 
-(require 'vterm)
 (require 'cl-lib)
 (require 'project)
 (require 'claude-code-ide-mcp)
@@ -167,6 +166,16 @@ display-buffer behavior."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-terminal-backend 'vterm
+  "Terminal backend to use for Claude Code sessions.
+Can be either `vterm' or `eat'.  The vterm backend is the default
+and provides a fully-featured terminal emulator.  The eat backend
+is an alternative terminal emulator that may work better in some
+environments."
+  :type '(choice (const :tag "vterm" vterm)
+                 (const :tag "eat" eat))
+  :group 'claude-code-ide)
+
 ;;; Constants
 
 (defconst claude-code-ide--active-editor-notification-delay 0.1
@@ -185,6 +194,57 @@ display-buffer behavior."
 
 
 
+
+;;; Terminal Backend Abstraction
+
+(defun claude-code-ide--terminal-ensure-backend ()
+  "Ensure the selected terminal backend is available."
+  (cond
+   ((eq claude-code-ide-terminal-backend 'vterm)
+    (unless (fboundp 'vterm)
+      (require 'vterm nil t))
+    (unless (fboundp 'vterm)
+      (user-error "The package vterm is not installed.  Please install the vterm package")))
+   ((eq claude-code-ide-terminal-backend 'eat)
+    (unless (fboundp 'eat)
+      (require 'eat nil t))
+    (unless (fboundp 'eat)
+      (user-error "The package eat is not installed.  Please install the eat package")))
+   (t
+    (user-error "Invalid terminal backend: %s" claude-code-ide-terminal-backend))))
+
+(defun claude-code-ide--terminal-send-string (string)
+  "Send STRING to the terminal in the current buffer."
+  (cond
+   ((eq claude-code-ide-terminal-backend 'vterm)
+    (vterm-send-string string))
+   ((eq claude-code-ide-terminal-backend 'eat)
+    (when eat-terminal
+      (eat-term-send-string eat-terminal string)))
+   (t
+    (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
+
+(defun claude-code-ide--terminal-send-escape ()
+  "Send escape key to the terminal in the current buffer."
+  (cond
+   ((eq claude-code-ide-terminal-backend 'vterm)
+    (vterm-send-escape))
+   ((eq claude-code-ide-terminal-backend 'eat)
+    (when eat-terminal
+      (eat-term-send-string eat-terminal "\e")))
+   (t
+    (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
+
+(defun claude-code-ide--terminal-send-return ()
+  "Send return key to the terminal in the current buffer."
+  (cond
+   ((eq claude-code-ide-terminal-backend 'vterm)
+    (vterm-send-return))
+   ((eq claude-code-ide-terminal-backend 'eat)
+    (when eat-terminal
+      (eat-term-send-string eat-terminal "\r")))
+   (t
+    (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
 ;;; Helper Functions
 
@@ -388,10 +448,18 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
               (setq claude-cmd (concat claude-cmd " --allowedTools " allowed-tools)))))))
     claude-cmd))
 
+(defun claude-code-ide--parse-command-string (command-string)
+  "Parse a command string into (program . args) for eat-exec.
+COMMAND-STRING is a shell command line to parse.
+Returns a cons cell (program . args) where program is the executable
+and args is a list of arguments."
+  (let ((parts (split-string-shell-command command-string)))
+    (cons (car parts) (cdr parts))))
 
-(defun claude-code-ide--create-vterm-session (buffer-name working-dir port continue resume session-id)
-  "Create a new vterm session for Claude Code.
-BUFFER-NAME is the name for the vterm buffer.
+
+(defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
+  "Create a new terminal session for Claude Code.
+BUFFER-NAME is the name for the terminal buffer.
 WORKING-DIR is the working directory.
 PORT is the MCP server port.
 CONTINUE is whether to continue the most recent conversation.
@@ -399,38 +467,67 @@ RESUME is whether to resume a previous conversation.
 SESSION-ID is the unique identifier for this session.
 
 Returns a cons cell of (buffer . process) on success.
-Signals an error if vterm fails to initialize."
+Signals an error if terminal fails to initialize."
   (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
-         (vterm-buffer-name buffer-name)
          (default-directory working-dir)
-         ;; Set vterm-shell to run Claude directly
-         (vterm-shell claude-cmd)
-         ;; vterm uses vterm-environment for passing env vars
-         (vterm-environment (append
-                             (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
-                                   "ENABLE_IDE_INTEGRATION=true"
-                                   "TERM_PROGRAM=emacs"
-                                   "FORCE_CODE_TERMINAL=true")
-                             vterm-environment)))
+         (env-vars (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
+                         "ENABLE_IDE_INTEGRATION=true"
+                         "TERM_PROGRAM=emacs"
+                         "FORCE_CODE_TERMINAL=true")))
     ;; Log the command for debugging
     (claude-code-ide-debug "Starting Claude with command: %s" claude-cmd)
     (claude-code-ide-debug "Working directory: %s" working-dir)
     (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%d" port)
     (claude-code-ide-debug "Session ID: %s" session-id)
-    ;; Create vterm buffer without switching to it
-    (let ((buffer (save-window-excursion
-                    (vterm vterm-buffer-name))))
-      ;; Check if vterm successfully created a buffer
-      (unless buffer
-        (error "Failed to create vterm buffer.  Please ensure vterm is properly installed"))
-      ;; Get the process that vterm created
-      (let ((process (get-buffer-process buffer)))
-        (unless process
-          (error "Failed to get vterm process.  The vterm buffer may not have initialized properly"))
-        ;; Check if buffer is still alive
-        (unless (buffer-live-p buffer)
-          (error "Vterm buffer was killed during initialization"))
-        (cons buffer process)))))
+    (claude-code-ide-debug "Terminal backend: %s" claude-code-ide-terminal-backend)
+
+    (cond
+     ;; vterm backend
+     ((eq claude-code-ide-terminal-backend 'vterm)
+      (let* ((vterm-buffer-name buffer-name)
+             ;; Set vterm-shell to run Claude directly
+             (vterm-shell claude-cmd)
+             ;; vterm uses vterm-environment for passing env vars
+             (vterm-environment (append env-vars vterm-environment)))
+        ;; Create vterm buffer without switching to it
+        (let ((buffer (save-window-excursion
+                        (vterm vterm-buffer-name))))
+          ;; Check if vterm successfully created a buffer
+          (unless buffer
+            (error "Failed to create vterm buffer.  Please ensure vterm is properly installed"))
+          ;; Get the process that vterm created
+          (let ((process (get-buffer-process buffer)))
+            (unless process
+              (error "Failed to get vterm process.  The vterm buffer may not have initialized properly"))
+            ;; Check if buffer is still alive
+            (unless (buffer-live-p buffer)
+              (error "Vterm buffer was killed during initialization"))
+            (cons buffer process)))))
+
+     ;; eat backend
+     ((eq claude-code-ide-terminal-backend 'eat)
+      (let* ((buffer (get-buffer-create buffer-name))
+             (eat-term-name "xterm-256color")
+             ;; Parse command string into program and args
+             (cmd-parts (claude-code-ide--parse-command-string claude-cmd))
+             (program (car cmd-parts))
+             (args (cdr cmd-parts)))
+        (with-current-buffer buffer
+          ;; Set up eat mode
+          (unless (eq major-mode 'eat-mode)
+            (eat-mode))
+          ;; Prepend our env vars to the buffer-local process-environment
+          (setq-local process-environment
+                      (append env-vars process-environment))
+          (eat-exec buffer buffer-name program nil args)
+          ;; Get the process
+          (let ((process (get-buffer-process buffer)))
+            (unless process
+              (error "Failed to create eat process"))
+            (cons buffer process)))))
+
+     (t
+      (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend)))))
 
 (defun claude-code-ide--start-session (&optional continue resume)
   "Start a Claude Code session for the current project.
@@ -446,11 +543,8 @@ This function handles:
   (unless (claude-code-ide--ensure-cli)
     (user-error "Claude Code CLI not available.  Please install it and ensure it's in PATH"))
 
-  (unless (fboundp 'vterm)
-    (user-error "The package vterm is not installed.  Please install the vterm package"))
-
-  ;; Try to require vterm to ensure it's loaded
-  (require 'vterm nil t)
+  ;; Ensure the selected terminal backend is available
+  (claude-code-ide--terminal-ensure-backend)
 
   ;; Clean up any dead processes first
   (claude-code-ide--cleanup-dead-processes)
@@ -470,8 +564,8 @@ This function handles:
             (session-id (format "claude-%s-%s"
                                 (file-name-nondirectory (directory-file-name working-dir))
                                 (format-time-string "%Y%m%d-%H%M%S"))))
-        ;; Create new vterm session first
-        (let* ((buffer-and-process (claude-code-ide--create-vterm-session
+        ;; Create new terminal session first
+        (let* ((buffer-and-process (claude-code-ide--create-terminal-session
                                     buffer-name working-dir port continue resume session-id))
                (buffer (car buffer-and-process))
                (process (cdr buffer-and-process)))
@@ -500,13 +594,19 @@ This function handles:
                       (lambda ()
                         (claude-code-ide--cleanup-on-exit working-dir))
                       nil t)
-            ;; Add vterm exit hook to ensure buffer is killed when process exits
-            ;; vterm runs Claude directly, no shell involved
-            (add-hook 'vterm-exit-functions
-                      (lambda (&rest _)
-                        (when (buffer-live-p buffer)
-                          (kill-buffer buffer)))
-                      nil t))
+            ;; Add terminal-specific exit hooks
+            (cond
+             ((eq claude-code-ide-terminal-backend 'vterm)
+              ;; Add vterm exit hook to ensure buffer is killed when process exits
+              ;; vterm runs Claude directly, no shell involved
+              (add-hook 'vterm-exit-functions
+                        (lambda (&rest _)
+                          (when (buffer-live-p buffer)
+                            (kill-buffer buffer)))
+                        nil t))
+             ((eq claude-code-ide-terminal-backend 'eat)
+              ;; eat uses kill-buffer-on-exit variable
+              (setq-local eat-kill-buffer-on-exit t))))
           ;; Display the buffer in a side window
           (claude-code-ide--display-buffer-in-side-window buffer)
           (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"
@@ -619,24 +719,24 @@ If the buffer is already visible, switch focus to it."
 
 ;;;###autoload
 (defun claude-code-ide-send-escape ()
-  "Send escape key to the Claude Code vterm buffer for the current project."
+  "Send escape key to the Claude Code terminal buffer for the current project."
   (interactive)
   (let ((buffer-name (claude-code-ide--get-buffer-name)))
     (if-let ((buffer (get-buffer buffer-name)))
         (with-current-buffer buffer
-          (vterm-send-escape))
+          (claude-code-ide--terminal-send-escape))
       (user-error "No Claude Code session for this project"))))
 
 ;;;###autoload
 (defun claude-code-ide-insert-newline ()
-  "Send newline (backslash + return) to the Claude Code vterm buffer for the current project.
+  "Send newline (backslash + return) to the Claude Code terminal buffer for the current project.
 This simulates typing backslash followed by Enter, which Claude Code interprets as a newline."
   (interactive)
   (let ((buffer-name (claude-code-ide--get-buffer-name)))
     (if-let ((buffer (get-buffer buffer-name)))
         (with-current-buffer buffer
-          (vterm-send-string "\\")
-          (vterm-send-return))
+          (claude-code-ide--terminal-send-string "\\")
+          (claude-code-ide--terminal-send-return))
       (user-error "No Claude Code session for this project"))))
 
 ;;;###autoload

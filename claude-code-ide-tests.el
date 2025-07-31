@@ -344,11 +344,126 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test run command when vterm is not available."
   (let ((claude-code-ide--cli-available t)
         (claude-code-ide-cli-path "echo")
+        (claude-code-ide-terminal-backend 'vterm)
         (orig-fboundp (symbol-function 'fboundp)))
     (cl-letf (((symbol-function 'fboundp)
                (lambda (sym) (if (eq sym 'vterm) nil (funcall orig-fboundp sym)))))
       (should-error (claude-code-ide)
                     :type 'user-error))))
+
+(ert-deftest claude-code-ide-test-run-without-eat ()
+  "Test run command when eat is not available."
+  (let ((claude-code-ide--cli-available t)
+        (claude-code-ide-cli-path "echo")
+        (claude-code-ide-terminal-backend 'eat)
+        (orig-fboundp (symbol-function 'fboundp)))
+    (cl-letf (((symbol-function 'fboundp)
+               (lambda (sym) (if (eq sym 'eat) nil (funcall orig-fboundp sym)))))
+      (should-error (claude-code-ide)
+                    :type 'user-error))))
+
+(ert-deftest claude-code-ide-test-terminal-backend-selection ()
+  "Test terminal backend selection and validation."
+  ;; Test vterm backend
+  (let ((claude-code-ide-terminal-backend 'vterm))
+    (should (eq claude-code-ide-terminal-backend 'vterm)))
+
+  ;; Test eat backend
+  (let ((claude-code-ide-terminal-backend 'eat))
+    (should (eq claude-code-ide-terminal-backend 'eat)))
+
+  ;; Test invalid backend
+  (let ((claude-code-ide-terminal-backend 'invalid-backend)
+        (orig-fboundp (symbol-function 'fboundp)))
+    (cl-letf (((symbol-function 'fboundp)
+               (lambda (sym) nil)))
+      (should-error (claude-code-ide--terminal-ensure-backend)
+                    :type 'user-error))))
+
+(ert-deftest claude-code-ide-test-terminal-send-functions ()
+  "Test terminal send wrapper functions."
+  ;; Mock vterm functions
+  (let ((vterm-string-sent nil)
+        (vterm-escape-sent nil)
+        (vterm-return-sent nil)
+        (eat-string-sent nil))
+    (cl-letf (((symbol-function 'vterm-send-string)
+               (lambda (str) (setq vterm-string-sent str)))
+              ((symbol-function 'vterm-send-escape)
+               (lambda () (setq vterm-escape-sent t)))
+              ((symbol-function 'vterm-send-return)
+               (lambda () (setq vterm-return-sent t)))
+              ((symbol-function 'eat-term-send-string)
+               (lambda (term str) (setq eat-string-sent str))))
+
+      ;; Test vterm backend
+      (let ((claude-code-ide-terminal-backend 'vterm))
+        (claude-code-ide--terminal-send-string "test")
+        (should (equal vterm-string-sent "test"))
+
+        (claude-code-ide--terminal-send-escape)
+        (should vterm-escape-sent)
+
+        (claude-code-ide--terminal-send-return)
+        (should vterm-return-sent))
+
+      ;; Test eat backend - need to mock the buffer-local variable
+      (with-temp-buffer
+        (let ((claude-code-ide-terminal-backend 'eat))
+          ;; Set eat-terminal as a buffer-local variable
+          (setq-local eat-terminal t)
+          (claude-code-ide--terminal-send-string "test")
+          (should (equal eat-string-sent "test"))
+
+          (setq eat-string-sent nil)
+          (claude-code-ide--terminal-send-escape)
+          (should (equal eat-string-sent "\e"))
+
+          (setq eat-string-sent nil)
+          (claude-code-ide--terminal-send-return)
+          (should (equal eat-string-sent "\r")))))))
+
+(ert-deftest claude-code-ide-test-terminal-session-creation ()
+  "Test terminal session creation with both backends."
+  (let ((mock-vterm-buffer nil)
+        (mock-eat-buffer nil)
+        (mock-process (start-process "mock" nil "true")))
+    (cl-letf (((symbol-function 'vterm)
+               (lambda (name)
+                 (setq mock-vterm-buffer (get-buffer-create name))))
+              ((symbol-function 'eat-mode)
+               (lambda () nil))
+              ((symbol-function 'eat-exec)
+               (lambda (buffer name cmd startfile args)
+                 (setq mock-eat-buffer buffer)))
+              ((symbol-function 'get-buffer-process)
+               (lambda (buffer) mock-process))
+              ((symbol-function 'claude-code-ide-mcp-start)
+               (lambda (dir) 12345)))
+
+      ;; Test vterm backend session creation
+      (let ((claude-code-ide-terminal-backend 'vterm)
+            (claude-code-ide--cli-available t))
+        (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
+                   (lambda (&rest _) "claude")))
+          (let ((result (claude-code-ide--create-terminal-session
+                         "*test-vterm*" "/tmp" 12345 nil nil "test-session")))
+            (should (consp result))
+            (should (bufferp (car result)))
+            (should (processp (cdr result)))
+            (should (equal (buffer-name mock-vterm-buffer) "*test-vterm*")))))
+
+      ;; Test eat backend session creation
+      (let ((claude-code-ide-terminal-backend 'eat)
+            (claude-code-ide--cli-available t))
+        (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
+                   (lambda (&rest _) "claude")))
+          (let ((result (claude-code-ide--create-terminal-session
+                         "*test-eat*" "/tmp" 12345 nil nil "test-session")))
+            (should (consp result))
+            (should (bufferp (car result)))
+            (should (processp (cdr result)))
+            (should (bufferp mock-eat-buffer))))))))
 
 (ert-deftest claude-code-ide-test-run-with-cli ()
   "Test successful run command execution."

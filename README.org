@@ -16,7 +16,7 @@ Claude Code IDE for Emacs provides native integration with Claude Code CLI throu
 ** Features
 
 - Automatic project detection and session management
-- Terminal integration with full color support using =vterm=
+- Terminal integration with full color support using =vterm= or =eat=
 - MCP protocol implementation for IDE integration
 - Tool support for file operations, editor state, and workspace info
 - Extensible MCP tools server for accessing Emacs commands (xrefs, tree-sitter, project info, e.g.)
@@ -73,7 +73,7 @@ This deep integration means Claude Code understands your project context and can
 
 - Emacs 28.1 or higher
 - Claude Code CLI installed and available in PATH
-- =vterm= package (for terminal support)
+- =vterm= or =eat= package (for terminal support)
 
 ** Installing Claude Code CLI
 
@@ -137,6 +137,7 @@ You can run multiple Claude Code instances simultaneously for different projects
 | ~claude-code-ide-cli-debug~                   | Enable CLI debug mode (-d flag)         | ~nil~                                  |
 | ~claude-code-ide-cli-extra-flags~             | Additional CLI flags (e.g. "--model")   | ~""~                                   |
 | ~claude-code-ide-debug~                       | Enable debug logging                    | ~nil~                                  |
+| ~claude-code-ide-terminal-backend~            | Terminal backend (vterm or eat)         | ~'vterm~                               |
 | ~claude-code-ide-log-with-context~            | Include session context in log messages | ~t~                                    |
 | ~claude-code-ide-debug-buffer~                | Buffer name for debug output            | ~"*claude-code-ide-debug*"~              |
 | ~claude-code-ide-use-side-window~             | Use side window vs regular buffer       | ~t~                                    |
@@ -183,6 +184,20 @@ Or, if you'd prefer to use a regular window:
 ;; Use regular window instead of side window
 (setq claude-code-ide-use-side-window nil)
 #+end_src
+
+*** Terminal Backend Configuration
+
+Claude Code IDE supports both =vterm= and =eat= as terminal backends. By default, it uses =vterm=, but you can switch to =eat= if preferred:
+
+#+begin_src emacs-lisp
+;; Use eat instead of vterm
+(setq claude-code-ide-terminal-backend 'eat)
+
+;; Or switch back to vterm (default)
+(setq claude-code-ide-terminal-backend 'vterm)
+#+end_src
+
+The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. Both backends provide full terminal functionality including color support and special key handling.
 
 *** Custom Buffer Naming
 
