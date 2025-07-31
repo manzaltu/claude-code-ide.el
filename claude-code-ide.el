@@ -406,12 +406,41 @@ Signals an error if vterm fails to initialize."
          ;; Set vterm-shell to run Claude directly
          (vterm-shell claude-cmd)
          ;; vterm uses vterm-environment for passing env vars
+         ;; Include both the original vterm-environment and
+         ;; buffer-local process-environment to make packages like envrc
+         ;; work
+         ;; Filter out problematic environment variables that can break vterm
+         (filtered-process-env
+          (seq-filter
+           (lambda (var)
+             (not (or
+                   ;; Exclude shell/terminal related vars that vterm manages
+                   (string-prefix-p "TERM=" var)
+                   (string-prefix-p "TERM_" var)
+                   (string-prefix-p "SHELL=" var)
+                   (string-prefix-p "SHLVL=" var)
+                   (string-prefix-p "PS1=" var)
+                   (string-prefix-p "PS2=" var)
+                   (string-prefix-p "PS3=" var)
+                   (string-prefix-p "PS4=" var)
+                   (string-prefix-p "PROMPT=" var)
+                   (string-prefix-p "OLDPWD=" var)
+                   (string-prefix-p "_=" var)
+                   ;; Exclude vterm specific vars to avoid conflicts
+                   (string-prefix-p "VTERM_" var)
+                   ;; Exclude our own Claude vars (we add them explicitly)
+                   (string-prefix-p "CLAUDE_CODE_SSE_PORT=" var)
+                   (string-prefix-p "ENABLE_IDE_INTEGRATION=" var)
+                   (string-prefix-p "FORCE_CODE_TERMINAL=" var))))
+           process-environment))
+         ;; Combine environments: our vars first, then vterm's, then filtered process env
          (vterm-environment (append
                              (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
                                    "ENABLE_IDE_INTEGRATION=true"
                                    "TERM_PROGRAM=emacs"
                                    "FORCE_CODE_TERMINAL=true")
-                             vterm-environment)))
+                             vterm-environment
+                             filtered-process-env)))
     ;; Log the command for debugging
     (claude-code-ide-debug "Starting Claude with command: %s" claude-cmd)
     (claude-code-ide-debug "Working directory: %s" working-dir)
