@@ -199,6 +199,17 @@ Claude Code IDE supports both =vterm= and =eat= as terminal backends. By default
 
 The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. Both backends provide full terminal functionality including color support and special key handling.
 
+**** Terminal Keybindings
+
+Claude Code IDE adds custom keybindings to the terminal for easier interaction:
+
+| Keybinding | Command                        | Description                          |
+|------------+--------------------------------+--------------------------------------|
+| =M-RET=      | =claude-code-ide-insert-newline= | Insert a newline in the prompt       |
+| =C-g=        | =claude-code-ide-send-escape=    | Send escape key to cancel operations |
+
+These keybindings are automatically set up for both =vterm= and =eat= backends and only apply within Claude Code terminal buffers.
+
 *** Custom Buffer Naming
 
 You can customize how Claude Code buffers are named:

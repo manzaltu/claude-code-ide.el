@@ -246,6 +246,24 @@ environments."
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
+(defun claude-code-ide--setup-terminal-keybindings ()
+  "Set up keybindings for the Claude Code terminal buffer.
+This function binds:
+- M-RET (Alt-Return) to insert a newline
+- C-g to send escape"
+  (cond
+   ((eq claude-code-ide-terminal-backend 'vterm)
+    ;; For vterm, we set up local keybindings in vterm-mode-map
+    (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
+    (local-set-key (kbd "C-g") #'claude-code-ide-send-escape))
+   ((eq claude-code-ide-terminal-backend 'eat)
+    ;; For eat, we need to modify the semi-char mode map which is the default
+    ;; We use local-set-key to make it buffer-local
+    (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
+    (local-set-key (kbd "C-g") #'claude-code-ide-send-escape))
+   (t
+    (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
+
 ;;; Helper Functions
 
 (defun claude-code-ide--default-buffer-name (directory)
@@ -594,6 +612,8 @@ This function handles:
                       (lambda ()
                         (claude-code-ide--cleanup-on-exit working-dir))
                       nil t)
+            ;; Set up terminal keybindings
+            (claude-code-ide--setup-terminal-keybindings)
             ;; Add terminal-specific exit hooks
             (cond
              ((eq claude-code-ide-terminal-backend 'vterm)
