@@ -331,8 +331,10 @@ Optional SESSION contains the MCP session context."
                              (storage-key (if unique-key
                                               (format "%s-%s" tool-name unique-key)
                                             tool-name))
-                             ;; Get the current session
-                             (session (claude-code-ide-mcp--get-current-session)))
+                             ;; Get session from result or try to find current session
+                             (result-session (alist-get 'session result))
+                             (session (or result-session
+                                          (claude-code-ide-mcp--get-current-session))))
                         (if session
                             (let ((session-deferred (claude-code-ide-mcp-session-deferred session)))
                               (puthash storage-key id session-deferred)
@@ -851,41 +853,33 @@ This should be called when the buffer's context might have changed."
          (lineStart . ,start-line)
          (lineEnd . ,end-line))))))
 
-(defun claude-code-ide-mcp-complete-deferred (tool-name result &optional unique-key)
-  "Complete a deferred response for TOOL-NAME with RESULT.
+(defun claude-code-ide-mcp-complete-deferred (session tool-name result &optional unique-key)
+  "Complete a deferred response for SESSION and TOOL-NAME with RESULT.
+SESSION is the MCP session that owns the deferred response.
 If UNIQUE-KEY is provided, it's used to disambiguate multiple deferred
 responses."
   (let* ((lookup-key (if unique-key
                          (format "%s-%s" tool-name unique-key)
                        tool-name)))
     (claude-code-ide-debug "Complete deferred for %s" lookup-key)
-    ;; Try to find the session that has this deferred response
-    (let ((found-session nil)
-          (found-id nil))
-      ;; Search all sessions for this deferred response
-      (catch 'found
-        (maphash (lambda (_proj-dir session)
-                   (let* ((session-deferred (claude-code-ide-mcp-session-deferred session))
-                          (id (gethash lookup-key session-deferred)))
-                     (when id
-                       (setq found-session session
-                             found-id id)
-                       (throw 'found t))))
-                 claude-code-ide-mcp--sessions))
-      (if (and found-session found-id)
-          (let ((client (claude-code-ide-mcp-session-client found-session))
-                (session-deferred (claude-code-ide-mcp-session-deferred found-session)))
-            (claude-code-ide-debug "Found deferred response id %s in session for %s"
-                                   found-id (claude-code-ide-mcp-session-project-dir found-session))
-            (remhash lookup-key session-deferred)
-            (if client
-                (let* ((response (claude-code-ide-mcp--make-response found-id `((content . ,result))))
-                       (json-response (json-encode response)))
-                  (claude-code-ide-debug "Sending deferred response: %s" json-response)
-                  (websocket-send-text client json-response)
-                  (claude-code-ide-debug "Deferred response sent"))
-              (claude-code-ide-debug "No client connected for session, cannot send deferred response")))
-        (claude-code-ide-debug "No deferred response found for %s" lookup-key)))))
+    (if (not session)
+        (claude-code-ide-debug "No session provided for completing deferred response %s" lookup-key)
+      ;; Use the provided session directly
+      (let* ((session-deferred (claude-code-ide-mcp-session-deferred session))
+             (id (gethash lookup-key session-deferred)))
+        (if id
+            (let ((client (claude-code-ide-mcp-session-client session)))
+              (claude-code-ide-debug "Found deferred response id %s in session for %s"
+                                     id (claude-code-ide-mcp-session-project-dir session))
+              (remhash lookup-key session-deferred)
+              (if client
+                  (let* ((response (claude-code-ide-mcp--make-response id `((content . ,result))))
+                         (json-response (json-encode response)))
+                    (claude-code-ide-debug "Sending deferred response: %s" json-response)
+                    (websocket-send-text client json-response)
+                    (claude-code-ide-debug "Deferred response sent"))
+                (claude-code-ide-debug "No client connected for session, cannot send deferred response")))
+          (claude-code-ide-debug "No deferred response found for %s" lookup-key))))))
 
 ;;; Cleanup on exit
 

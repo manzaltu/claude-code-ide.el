@@ -36,7 +36,7 @@
 (require 'claude-code-ide-diagnostics)
 (require 'claude-code-ide-debug)
 
-(declare-function claude-code-ide-mcp-complete-deferred "claude-code-ide-mcp" (method result &optional unique-key))
+(declare-function claude-code-ide-mcp-complete-deferred "claude-code-ide-mcp" (session method result &optional unique-key))
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp--get-session-for-project "claude-code-ide-mcp" (project-dir))
 (declare-function claude-code-ide-mcp--get-buffer-project "claude-code-ide-mcp" ())
@@ -569,9 +569,10 @@ ARGUMENTS should contain:
            ;; Re-signal the error
            (signal (car err) (cdr err))))
 
-        ;; Return deferred indicator
+        ;; Return deferred indicator with session
         `((deferred . t)
-          (unique-key . ,tab-name))))))
+          (unique-key . ,tab-name)
+          (session . ,session))))))
 
 (defun claude-code-ide-mcp--handle-ediff-quit (tab-name &optional session)
   "Handle ediff quit for TAB-NAME.
@@ -609,6 +610,7 @@ session."
 
                                        ;; Send FILE_SAVED response with the new content
                                        (claude-code-ide-mcp-complete-deferred
+                                        final-session
                                         "openDiff"
                                         (list `((type . "text") (text . "FILE_SAVED"))
                                               `((type . "text") (text . ,final-content)))
@@ -623,6 +625,7 @@ session."
 
                                    ;; User rejected changes - send DIFF_REJECTED response
                                    (claude-code-ide-mcp-complete-deferred
+                                    final-session
                                     "openDiff"
                                     (list `((type . "text") (text . "DIFF_REJECTED"))
                                           `((type . "text") (text . ,tab-name)))

@@ -1307,7 +1307,9 @@ have completed before cleanup.  Waits up to 5 seconds."
                                  (new_file_path . ,file1)
                                  (new_file_contents . "Modified content 1")
                                  (tab_name . "diff1")))))
-                 (should (equal result1 '((deferred . t) (unique-key . "diff1")))))
+                 (should (equal (alist-get 'deferred result1) t))
+                 (should (equal (alist-get 'unique-key result1) "diff1"))
+                 (should (equal (alist-get 'session result1) session)))
 
                ;; Open second diff
                (let ((result2 (claude-code-ide-mcp-handle-open-diff
@@ -1315,7 +1317,9 @@ have completed before cleanup.  Waits up to 5 seconds."
                                  (new_file_path . ,file2)
                                  (new_file_contents . "Modified content 2")
                                  (tab_name . "diff2")))))
-                 (should (equal result2 '((deferred . t) (unique-key . "diff2")))))
+                 (should (equal (alist-get 'deferred result2) t))
+                 (should (equal (alist-get 'unique-key result2) "diff2"))
+                 (should (equal (alist-get 'session result2) session)))
 
                ;; Verify ediff was called twice
                (should (= ediff-called-count 2))
@@ -1380,12 +1384,14 @@ have completed before cleanup.  Waits up to 5 seconds."
               (puthash "openDiff-diff2" "request-id-2" deferred-b))
 
             ;; Complete deferred response for session A
-            (claude-code-ide-mcp-complete-deferred "openDiff"
+            (claude-code-ide-mcp-complete-deferred session-a
+                                                   "openDiff"
                                                    '(((type . "text") (text . "FILE_SAVED")))
                                                    "diff1")
 
             ;; Complete deferred response for session B
-            (claude-code-ide-mcp-complete-deferred "openDiff"
+            (claude-code-ide-mcp-complete-deferred session-b
+                                                   "openDiff"
                                                    '(((type . "text") (text . "DIFF_REJECTED")))
                                                    "diff2")
 
