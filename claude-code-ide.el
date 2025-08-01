@@ -27,6 +27,7 @@
 
 ;; Claude Code IDE integration for Emacs provides seamless integration
 ;; with Claude Code CLI through the Model Context Protocol (MCP).
+;; It supports file operations, diagnostics, and editor state management.
 ;;
 ;; This package starts a WebSocket server that Claude Code CLI connects to,
 ;; enabling real-time communication between Emacs and Claude.  It supports

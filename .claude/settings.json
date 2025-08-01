@@ -1,0 +1,33 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/yoav/projects/claude-code-ide.el/.claude/format-code.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/yoav/projects/claude-code-ide.el/.claude/cleanup-whitespace.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/yoav/projects/claude-code-ide.el/.claude/test-check.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/yoav/projects/claude-code-ide.el/.claude/lint-check.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
