@@ -689,21 +689,31 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-build-command-with-system-prompt ()
   "Test building command with append-system-prompt flag."
+  ;; Test with user system prompt
   (let ((claude-code-ide-cli-path "claude")
         (claude-code-ide-system-prompt "You are a helpful assistant")
         (claude-code-ide-cli-debug nil)
         (claude-code-ide-cli-extra-flags ""))
     (let ((cmd (claude-code-ide--build-claude-command)))
       (should (string-match-p "--append-system-prompt" cmd))
-      ;; shell-quote-argument may escape spaces differently on different systems
+      ;; Check that Emacs prompt is included (accounting for shell escaping)
+      (should (or (string-match-p "Connected to Emacs" cmd)
+                  (string-match-p "Connected\\\\ to\\\\ Emacs" cmd)))
+      ;; Check that user prompt is included
       (should (or (string-match-p "You are a helpful assistant" cmd)
                   (string-match-p "You\\\\ are\\\\ a\\\\ helpful\\\\ assistant" cmd)))))
-  ;; Test with nil value (should not add the flag)
+  ;; Test with nil value (should still add the Emacs prompt)
   (let ((claude-code-ide-cli-path "claude")
         (claude-code-ide-system-prompt nil)
         (claude-code-ide-cli-debug nil)
         (claude-code-ide-cli-extra-flags ""))
-    (should-not (string-match-p "--append-system-prompt" (claude-code-ide--build-claude-command))))
+    (let ((cmd (claude-code-ide--build-claude-command)))
+      (should (string-match-p "--append-system-prompt" cmd))
+      ;; Check that Emacs prompt is included (accounting for shell escaping)
+      (should (or (string-match-p "Connected to Emacs" cmd)
+                  (string-match-p "Connected\\\\ to\\\\ Emacs" cmd)))
+      ;; Should not contain user prompt when nil
+      (should-not (string-match-p "You are a helpful assistant" cmd))))
   ;; Test with special characters that need quoting
   (let ((claude-code-ide-cli-path "claude")
         (claude-code-ide-system-prompt "You're a \"helpful\" assistant!")
@@ -711,6 +721,9 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide-cli-extra-flags ""))
     (let ((cmd (claude-code-ide--build-claude-command)))
       (should (string-match-p "--append-system-prompt" cmd))
+      ;; Check that Emacs prompt is included (accounting for shell escaping)
+      (should (or (string-match-p "Connected to Emacs" cmd)
+                  (string-match-p "Connected\\\\ to\\\\ Emacs" cmd)))
       ;; The command should contain the escaped version (shell-quote-argument escapes quotes and apostrophes)
       (should (string-match-p "You\\\\'re\\\\ a\\\\ \\\\\"helpful\\\\\"\\\\ assistant\\\\!" cmd)))))
 

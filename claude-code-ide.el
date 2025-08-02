@@ -432,10 +432,17 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
     ;; Add continue flag if requested
     (when continue
       (setq claude-cmd (concat claude-cmd " -c")))
-    ;; Add append-system-prompt flag if set
-    (when claude-code-ide-system-prompt
+    ;; Add append-system-prompt flag with Emacs context
+    (let ((emacs-prompt "IMPORTANT: Connected to Emacs via claude-code-ide.el integration.\n\nEmacs uses mixed coordinates:\n- Lines: 1-based (line 1 = first line)\n- Columns: 0-based (column 0 = first column)\n\nExample: First character in file is at line 1, column 0.\n\nAvailable: xref (LSP), tree-sitter, imenu, project.el, flycheck/flymake diagnostics.\nContext-aware with automatic project/file/selection tracking.")
+          (combined-prompt nil))
+      ;; Always include the Emacs-specific prompt
+      (setq combined-prompt emacs-prompt)
+      ;; Append user's custom prompt if set
+      (when claude-code-ide-system-prompt
+        (setq combined-prompt (concat combined-prompt "\n\n" claude-code-ide-system-prompt)))
+      ;; Add the combined prompt to the command
       (setq claude-cmd (concat claude-cmd " --append-system-prompt "
-                               (shell-quote-argument claude-code-ide-system-prompt))))
+                               (shell-quote-argument combined-prompt))))
     ;; Add any extra flags
     (when (and claude-code-ide-cli-extra-flags
                (not (string-empty-p claude-code-ide-cli-extra-flags)))
