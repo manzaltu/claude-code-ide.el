@@ -31,12 +31,28 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'flycheck)
 (require 'json)
 (require 'claude-code-ide-debug)
 
+;; Optional dependencies
+(require 'flycheck nil t)
+(require 'flymake nil t)
+
 ;; Forward declarations
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
+
+;;; Configuration
+
+(defcustom claude-code-ide-diagnostics-backend 'auto
+  "Backend to use for diagnostics collection.
+Can be one of:
+- `auto': Automatically detect available backend (flycheck or flymake)
+- `flycheck': Use flycheck for diagnostics
+- `flymake': Use flymake for diagnostics"
+  :type '(choice (const :tag "Automatic detection" auto)
+                 (const :tag "Flycheck" flycheck)
+                 (const :tag "Flymake" flymake))
+  :group 'claude-code-ide)
 
 ;;; Diagnostic Collection
 
@@ -49,6 +65,13 @@ Returns: 1 (Error), 2 (Warning), 3 (Information), 4 (Hint)."
     ('warning 2)
     ('info 3)
     ('hint 4)
+    ;; Flymake severities
+    ('flymake-error 1)
+    (':error 1)
+    ('flymake-warning 2)
+    (':warning 2)
+    ('flymake-note 3)
+    (':note 3)
     ;; Default
     (_ 3)))
 
@@ -60,6 +83,13 @@ Returns: 1 (Error), 2 (Warning), 3 (Information), 4 (Hint)."
     ('warning "Warning")
     ('info "Information")
     ('hint "Hint")
+    ;; Flymake severities
+    ('flymake-error "Error")
+    (':error "Error")
+    ('flymake-warning "Warning")
+    (':warning "Warning")
+    ('flymake-note "Information")
+    (':note "Information")
     ;; Default
     (_ "Information")))
 
@@ -86,13 +116,56 @@ Returns: 1 (Error), 2 (Warning), 3 (Information), 4 (Hint)."
                     (message . ,(flycheck-error-message err))))
                 flycheck-current-errors)))))
 
+(defun claude-code-ide-diagnostics--get-flymake-diagnostics (buffer)
+  "Get Flymake diagnostics for BUFFER in VS Code format."
+  (when (featurep 'flymake)
+    (with-current-buffer buffer
+      (when (bound-and-true-p flymake-mode)
+        (mapcar (lambda (diag)
+                  (save-excursion
+                    (let* ((beg (flymake-diagnostic-beg diag))
+                           (end (flymake-diagnostic-end diag))
+                           (beg-line (progn (goto-char beg)
+                                            (line-number-at-pos)))
+                           (beg-col (current-column))
+                           (end-line (progn (goto-char end)
+                                            (line-number-at-pos)))
+                           (end-col (current-column)))
+                      `((range . ((start . ((line . ,beg-line)
+                                            (character . ,beg-col)))
+                                  (end . ((line . ,end-line)
+                                          (character . ,end-col)))))
+                        (severity . ,(claude-code-ide-diagnostics--severity-to-string
+                                      (flymake-diagnostic-type diag)))
+                        (source . ,(symbol-name (or (flymake-diagnostic-backend diag)
+                                                    'flymake)))
+                        (message . ,(flymake-diagnostic-text diag))))))
+                (flymake-diagnostics))))))
 
 (defun claude-code-ide-diagnostics-get-all (buffer)
-  "Get Flycheck diagnostics for BUFFER.
+  "Get diagnostics for BUFFER using configured backend.
 Returns diagnostics in VS Code format."
-  ;; Return as vector for JSON encoding
-  (or (vconcat (claude-code-ide-diagnostics--get-flycheck-diagnostics buffer))
-      []))
+  (let ((backend claude-code-ide-diagnostics-backend))
+    ;; Handle auto detection
+    (when (eq backend 'auto)
+      (setq backend
+            (cond
+             ((and (featurep 'flycheck)
+                   (with-current-buffer buffer
+                     (bound-and-true-p flycheck-mode)))
+              'flycheck)
+             ((and (featurep 'flymake)
+                   (with-current-buffer buffer
+                     (bound-and-true-p flymake-mode)))
+              'flymake)
+             (t nil))))
+    ;; Get diagnostics based on backend
+    (or (vconcat
+         (pcase backend
+           ('flycheck (claude-code-ide-diagnostics--get-flycheck-diagnostics buffer))
+           ('flymake (claude-code-ide-diagnostics--get-flymake-diagnostics buffer))
+           (_ nil)))
+        [])))
 
 ;;; MCP Handler
 

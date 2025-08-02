@@ -1085,6 +1085,68 @@ have completed before cleanup.  Waits up to 5 seconds."
     ;; The text should be an empty array "[]"
     (should (equal (alist-get 'text (car result)) "[]"))))
 
+;; Define mock struct for flymake diagnostics testing
+(cl-defstruct claude-code-ide-test-mock-diag
+  beg end type text backend)
+
+(ert-deftest claude-code-ide-test-flymake-diagnostics ()
+  "Test flymake diagnostics collection."
+  (require 'claude-code-ide-diagnostics)
+  ;; Create mock diagnostic
+  (let ((mock-diag (make-claude-code-ide-test-mock-diag
+                    :beg 8 :end 13
+                    :type 'flymake-error
+                    :text "Test error"
+                    :backend 'test-backend)))
+    ;; Mock flymake functions
+    (cl-letf (((symbol-function 'featurep)
+               (lambda (feature)
+                 (eq feature 'flymake)))
+              (flymake-mode t)
+              ((symbol-function 'flymake-diagnostics)
+               (lambda (&rest _)
+                 (list mock-diag)))
+              ((symbol-function 'flymake-diagnostic-beg)
+               (lambda (diag) (claude-code-ide-test-mock-diag-beg diag)))
+              ((symbol-function 'flymake-diagnostic-end)
+               (lambda (diag) (claude-code-ide-test-mock-diag-end diag)))
+              ((symbol-function 'flymake-diagnostic-type)
+               (lambda (diag) (claude-code-ide-test-mock-diag-type diag)))
+              ((symbol-function 'flymake-diagnostic-text)
+               (lambda (diag) (claude-code-ide-test-mock-diag-text diag)))
+              ((symbol-function 'flymake-diagnostic-backend)
+               (lambda (diag) (claude-code-ide-test-mock-diag-backend diag)))
+              (claude-code-ide-diagnostics-backend 'flymake))
+      (with-temp-buffer
+        (insert "Line 1\nLine 2 with error\nLine 3\n")
+        ;; Test getting flymake diagnostics
+        (let ((diags (claude-code-ide-diagnostics-get-all (current-buffer))))
+          (should (= (length diags) 1))
+          (let ((diag (aref diags 0)))
+            ;; Check diagnostic structure
+            (should (equal (alist-get 'severity diag) "Error"))
+            (should (equal (alist-get 'message diag) "Test error"))
+            (should (equal (alist-get 'source diag) "test-backend"))))))))
+
+(ert-deftest claude-code-ide-test-diagnostics-backend-auto ()
+  "Test automatic backend detection."
+  (require 'claude-code-ide-diagnostics)
+  ;; Test flycheck detection
+  (cl-letf (((symbol-function 'featurep)
+             (lambda (feature)
+               (memq feature '(flycheck flymake))))
+            ((symbol-function 'bound-and-true-p)
+             (lambda (var)
+               (eq var 'flycheck-mode)))
+            ((symbol-function 'flycheck-diagnostics)
+             (lambda () nil))
+            (flycheck-current-errors nil)
+            (claude-code-ide-diagnostics-backend 'auto))
+    (with-temp-buffer
+      (let ((diags (claude-code-ide-diagnostics-get-all (current-buffer))))
+        ;; Should use flycheck when flycheck-mode is active
+        (should (vectorp diags))))))
+
 (ert-deftest claude-code-ide-test-check-document-dirty ()
   "Test checkDocumentDirty handler."
   (require 'claude-code-ide-mcp-handlers)

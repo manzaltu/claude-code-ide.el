@@ -20,7 +20,7 @@ Claude Code IDE for Emacs provides native integration with Claude Code CLI throu
 - MCP protocol implementation for IDE integration
 - Tool support for file operations, editor state, and workspace info
 - Extensible MCP tools server for accessing Emacs commands (xrefs, tree-sitter, project info, e.g.)
-- Diagnostic integration with Flycheck
+- Diagnostic integration with Flycheck and Flymake
 - Advanced diff view with ediff integration
 - Tab-bar support for proper context switching
 - Selection and buffer tracking for better context awareness
@@ -130,27 +130,28 @@ You can run multiple Claude Code instances simultaneously for different projects
 
 *** Configuration Variables
 
-| Variable                                    | Description                             | Default                              |
-|---------------------------------------------+-----------------------------------------+--------------------------------------|
-| ~claude-code-ide-cli-path~                    | Path to Claude Code CLI                 | ~"claude"~                             |
-| ~claude-code-ide-buffer-name-function~        | Function for buffer naming              | ~claude-code-ide--default-buffer-name~ |
-| ~claude-code-ide-cli-debug~                   | Enable CLI debug mode (-d flag)         | ~nil~                                  |
-| ~claude-code-ide-cli-extra-flags~             | Additional CLI flags (e.g. "--model")   | ~""~                                   |
-| ~claude-code-ide-debug~                       | Enable debug logging                    | ~nil~                                  |
-| ~claude-code-ide-terminal-backend~            | Terminal backend (vterm or eat)         | ~'vterm~                               |
-| ~claude-code-ide-log-with-context~            | Include session context in log messages | ~t~                                    |
-| ~claude-code-ide-debug-buffer~                | Buffer name for debug output            | ~"*claude-code-ide-debug*"~              |
-| ~claude-code-ide-use-side-window~             | Use side window vs regular buffer       | ~t~                                    |
-| ~claude-code-ide-window-side~                 | Side for Claude window                  | ~'right~                               |
-| ~claude-code-ide-window-width~                | Width for side windows (left/right)     | ~90~                                   |
-| ~claude-code-ide-window-height~               | Height for side windows (top/bottom)    | ~20~                                   |
-| ~claude-code-ide-focus-on-open~               | Focus Claude window when opened         | ~t~                                    |
-| ~claude-code-ide-focus-claude-after-ediff~    | Focus Claude window after opening ediff | ~t~                                    |
-| ~claude-code-ide-show-claude-window-in-ediff~ | Show Claude window during ediff         | ~t~                                    |
-| ~claude-code-ide-system-prompt~               | Custom system prompt to append          | ~nil~                                  |
-| ~claude-code-ide-enable-mcp-server~           | Enable MCP tools server                 | ~nil~                                  |
-| ~claude-code-ide-mcp-server-port~             | Port for MCP tools server               | ~nil~ (auto-select)                    |
-| ~claude-code-ide-mcp-server-tools~            | Alist of exposed Emacs functions        | ~nil~                                  |
+| Variable                                    | Description                                 | Default                              |
+|---------------------------------------------+---------------------------------------------+--------------------------------------|
+| ~claude-code-ide-cli-path~                    | Path to Claude Code CLI                     | ~"claude"~                             |
+| ~claude-code-ide-buffer-name-function~        | Function for buffer naming                  | ~claude-code-ide--default-buffer-name~ |
+| ~claude-code-ide-cli-debug~                   | Enable CLI debug mode (-d flag)             | ~nil~                                  |
+| ~claude-code-ide-cli-extra-flags~             | Additional CLI flags (e.g. "--model")       | ~""~                                   |
+| ~claude-code-ide-debug~                       | Enable debug logging                        | ~nil~                                  |
+| ~claude-code-ide-terminal-backend~            | Terminal backend (vterm or eat)             | ~'vterm~                               |
+| ~claude-code-ide-log-with-context~            | Include session context in log messages     | ~t~                                    |
+| ~claude-code-ide-debug-buffer~                | Buffer name for debug output                | ~"*claude-code-ide-debug*"~              |
+| ~claude-code-ide-use-side-window~             | Use side window vs regular buffer           | ~t~                                    |
+| ~claude-code-ide-window-side~                 | Side for Claude window                      | ~'right~                               |
+| ~claude-code-ide-window-width~                | Width for side windows (left/right)         | ~90~                                   |
+| ~claude-code-ide-window-height~               | Height for side windows (top/bottom)        | ~20~                                   |
+| ~claude-code-ide-focus-on-open~               | Focus Claude window when opened             | ~t~                                    |
+| ~claude-code-ide-focus-claude-after-ediff~    | Focus Claude window after opening ediff     | ~t~                                    |
+| ~claude-code-ide-show-claude-window-in-ediff~ | Show Claude window during ediff             | ~t~                                    |
+| ~claude-code-ide-system-prompt~               | Custom system prompt to append              | ~nil~                                  |
+| ~claude-code-ide-enable-mcp-server~           | Enable MCP tools server                     | ~nil~                                  |
+| ~claude-code-ide-mcp-server-port~             | Port for MCP tools server                   | ~nil~ (auto-select)                    |
+| ~claude-code-ide-mcp-server-tools~            | Alist of exposed Emacs functions            | ~nil~                                  |
+| ~claude-code-ide-diagnostics-backend~         | Diagnostics backend (auto/flycheck/flymake) | ~'auto~                                |
 
 *** Side Window Configuration
 
@@ -209,6 +210,19 @@ Claude Code IDE adds custom keybindings to the terminal for easier interaction:
 | =C-g=        | =claude-code-ide-send-escape=    | Send escape key to cancel operations |
 
 These keybindings are automatically set up for both =vterm= and =eat= backends and only apply within Claude Code terminal buffers.
+
+*** Diagnostics Configuration
+
+Claude Code IDE supports both Flycheck and Flymake for code diagnostics. By default, it will automatically detect which one is active:
+
+#+begin_src emacs-lisp
+;; Let Claude Code automatically detect the active diagnostics backend
+(setq claude-code-ide-diagnostics-backend 'auto) ; default
+
+;; Or force a specific backend
+(setq claude-code-ide-diagnostics-backend 'flycheck)
+(setq claude-code-ide-diagnostics-backend 'flymake)
+#+end_src
 
 *** Custom Buffer Naming
 
