@@ -210,17 +210,17 @@ This setting should be removed once the upstream bug is fixed."
   "Ensure the selected terminal backend is available."
   (cond
    ((eq claude-code-ide-terminal-backend 'vterm)
-    (unless (fboundp 'vterm)
+    (unless (featurep 'vterm)
       (require 'vterm nil t))
-    (unless (fboundp 'vterm)
-      (user-error "The package vterm is not installed.  Please install the vterm package")))
+    (unless (featurep 'vterm)
+      (user-error "The package vterm is not installed.  Please install the vterm package or change `claude-code-ide-terminal-backend' to 'eat")))
    ((eq claude-code-ide-terminal-backend 'eat)
-    (unless (fboundp 'eat)
+    (unless (featurep 'eat)
       (require 'eat nil t))
-    (unless (fboundp 'eat)
-      (user-error "The package eat is not installed.  Please install the eat package")))
+    (unless (featurep 'eat)
+      (user-error "The package eat is not installed.  Please install the eat package or change `claude-code-ide-terminal-backend' to 'vterm")))
    (t
-    (user-error "Invalid terminal backend: %s" claude-code-ide-terminal-backend))))
+    (user-error "Invalid terminal backend: %s.  Valid options are 'vterm or 'eat" claude-code-ide-terminal-backend))))
 
 (defun claude-code-ide--terminal-send-string (string)
   "Send STRING to the terminal in the current buffer."
@@ -572,6 +572,8 @@ SESSION-ID is the unique identifier for this session.
 
 Returns a cons cell of (buffer . process) on success.
 Signals an error if terminal fails to initialize."
+  ;; Ensure terminal backend is available before proceeding
+  (claude-code-ide--terminal-ensure-backend)
   (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
          (default-directory working-dir)
          (env-vars (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
@@ -598,11 +600,11 @@ Signals an error if terminal fails to initialize."
                         (vterm vterm-buffer-name))))
           ;; Check if vterm successfully created a buffer
           (unless buffer
-            (error "Failed to create vterm buffer.  Please ensure vterm is properly installed"))
+            (error "Failed to create vterm buffer.  Please ensure vterm is properly installed and compiled"))
           ;; Get the process that vterm created
           (let ((process (get-buffer-process buffer)))
             (unless process
-              (error "Failed to get vterm process.  The vterm buffer may not have initialized properly"))
+              (error "Failed to get vterm process.  The vterm module may not be compiled correctly"))
             ;; Check if buffer is still alive
             (unless (buffer-live-p buffer)
               (error "Vterm buffer was killed during initialization"))
@@ -627,7 +629,7 @@ Signals an error if terminal fails to initialize."
           ;; Get the process
           (let ((process (get-buffer-process buffer)))
             (unless process
-              (error "Failed to create eat process"))
+              (error "Failed to create eat process.  Please ensure eat is properly installed"))
             (cons buffer process)))))
 
      (t
@@ -647,9 +649,6 @@ This function handles:
   (unless (claude-code-ide--ensure-cli)
     (user-error "Claude Code CLI not available.  Please install it and ensure it's in PATH"))
 
-  ;; Ensure the selected terminal backend is available
-  (claude-code-ide--terminal-ensure-backend)
-
   ;; Clean up any dead processes first
   (claude-code-ide--cleanup-dead-processes)
 
@@ -663,65 +662,77 @@ This function handles:
              (buffer-live-p existing-buffer)
              existing-process)
         (claude-code-ide--toggle-existing-window existing-buffer working-dir)
+      ;; Ensure the selected terminal backend is available before starting MCP
+      (claude-code-ide--terminal-ensure-backend)
       ;; Start MCP server with project directory
-      (let ((port (claude-code-ide-mcp-start working-dir))
+      (let ((port nil)
             (session-id (format "claude-%s-%s"
                                 (file-name-nondirectory (directory-file-name working-dir))
                                 (format-time-string "%Y%m%d-%H%M%S"))))
-        ;; Create new terminal session first
-        (let* ((buffer-and-process (claude-code-ide--create-terminal-session
-                                    buffer-name working-dir port continue resume session-id))
-               (buffer (car buffer-and-process))
-               (process (cdr buffer-and-process)))
-          ;; Notify MCP tools server about new session with session info
-          (claude-code-ide-mcp-server-session-started session-id working-dir buffer)
-          (claude-code-ide--set-process process working-dir)
-          ;; Store session ID for cleanup
-          (puthash working-dir session-id claude-code-ide--session-ids)
-          ;; Set up process sentinel to clean up when Claude exits
-          (set-process-sentinel process
-                                (lambda (_proc event)
-                                  ;; Check for abnormal exit with error code
-                                  (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
-                                    (let ((exit-code (match-string 1 event)))
-                                      (claude-code-ide-debug "Claude process exited with code %s, event: %s"
-                                                             exit-code event)
-                                      (message "Claude exited with error code %s" exit-code)))
-                                  (when (or (string-match "finished" event)
-                                            (string-match "exited" event)
-                                            (string-match "killed" event)
-                                            (string-match "terminated" event))
-                                    (claude-code-ide--cleanup-on-exit working-dir))))
-          ;; Also add buffer kill hook as a backup
-          (with-current-buffer buffer
-            (add-hook 'kill-buffer-hook
-                      (lambda ()
-                        (claude-code-ide--cleanup-on-exit working-dir))
-                      nil t)
-            ;; Set up terminal keybindings
-            (claude-code-ide--setup-terminal-keybindings)
-            ;; Add terminal-specific exit hooks
-            (cond
-             ((eq claude-code-ide-terminal-backend 'vterm)
-              ;; Add vterm exit hook to ensure buffer is killed when process exits
-              ;; vterm runs Claude directly, no shell involved
-              (add-hook 'vterm-exit-functions
-                        (lambda (&rest _)
-                          (when (buffer-live-p buffer)
-                            (kill-buffer buffer)))
-                        nil t))
-             ((eq claude-code-ide-terminal-backend 'eat)
-              ;; eat uses kill-buffer-on-exit variable
-              (setq-local eat-kill-buffer-on-exit t))))
-          ;; Display the buffer in a side window
-          (claude-code-ide--display-buffer-in-side-window buffer)
-          (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"
-                               (cond (continue "continued and ")
-                                     (resume "resumed and ")
-                                     (t ""))
-                               (file-name-nondirectory (directory-file-name working-dir))
-                               port
-                               (if claude-code-ide-cli-debug " (debug mode enabled)" "")))))))
+        (condition-case err
+            (progn
+              ;; Start MCP server
+              (setq port (claude-code-ide-mcp-start working-dir))
+              ;; Create new terminal session
+              (let* ((buffer-and-process (claude-code-ide--create-terminal-session
+                                          buffer-name working-dir port continue resume session-id))
+                     (buffer (car buffer-and-process))
+                     (process (cdr buffer-and-process)))
+                ;; Notify MCP tools server about new session with session info
+                (claude-code-ide-mcp-server-session-started session-id working-dir buffer)
+                (claude-code-ide--set-process process working-dir)
+                ;; Store session ID for cleanup
+                (puthash working-dir session-id claude-code-ide--session-ids)
+                ;; Set up process sentinel to clean up when Claude exits
+                (set-process-sentinel process
+                                      (lambda (_proc event)
+                                        ;; Check for abnormal exit with error code
+                                        (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
+                                          (let ((exit-code (match-string 1 event)))
+                                            (claude-code-ide-debug "Claude process exited with code %s, event: %s"
+                                                                   exit-code event)
+                                            (message "Claude exited with error code %s" exit-code)))
+                                        (when (or (string-match "finished" event)
+                                                  (string-match "exited" event)
+                                                  (string-match "killed" event)
+                                                  (string-match "terminated" event))
+                                          (claude-code-ide--cleanup-on-exit working-dir))))
+                ;; Also add buffer kill hook as a backup
+                (with-current-buffer buffer
+                  (add-hook 'kill-buffer-hook
+                            (lambda ()
+                              (claude-code-ide--cleanup-on-exit working-dir))
+                            nil t)
+                  ;; Set up terminal keybindings
+                  (claude-code-ide--setup-terminal-keybindings)
+                  ;; Add terminal-specific exit hooks
+                  (cond
+                   ((eq claude-code-ide-terminal-backend 'vterm)
+                    ;; Add vterm exit hook to ensure buffer is killed when process exits
+                    ;; vterm runs Claude directly, no shell involved
+                    (add-hook 'vterm-exit-functions
+                              (lambda (&rest _)
+                                (when (buffer-live-p buffer)
+                                  (kill-buffer buffer)))
+                              nil t))
+                   ((eq claude-code-ide-terminal-backend 'eat)
+                    ;; eat uses kill-buffer-on-exit variable
+                    (setq-local eat-kill-buffer-on-exit t))))
+                ;; Display the buffer in a side window
+                (claude-code-ide--display-buffer-in-side-window buffer)
+                (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"
+                                     (cond (continue "continued and ")
+                                           (resume "resumed and ")
+                                           (t ""))
+                                     (file-name-nondirectory (directory-file-name working-dir))
+                                     port
+                                     (if claude-code-ide-cli-debug " (debug mode enabled)" ""))))
+          (error
+           ;; Terminal session creation failed - clean up MCP server
+           (when port
+             (claude-code-ide-mcp-stop-session working-dir))
+           ;; Re-signal the error with improved message
+           (signal (car err) (cdr err))))))))
 
 ;;;###autoload
 (defun claude-code-ide ()
