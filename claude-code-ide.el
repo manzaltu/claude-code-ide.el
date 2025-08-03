@@ -177,6 +177,15 @@ environments."
                  (const :tag "eat" eat))
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-prevent-reflow-glitch t
+  "Workaround for Claude Code terminal scrolling bug #1422.
+When non-nil (default), prevents the terminal from reflowing on height-only
+changes which can trigger uncontrollable scrolling in Claude Code.
+See: https://github.com/anthropics/claude-code/issues/1422
+This setting should be removed once the upstream bug is fixed."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 ;;; Constants
 
 (defconst claude-code-ide--active-editor-notification-delay 0.1
@@ -192,7 +201,6 @@ environments."
 
 (defvar claude-code-ide--session-ids (make-hash-table :test 'equal)
   "Hash table mapping project/directory roots to their session IDs.")
-
 
 
 
@@ -265,6 +273,64 @@ This function binds:
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
+;;; Terminal Reflow Glitch Prevention
+;;
+;; This section implements a workaround for Claude Code bug #1422
+;; where terminal reflows during height-only changes can cause
+;; uncontrollable scrolling. This code should be removed once
+;; the upstream bug is fixed.
+;; See: https://github.com/anthropics/claude-code/issues/1422
+
+(defun claude-code-ide--terminal-resize-handler ()
+  "Retrieve the terminal's resize handling function based on backend."
+  (pcase claude-code-ide-terminal-backend
+    ('vterm #'vterm--window-adjust-process-window-size)
+    ('eat #'eat--adjust-process-window-size)
+    (_ (error "Unsupported terminal backend: %s" claude-code-ide-terminal-backend))))
+
+(defun claude-code-ide--terminal-scroll-mode-active-p ()
+  "Determine if terminal is currently in scroll/copy mode."
+  (pcase claude-code-ide-terminal-backend
+    ('vterm (bound-and-true-p vterm-copy-mode))
+    ('eat (not (bound-and-true-p eat--semi-char-mode)))
+    (_ nil)))
+
+(defun claude-code-ide--session-buffer-p (buffer)
+  "Check if BUFFER belongs to a Claude Code session."
+  (when-let ((name (if (stringp buffer) buffer (buffer-name buffer))))
+    (string-prefix-p "*claude-code[" name)))
+
+(defun claude-code-ide--terminal-reflow-filter (original-fn &rest args)
+  "Filter terminal reflows to prevent height-only resize triggers.
+This wraps ORIGINAL-FN to suppress reflow signals unless the terminal
+width has actually changed, working around the scrolling glitch."
+  (let* ((base-result (apply original-fn args))
+         (dimensions-stable t))
+    ;; Examine each window showing a Claude session
+    (dolist (win (window-list))
+      (when-let* ((buf (window-buffer win))
+                  ((claude-code-ide--session-buffer-p buf)))
+        (let* ((new-width (window-width win))
+               (cached-width (window-parameter win 'claude-code-ide-cached-width)))
+          ;; Width change detected
+          (unless (eql new-width cached-width)
+            (setq dimensions-stable nil)
+            (set-window-parameter win 'claude-code-ide-cached-width new-width)))))
+    ;; Decide whether to allow reflow
+    (cond
+     ;; Not in a Claude buffer - pass through
+     ((not (claude-code-ide--session-buffer-p (current-buffer)))
+      base-result)
+     ;; In scroll mode - suppress reflow
+     ((claude-code-ide--terminal-scroll-mode-active-p)
+      nil)
+     ;; Dimensions changed - allow reflow
+     ((not dimensions-stable)
+      base-result)
+     ;; No width change - suppress reflow
+     (t nil))))
+
+
 ;;; Helper Functions
 
 (defun claude-code-ide--default-buffer-name (directory)
@@ -291,6 +357,12 @@ If DIRECTORY is not provided, use the current working directory."
 
 (defun claude-code-ide--set-process (process &optional directory)
   "Set the Claude Code PROCESS for DIRECTORY or current working directory."
+  ;; Check if this is the first session starting
+  (when (and claude-code-ide-prevent-reflow-glitch
+             (= (hash-table-count claude-code-ide--processes) 0))
+    ;; Apply advice globally for the first session
+    (advice-add (claude-code-ide--terminal-resize-handler)
+                :around #'claude-code-ide--terminal-reflow-filter))
   (puthash (or directory (claude-code-ide--get-working-directory))
            process
            claude-code-ide--processes))
@@ -359,6 +431,12 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
         (progn
           ;; Remove from process table
           (remhash directory claude-code-ide--processes)
+          ;; Check if this was the last session
+          (when (and claude-code-ide-prevent-reflow-glitch
+                     (= (hash-table-count claude-code-ide--processes) 0))
+            ;; Remove advice globally when no sessions remain
+            (advice-remove (claude-code-ide--terminal-resize-handler)
+                           #'claude-code-ide--terminal-reflow-filter))
           ;; Stop MCP server for this project directory
           (claude-code-ide-mcp-stop-session directory)
           ;; Notify MCP tools server about session end with session ID

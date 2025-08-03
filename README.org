@@ -152,6 +152,7 @@ You can run multiple Claude Code instances simultaneously for different projects
 | ~claude-code-ide-mcp-server-port~             | Port for MCP tools server                   | ~nil~ (auto-select)                    |
 | ~claude-code-ide-mcp-server-tools~            | Alist of exposed Emacs functions            | ~nil~                                  |
 | ~claude-code-ide-diagnostics-backend~         | Diagnostics backend (auto/flycheck/flymake) | ~'auto~                                |
+| ~claude-code-ide-prevent-reflow-glitch~       | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
 
 *** Side Window Configuration
 
@@ -210,6 +211,17 @@ Claude Code IDE adds custom keybindings to the terminal for easier interaction:
 | =C-<escape>= | =claude-code-ide-send-escape=    | Send escape key to cancel operations |
 
 These keybindings are automatically set up for both =vterm= and =eat= backends and only apply within Claude Code terminal buffers.
+
+**** Terminal Reflow Glitch Prevention (Temporary)
+
+Claude Code IDE includes a temporary workaround for a known Claude Code bug ([[https://github.com/anthropics/claude-code/issues/1422][#1422]]) where terminal reflows during window resizes can cause uncontrollable scrolling. This workaround is enabled by default but can be disabled if needed:
+
+#+begin_src emacs-lisp
+;; Disable the terminal reflow glitch prevention (not recommended until bug is fixed)
+(setq claude-code-ide-prevent-reflow-glitch nil)
+#+end_src
+
+The workaround will be removed once the upstream bug is fixed.
 
 *** Diagnostics Configuration
 
