@@ -160,7 +160,7 @@ with the appropriate session context."
       request nil -32700 "Parse error"))
 
     (quit
-     (claude-code-ide-debug "Request cancelled by user (C-g)")
+     (claude-code-ide-debug "Request cancelled by user (C-<escape>)")
      (claude-code-ide-mcp-http-server--send-json-error
       request nil -32001 "Operation cancelled by user"))
 

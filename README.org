@@ -207,7 +207,7 @@ Claude Code IDE adds custom keybindings to the terminal for easier interaction:
 | Keybinding | Command                        | Description                          |
 |------------+--------------------------------+--------------------------------------|
 | =M-RET=      | =claude-code-ide-insert-newline= | Insert a newline in the prompt       |
-| =C-g=        | =claude-code-ide-send-escape=    | Send escape key to cancel operations |
+| =C-<escape>= | =claude-code-ide-send-escape=    | Send escape key to cancel operations |
 
 These keybindings are automatically set up for both =vterm= and =eat= backends and only apply within Claude Code terminal buffers.
 
