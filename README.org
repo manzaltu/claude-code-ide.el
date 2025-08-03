@@ -102,6 +102,7 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-menu=                | Open transient menu with all Claude Code commands |
 | =M-x claude-code-ide-emacs-tools-setup=   | Set up built-in MCP tools (e.g. xref, project)    |
 | =M-x claude-code-ide=                     | Start Claude Code for the current project         |
+| =M-x claude-code-ide-send-prompt=         | Send prompt to Claude from minibuffer input       |
 | =M-x claude-code-ide-continue=            | Continue most recent conversation in directory    |
 | =M-x claude-code-ide-resume=              | Resume Claude Code with previous conversation     |
 | =M-x claude-code-ide-stop=                | Stop Claude Code for the current project          |

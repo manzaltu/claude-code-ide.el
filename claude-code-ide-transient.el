@@ -40,6 +40,7 @@
 (declare-function claude-code-ide-list-sessions "claude-code-ide" ())
 (declare-function claude-code-ide-switch-to-buffer "claude-code-ide" ())
 (declare-function claude-code-ide-insert-at-mentioned "claude-code-ide" ())
+(declare-function claude-code-ide-send-prompt "claude-code-ide" ())
 (declare-function claude-code-ide-send-escape "claude-code-ide" ())
 (declare-function claude-code-ide-insert-newline "claude-code-ide" ())
 (declare-function claude-code-ide-toggle "claude-code-ide" ())
@@ -313,6 +314,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("w" "Toggle window visibility" claude-code-ide-toggle-window)]
    ["Interaction"
     ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
+    ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)
     ("e" "Send escape key" claude-code-ide-send-escape)
     ("n" "Insert newline" claude-code-ide-insert-newline)]
    ["Submenus"

@@ -842,7 +842,26 @@ This simulates typing backslash followed by Enter, which Claude Code interprets 
     (if-let ((buffer (get-buffer buffer-name)))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-string "\\")
+          ;; Small delay to ensure prompt text is processed before sending return
+          (sit-for 0.1)
           (claude-code-ide--terminal-send-return))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-send-prompt ()
+  "Read a prompt from the minibuffer and send it to the Claude Code terminal.
+This allows you to send prompts to Claude without typing directly in the terminal."
+  (interactive)
+  (let ((buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let ((buffer (get-buffer buffer-name)))
+        (let ((prompt (read-string "Claude prompt: ")))
+          (when (not (string-empty-p prompt))
+            (with-current-buffer buffer
+              (claude-code-ide--terminal-send-string prompt)
+              ;; Small delay to ensure prompt text is processed before sending return
+              (sit-for 0.1)
+              (claude-code-ide--terminal-send-return))
+            (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt)))
       (user-error "No Claude Code session for this project"))))
 
 ;;;###autoload

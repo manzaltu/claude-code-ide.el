@@ -423,6 +423,45 @@ have completed before cleanup.  Waits up to 5 seconds."
           (claude-code-ide--terminal-send-return)
           (should (equal eat-string-sent "\r")))))))
 
+(ert-deftest claude-code-ide-test-send-prompt-command ()
+  "Test the claude-code-ide-send-prompt command."
+  (let ((test-prompt "Test prompt from minibuffer")
+        (prompted-string nil)
+        (sent-string nil)
+        (sent-return nil))
+    ;; Mock read-string to return our test prompt
+    (cl-letf (((symbol-function 'read-string)
+               (lambda (prompt)
+                 (setq prompted-string prompt)
+                 test-prompt))
+              ((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str) (setq sent-string str)))
+              ((symbol-function 'claude-code-ide--terminal-send-return)
+               (lambda () (setq sent-return t))))
+
+      ;; Test with existing buffer
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (claude-code-ide-send-prompt)
+        (should (equal prompted-string "Claude prompt: "))
+        (should (equal sent-string test-prompt))
+        (should sent-return))
+
+      ;; Test with non-existent buffer (should error)
+      (should-error (claude-code-ide-send-prompt) :type 'user-error)
+
+      ;; Test with empty prompt (should not send anything)
+      (setq sent-string nil sent-return nil)
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (_) "")))
+        (with-temp-buffer
+          (rename-buffer "*test-claude-buffer*")
+          (claude-code-ide-send-prompt)
+          (should (null sent-string))
+          (should (null sent-return)))))))
+
 (ert-deftest claude-code-ide-test-terminal-session-creation ()
   "Test terminal session creation with both backends."
   (let ((mock-vterm-buffer nil)
