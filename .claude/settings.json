@@ -24,6 +24,11 @@
           },
           {
             "type": "command",
+            "command": "/home/yoav/projects/claude-code-ide.el/.claude/compile-check.sh",
+            "args": ["--json"]
+          },
+          {
+            "type": "command",
             "command": "/home/yoav/projects/claude-code-ide.el/.claude/lint-check.sh"
           }
         ]
