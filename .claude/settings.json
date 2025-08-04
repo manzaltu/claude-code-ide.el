@@ -6,11 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/yoav/projects/claude-code-ide.el/.claude/format-code.sh"
-          },
-          {
-            "type": "command",
-            "command": "/home/yoav/projects/claude-code-ide.el/.claude/cleanup-whitespace.sh"
+            "command": "./scripts/format-and-clean.sh --hook"
           }
         ]
       }
@@ -20,16 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/yoav/projects/claude-code-ide.el/.claude/test-check.sh"
-          },
-          {
-            "type": "command",
-            "command": "/home/yoav/projects/claude-code-ide.el/.claude/compile-check.sh",
-            "args": ["--json"]
-          },
-          {
-            "type": "command",
-            "command": "/home/yoav/projects/claude-code-ide.el/.claude/lint-check.sh"
+            "command": "./scripts/compile-and-test.sh --hook"
           }
         ]
       }
