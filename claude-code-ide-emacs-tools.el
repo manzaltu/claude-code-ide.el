@@ -224,14 +224,22 @@ MAX-DEPTH is the maximum depth to traverse."
                                 child (1+ level) max-depth)))))
       result)))
 
-(defun claude-code-ide-mcp-treesit-info (file-path &optional position include-ancestors include-children)
+(defun claude-code-ide-mcp--line-column-to-point (line column)
+  "Convert LINE and COLUMN to point position in current buffer.
+LINE is 1-based, COLUMN is 0-based (Emacs convention)."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line (1- line))
+    (move-to-column column)
+    (point)))
+
+(defun claude-code-ide-mcp-treesit-info (file-path &optional line column whole_file include_ancestors include_children)
   "Get tree-sitter parse tree information for FILE-PATH.
-POSITION can be:
-  - A number: get info for node at that specific position
-  - The symbol `whole-file' or string \"whole-file\": show the entire file's syntax tree
-  - Omitted/not provided: defaults to current cursor position (point)
-If INCLUDE-ANCESTORS is non-nil, include parent node hierarchy.
-If INCLUDE-CHILDREN is non-nil, include child nodes."
+Optional LINE and COLUMN specify the position (1-based line, 0-based column).
+If WHOLE_FILE is non-nil, show the entire file's syntax tree.
+If neither position is specified, defaults to current cursor position (point).
+If INCLUDE_ANCESTORS is non-nil, include parent node hierarchy.
+If INCLUDE_CHILDREN is non-nil, include child nodes."
   (if (not file-path)
       (error "file_path parameter is required")
     (claude-code-ide-mcp-server-with-session-context nil
@@ -246,26 +254,20 @@ If INCLUDE-CHILDREN is non-nil, include child nodes."
                   (if (not parser)
                       (format "No tree-sitter parser available for %s" file-path)
                     (let* ((root-node (treesit-parser-root-node parser))
-                           ;; Handle position parameter which may come as string from MCP
-                           (position-value (cond ((stringp position)
-                                                  (if (equal position "whole-file")
-                                                      'whole-file
-                                                    (string-to-number position)))
-                                                 (t position)))
-                           (show-whole-file (or (eq position-value 'whole-file)
-                                                (equal position "whole-file")))
-                           (pos (cond (show-whole-file nil)
-                                      ((numberp position-value) position-value)
+                           ;; Determine position from line/column or use current point
+                           (pos (cond (whole_file nil)
+                                      (line (claude-code-ide-mcp--line-column-to-point
+                                             line (or column 0)))
                                       ;; Use current point in the target buffer
                                       (t (point))))
-                           (node (if show-whole-file
+                           (node (if whole_file
                                      root-node
                                    (treesit-node-at pos parser)))
                            (results '()))
                       (if (not node)
                           "No tree-sitter node found"
                         ;; For full tree, use a different display function
-                        (if show-whole-file
+                        (if whole_file
                             (claude-code-ide-mcp-treesit--format-tree root-node 0 20)
                           ;; Basic node information for specific position
                           (push (format "Node Type: %s" (treesit-node-type node)) results)
@@ -287,7 +289,7 @@ If INCLUDE-CHILDREN is non-nil, include child nodes."
                               (push (format "Field: %s" field-name) results)))
 
                           ;; Include ancestors if requested
-                          (when include-ancestors
+                          (when include_ancestors
                             (push "\nAncestors:" results)
                             (let ((parent (treesit-node-parent node))
                                   (level 1))
@@ -303,7 +305,7 @@ If INCLUDE-CHILDREN is non-nil, include child nodes."
                                 (cl-incf level))))
 
                           ;; Include children if requested
-                          (when include-children
+                          (when include_children
                             (push "\nChildren:" results)
                             (let ((child-count (treesit-node-child-count node))
                                   (i 0))
@@ -374,10 +376,18 @@ If INCLUDE-CHILDREN is non-nil, include child nodes."
                          :type "string"
                          :required t
                          :description "Path to the file to analyze")
-                  (:name "position"
-                         :type "string"
+                  (:name "line"
+                         :type "number"
                          :required nil
-                         :description "Position in file: number for specific position, \"whole-file\" for entire tree, or omit to use cursor position")
+                         :description "Line number (1-based)")
+                  (:name "column"
+                         :type "number"
+                         :required nil
+                         :description "Column number (0-based)")
+                  (:name "whole_file"
+                         :type "boolean"
+                         :required nil
+                         :description "Show the entire file's syntax tree")
                   (:name "include_ancestors"
                          :type "boolean"
                          :required nil
