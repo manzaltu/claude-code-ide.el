@@ -48,7 +48,15 @@
     (error
      (claude-code-ide-debug "Failed to load web-server package: %s" (error-message-string err)))))
 
+;; Web-server declarations
 (declare-function ws-process "web-server" (server))
+(declare-function ws-start "web-server" (handlers port &optional log-buffer &rest network-args))
+(declare-function ws-stop "web-server" (server))
+(declare-function ws-send-404 "web-server" (proc &optional info))
+(declare-function ws-headers "web-server" (request))
+(declare-function ws-body "web-server" (request))
+(declare-function ws-send "web-server" (proc msg))
+(declare-function ws-response-header "web-server" (proc code &rest headers))
 
 ;;; Server State
 

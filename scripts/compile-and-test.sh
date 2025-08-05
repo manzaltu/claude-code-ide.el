@@ -58,47 +58,20 @@ fi
 
 # STEP 1: Compile all elisp files
 echo "=== Running byte-compilation check ===" >&2
-COMPILE_OUTPUT=$(emacs -batch $LOAD_PATH \
+emacs -batch $LOAD_PATH \
     --eval "(setq byte-compile-warnings '(not free-vars unresolved))" \
-    -f batch-byte-compile *.el 2>&1)
+    -f batch-byte-compile *.el
+COMPILE_EXIT_CODE=$?
 
-# Filter out known non-issues
-FILTERED_OUTPUT=$(echo "$COMPILE_OUTPUT" | grep -E "(Warning|Error)" | \
-    grep -v "clang-include-fixer.el" | \
-    grep -v "Unknown type: buffer-live" | \
-    grep -v "reference to free variable.*eat-terminal" | \
-    grep -v "reference to free variable.*vterm-" | \
-    grep -v "reference to free variable.*flycheck-" | \
-    grep -v "the function.*is not known to be defined" | \
-    grep -v "Unused lexical" | \
-    grep -v "docstring wider than")
-
-# Check for real errors (not just warnings)
-REAL_ERRORS=$(echo "$COMPILE_OUTPUT" | grep -E "Error:" | \
-    grep -v "Cannot open load file" | \
-    grep -v "No such file or directory")
-
-# Store compile result
-COMPILE_FAILED=0
-if [ -n "$REAL_ERRORS" ]; then
-    COMPILE_FAILED=1
-fi
-
-# Show compile results
-if [ -n "$REAL_ERRORS" ]; then
-    echo "✗ Compilation errors found:" >&2
-    echo "$REAL_ERRORS" >&2
-elif [ -n "$FILTERED_OUTPUT" ]; then
-    echo "⚠ Compilation warnings found:" >&2
-    echo "$FILTERED_OUTPUT" | sed 's/^/[Warning] /' >&2
-    echo "✓ Byte-compilation check passed (with warnings)" >&2
-else
+if [ $COMPILE_EXIT_CODE -eq 0 ]; then
     echo "✓ Byte-compilation check passed!" >&2
+else
+    echo "✗ Compilation failed!" >&2
 fi
 
-# STEP 2: Run tests (only if compilation succeeded or had warnings)
+# STEP 2: Run tests (only if compilation succeeded)
 TEST_FAILED=0
-if [ $COMPILE_FAILED -eq 0 ]; then
+if [ $COMPILE_EXIT_CODE -eq 0 ]; then
     echo "" >&2
     echo "=== Running tests ===" >&2
     emacs -batch -L . -l ert -l claude-code-ide-tests.el -f ert-run-tests-batch-and-exit >&2
@@ -123,13 +96,11 @@ rm -f *.elc
 
 # Handle hook mode output
 if [ "$HOOK_MODE" = true ]; then
-    if [ $COMPILE_FAILED -eq 1 ]; then
-        # Escape newlines in error messages for JSON
-        ESCAPED_ERRORS=$(echo "$REAL_ERRORS" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
+    if [ $COMPILE_EXIT_CODE -ne 0 ]; then
         cat <<EOF
 {
   "decision": "block",
-  "reason": "✗ Compilation errors found! Fix these errors before stopping:\\n$ESCAPED_ERRORS"
+  "reason": "✗ Compilation failed! Fix the compilation errors before stopping. Run './scripts/compile-and-test.sh' to see the errors."
 }
 EOF
         exit 0
@@ -153,7 +124,7 @@ EOF
 fi
 
 # Normal mode: exit with appropriate code
-if [ $COMPILE_FAILED -eq 1 ] || [ $TEST_FAILED -eq 1 ]; then
+if [ $COMPILE_EXIT_CODE -ne 0 ] || [ $TEST_FAILED -eq 1 ]; then
     exit 1
 fi
 

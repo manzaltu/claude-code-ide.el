@@ -37,6 +37,11 @@
 (require 'cl-lib)
 (require 'imenu)
 
+;; Tree-sitter declarations
+(declare-function treesit-node-at "treesit" (pos &optional parser-or-lang named))
+(declare-function treesit-node-text "treesit" (node &optional no-property))
+(declare-function treesit-node-field-name "treesit" (node))
+
 ;;; Tool Functions
 
 (defun claude-code-ide-mcp-xref-find-references (identifier file-path)

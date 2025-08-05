@@ -41,6 +41,16 @@
 ;; Forward declarations
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 
+;; Flycheck declarations
+(defvar flycheck-current-errors nil)
+(declare-function flycheck-error-line "flycheck" (err))
+(declare-function flycheck-error-column "flycheck" (err))
+(declare-function flycheck-error-end-line "flycheck" (err))
+(declare-function flycheck-error-end-column "flycheck" (err))
+(declare-function flycheck-error-level "flycheck" (err))
+(declare-function flycheck-error-checker "flycheck" (err))
+(declare-function flycheck-error-message "flycheck" (err))
+
 ;;; Configuration
 
 (defcustom claude-code-ide-diagnostics-backend 'auto

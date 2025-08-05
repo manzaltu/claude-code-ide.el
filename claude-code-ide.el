@@ -60,11 +60,31 @@
 
 (require 'cl-lib)
 (require 'project)
-(require 'claude-code-ide-mcp)
 (require 'claude-code-ide-debug)
+(require 'claude-code-ide-mcp)
 (require 'claude-code-ide-transient)
 (require 'claude-code-ide-mcp-server)
 (require 'claude-code-ide-emacs-tools)
+
+;; External variable declarations
+(defvar eat-terminal nil)
+(defvar vterm-shell nil)
+(defvar vterm-environment nil)
+(defvar eat-term-name nil)
+(defvar vterm--process nil)
+
+;; External function declarations for vterm
+(declare-function vterm "vterm" (&optional arg))
+(declare-function vterm-send-string "vterm" (string))
+(declare-function vterm-send-escape "vterm" ())
+(declare-function vterm-send-return "vterm" ())
+(declare-function vterm--window-adjust-process-window-size "vterm" (&optional frame))
+
+;; External function declarations for eat
+(declare-function eat-mode "eat" ())
+(declare-function eat-exec "eat" (buffer name command startfile &rest switches))
+(declare-function eat-term-send-string "eat" (terminal string))
+(declare-function eat--adjust-process-window-size "eat" (process windows))
 
 ;;; Customization
 

@@ -39,7 +39,10 @@
 (require 'json)
 (require 'claude-code-ide-debug)
 
+;; Forward declarations
 (declare-function ws-process "web-server" (server))
+(declare-function claude-code-ide-mcp-http-server-start "claude-code-ide-mcp-http-server" (handler &optional port))
+(declare-function claude-code-ide-mcp-http-server-stop "claude-code-ide-mcp-http-server" (server))
 
 ;;; Customization
 
