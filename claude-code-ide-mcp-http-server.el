@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025
 
 ;; Author: Yoav Orot
-;; Version: 0.2.0
+;; Version: 0.2.5
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: ai, claude, mcp, http
 
