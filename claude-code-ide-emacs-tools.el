@@ -411,8 +411,10 @@ If INCLUDE_CHILDREN is non-nil, include child nodes."
 
 ;;; Setup Function
 
+;;;###autoload
 (defun claude-code-ide-emacs-tools-setup ()
   "Set up Emacs MCP tools for Claude Code IDE."
+  (interactive)
   (setq claude-code-ide-enable-mcp-server t)
   (setq claude-code-ide-mcp-server-tools
         (append claude-code-ide-mcp-server-tools
