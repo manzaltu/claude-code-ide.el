@@ -42,7 +42,7 @@
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 
 ;; Flycheck declarations
-(defvar flycheck-current-errors nil)
+(defvar flycheck-current-errors)
 (declare-function flycheck-error-line "flycheck" (err))
 (declare-function flycheck-error-column "flycheck" (err))
 (declare-function flycheck-error-end-line "flycheck" (err))

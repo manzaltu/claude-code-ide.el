@@ -67,11 +67,11 @@
 (require 'claude-code-ide-emacs-tools)
 
 ;; External variable declarations
-(defvar eat-terminal nil)
-(defvar vterm-shell nil)
-(defvar vterm-environment nil)
-(defvar eat-term-name nil)
-(defvar vterm--process nil)
+(defvar eat-terminal)
+(defvar vterm-shell)
+(defvar vterm-environment)
+(defvar eat-term-name)
+(defvar vterm--process)
 
 ;; External function declarations for vterm
 (declare-function vterm "vterm" (&optional arg))
