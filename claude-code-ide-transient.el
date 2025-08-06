@@ -298,7 +298,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
 
 ;;; Transient Menus
 
-;;;###autoload (autoload 'claude-code-ide-menu "claude-code-ide" "Claude Code IDE main menu." t)
+;;;###autoload (autoload 'claude-code-ide-menu "claude-code-ide-transient" "Claude Code IDE main menu." t)
 (transient-define-prefix claude-code-ide-menu ()
   "Claude Code IDE main menu."
   [:description claude-code-ide--session-status]
