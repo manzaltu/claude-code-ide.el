@@ -468,6 +468,44 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (null sent-string))
           (should (null sent-return)))))))
 
+(ert-deftest claude-code-ide-test-send-region-command ()
+  "Test the claude-code-ide-send-region command."
+  (let ((test-prompt "Test text from region")
+        (sent-string nil)
+        (sent-return nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str) (setq sent-string str)))
+              ((symbol-function 'claude-code-ide--terminal-send-return)
+               (lambda () (setq sent-return t))))
+
+      ;; Test with existing buffer and region
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (insert test-prompt)
+        ;; Call the function with start and end parameters
+        (claude-code-ide-send-region (point-min) (point-max))
+        (should (equal sent-string test-prompt))
+        (should sent-return))
+
+      ;; Test with non-existent buffer (should error)
+      (with-temp-buffer
+        (insert test-prompt)
+        (should-error (claude-code-ide-send-region (point-min) (point-max))
+                      :type 'user-error))
+
+      ;; Test with empty region (should not send anything)
+      (setq sent-string nil sent-return nil)
+      (with-temp-buffer
+        ;; Empty buffer means empty region
+        (let ((start (point-min))
+              (end (point-max)))
+                (rename-buffer "*test-claude-buffer*")
+                (claude-code-ide-send-region start end)
+                (should (null sent-string))
+                (should (null sent-return)))))))
+
 (ert-deftest claude-code-ide-test-terminal-session-creation ()
   "Test terminal session creation with both backends."
   (let ((mock-vterm-buffer nil)
