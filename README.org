@@ -81,7 +81,19 @@ Follow the installation instructions at [[https://docs.anthropic.com/en/docs/cla
 
 ** Installing the Emacs Package
 
-Currently, this package is in early development. To install using =use-package= and [[https://github.com/raxod502/straight.el][straight.el]]:
+Currently, this package is in early development.
+
+To install using =emacs-version= >= 30 and =use-package= with the =vc= binding:
+
+#+begin_src elisp
+(use-package claude-code-ide
+  :vc (:url "https://github.com/manzaltu/claude-code-ide.el.git" :rev :newest)
+  :bind ("C-c C-'" . claude-code-ide-menu) ; Set your favorite keybinding
+  :config
+  (claude-code-ide-emacs-tools-setup)) ; Optionally enable Emacs MCP tools
+#+end_src
+
+To install using =use-package= and [[https://github.com/raxod502/straight.el][straight.el]]:
 
 #+begin_src emacs-lisp
 (use-package claude-code-ide
