@@ -896,6 +896,22 @@ This allows you to send prompts to Claude without typing directly in the termina
       (user-error "No Claude Code session for this project"))))
 
 ;;;###autoload
+(defun claude-code-ide-send-region (start end)
+  "Read a propmt from the selected text in the buffer and send it to the Claude Code terminal.
+Send prompts to Claude Code via the buffer"
+  (interactive "r")
+  (let ((buffer-name (claude-code-ide--get-buffer-name))
+        (prompt (buffer-substring-no-properties start end)))
+    (if-let ((buffer (get-buffer buffer-name)))
+        (when (not (string-empty-p prompt))
+          (with-current-buffer buffer
+            (claude-code-ide--terminal-send-string prompt)
+            (sit-for 0.1)
+            (claude-code-ide--terminal-send-return))
+          (claude-code-ide-debug "Sent prompt from region to Claude Code: %s" prompt))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
 (defun claude-code-ide-toggle ()
   "Toggle visibility of Claude Code window for the current project."
   (interactive)
