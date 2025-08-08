@@ -360,6 +360,82 @@ Once enabled, Claude can use these tools to navigate your codebase. For example:
 - "List all functions and variables in this file"
 - "How many files are in this project?"
 
+** Gptel/LLM Tool Compatibility
+
+Claude Code IDE now supports the tool definition format used by [[https://github.com/karthink/gptel][gptel]] and [[https://github.com/ahyatt/llm][llm]], making it easy to reuse existing tool libraries and tool definitions.
+
+*** Enabling Gptel/LLM Compatibility
+
+To enable gptel/llm tool format compatibility, add to your configuration:
+
+#+begin_src emacs-lisp
+;; Load the compatibility layer
+(require 'claude-code-ide-gptel-compat)
+
+;; Set up gptel/llm compatibility
+(claude-code-ide-gptel-compat-setup)
+#+end_src
+
+*** Using Existing Tool Libraries
+
+You can easily register tools from existing gptel/llm tool libraries:
+
+#+begin_src emacs-lisp
+;; Register tools from a specific library file
+(claude-code-ide-gptel-compat-register-from-library "~/path/to/gptel-tools.el")
+
+;; Register tools from the gptel-tool-library package (if installed)
+(claude-code-ide-gptel-compat-register-from-gptel-tool-library)
+
+;; Register individual tools
+(claude-code-ide-gptel-compat-register-tool
+ '(:name "search-files"
+   :description "Search for files in the current project"
+   :parameters ((:name "pattern"
+                 :type "string"
+                 :required t
+                 :description "Search pattern to match filenames"))
+   :function my-search-function))
+
+;; Register multiple tools at once
+(claude-code-ide-gptel-compat-register-tools
+ '((:name "tool1" :description "..." :parameters (...) :function func1)
+   (:name "tool2" :description "..." :parameters (...) :function func2)))
+#+end_src
+
+*** Tool Format Conversion
+
+The compatibility layer automatically converts gptel/llm tool formats to the claude-code-ide format:
+
+**Gptel/LLM Format:**
+#+begin_src emacs-lisp
+'(:name "tool-name"
+  :description "Tool description"
+  :parameters ((:name "param1"
+                :type "string"
+                :required t
+                :description "Parameter description"))
+  :function my-function)
+#+end_src
+
+**Claude Code IDE Format:**
+#+begin_src emacs-lisp
+'(my-function
+  :description "Tool description"
+  :parameters ((:name "param1"
+                :type "string"
+                :required t
+                :description "Parameter description")))
+#+end_src
+
+*** Supported Tool Libraries
+
+- [[https://github.com/aard-fi/gptel-tool-library][gptel-tool-library]] - Collection of useful gptel tools
+- Any custom gptel/llm tool collection
+- Individual tool definitions in gptel/llm format
+
+This compatibility makes it much easier to share and reuse tools between different AI assistant packages in Emacs.
+
 ** Creating Custom MCP Tools
 
 You can expose your own Emacs functions to Claude through the MCP tools system. This allows Claude to interact with specialized Emacs features, custom commands, or domain-specific functionality.

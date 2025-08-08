@@ -26,6 +26,9 @@
 ;; These tools expose Emacs functionality such as xref (cross-references)
 ;; and project information to Claude, enabling AI-assisted code navigation
 ;; and understanding within the correct project context.
+;;
+;; This file also provides compatibility with gptel and llm tool formats
+;; to enable reuse of existing tool libraries.
 
 ;;; Code:
 
@@ -395,6 +398,78 @@ If INCLUDE_CHILDREN is non-nil, include child nodes."
                          :required nil
                          :description "Include child nodes"))))
   "Emacs MCP tools configuration.")
+
+;;; Gptel/LLM Compatibility Functions
+
+(defun claude-code-ide-emacs-tools--convert-gptel-tool (gptel-tool)
+  "Convert GPTEL-TOOL format to claude-code-ide format.
+GPTEL-TOOL should be a plist with :name, :description, :parameters, and :function keys.
+Returns a tool specification in claude-code-ide format."
+  (let* ((name (plist-get gptel-tool :name))
+         (description (plist-get gptel-tool :description))
+         (parameters (plist-get gptel-tool :parameters))
+         (function (plist-get gptel-tool :function))
+         (categories (plist-get gptel-tool :categories)))
+    ;; Convert parameters from gptel format to claude-code-ide format
+    (let ((converted-params '()))
+      (dolist (param parameters)
+        (let* ((param-name (plist-get param :name))
+               (param-type (plist-get param :type))
+               (param-required (plist-get param :required))
+               (param-description (plist-get param :description))
+               (converted-param `(:name ,param-name
+                                       :type ,(claude-code-ide-emacs-tools--convert-type param-type)
+                                       :required ,(if param-required t nil)
+                                       :description ,param-description)))
+          (push converted-param converted-params)))
+      ;; Return in claude-code-ide format
+      `(,function
+        :description ,description
+        :parameters ,(nreverse converted-params)))))
+
+(defun claude-code-ide-emacs-tools--convert-type (gptel-type)
+  "Convert GPTEL-TYPE to claude-code-ide type format."
+  (pcase gptel-type
+    ('string "string")
+    ('number "number")
+    ('integer "number")
+    ('boolean "boolean")
+    ('array "array")
+    ('object "object")
+    (_ "string"))) ; Default to string for unknown types
+
+(defun claude-code-ide-emacs-tools--convert-llm-tool (llm-tool)
+  "Convert LLM-TOOL format to claude-code-ide format.
+LLM-TOOL should be a plist with :name, :description, :parameters, and :function keys.
+Returns a tool specification in claude-code-ide format."
+  ;; LLM format is very similar to gptel format
+  (claude-code-ide-emacs-tools--convert-gptel-tool llm-tool))
+
+(defun claude-code-ide-emacs-tools-register-gptel-tool (gptel-tool)
+  "Register a GPTEL-TOOL in claude-code-ide format.
+GPTEL-TOOL should be a plist with :name, :description, :parameters, and :function keys.
+This function converts the tool to claude-code-ide format and adds it to the tools list."
+  (let ((converted-tool (claude-code-ide-emacs-tools--convert-gptel-tool gptel-tool)))
+    (add-to-list 'claude-code-ide-emacs-tools converted-tool)))
+
+(defun claude-code-ide-emacs-tools-register-llm-tool (llm-tool)
+  "Register an LLM-TOOL in claude-code-ide format.
+LLM-TOOL should be a plist with :name, :description, :parameters, and :function keys.
+This function converts the tool to claude-code-ide format and adds it to the tools list."
+  (let ((converted-tool (claude-code-ide-emacs-tools--convert-llm-tool llm-tool)))
+    (add-to-list 'claude-code-ide-emacs-tools converted-tool)))
+
+(defun claude-code-ide-emacs-tools-register-gptel-tools (gptel-tools)
+  "Register multiple GPTEL-TOOLS in claude-code-ide format.
+GPTEL-TOOLS should be a list of plists, each with :name, :description, :parameters, and :function keys."
+  (dolist (tool gptel-tools)
+    (claude-code-ide-emacs-tools-register-gptel-tool tool)))
+
+(defun claude-code-ide-emacs-tools-register-llm-tools (llm-tools)
+  "Register multiple LLM-TOOLS in claude-code-ide format.
+LLM-TOOLS should be a list of plists, each with :name, :description, :parameters, and :function keys."
+  (dolist (tool llm-tools)
+    (claude-code-ide-emacs-tools-register-llm-tool tool)))
 
 ;;; Helper Functions
 

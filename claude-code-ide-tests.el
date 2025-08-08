@@ -1927,6 +1927,80 @@ have completed before cleanup.  Waits up to 5 seconds."
         (should (equal (plist-get file-path-param :description)
                        "Path to the file to analyze for symbols"))))))
 
+;;; Gptel/LLM Compatibility Tests
+
+(ert-deftest claude-code-ide-gptel-compat-test-convert-tool ()
+  "Test conversion of gptel tool format to claude-code-ide format."
+  (let ((gptel-tool '(:name "test-tool"
+                      :description "Test tool description"
+                      :parameters ((:name "param1"
+                                   :type "string"
+                                   :required t
+                                   :description "Parameter 1")
+                                  (:name "param2"
+                                   :type "number"
+                                   :required nil
+                                   :description "Parameter 2"))
+                      :function test-function)))
+    (let ((converted (claude-code-ide-emacs-tools--convert-gptel-tool gptel-tool)))
+      (should (eq (car converted) 'test-function))
+      (should (equal (plist-get (cdr converted) :description) "Test tool description"))
+      (should (= (length (plist-get (cdr converted) :parameters)) 2))
+      (let ((param1 (nth 0 (plist-get (cdr converted) :parameters))))
+        (should (equal (plist-get param1 :name) "param1"))
+        (should (equal (plist-get param1 :type) "string"))
+        (should (plist-get param1 :required))))))
+
+(ert-deftest claude-code-ide-gptel-compat-test-convert-type ()
+  "Test type conversion from gptel to claude-code-ide format."
+  (should (equal (claude-code-ide-emacs-tools--convert-type 'string) "string"))
+  (should (equal (claude-code-ide-emacs-tools--convert-type 'number) "number"))
+  (should (equal (claude-code-ide-emacs-tools--convert-type 'integer) "number"))
+  (should (equal (claude-code-ide-emacs-tools--convert-type 'boolean) "boolean"))
+  (should (equal (claude-code-ide-emacs-tools--convert-type 'array) "array"))
+  (should (equal (claude-code-ide-emacs-tools--convert-type 'object) "object"))
+  (should (equal (claude-code-ide-emacs-tools--convert-type 'unknown) "string")))
+
+(ert-deftest claude-code-ide-gptel-compat-test-register-tool ()
+  "Test registering a gptel tool."
+  (let ((original-tools claude-code-ide-emacs-tools)
+        (gptel-tool '(:name "test-tool"
+                      :description "Test tool"
+                      :parameters ((:name "param"
+                                   :type "string"
+                                   :required t
+                                   :description "Test parameter"))
+                      :function test-function)))
+    (unwind-protect
+        (progn
+          (claude-code-ide-emacs-tools-register-gptel-tool gptel-tool)
+          (should (member 'test-function (mapcar #'car claude-code-ide-emacs-tools))))
+      (setq claude-code-ide-emacs-tools original-tools))))
+
+(ert-deftest claude-code-ide-gptel-compat-test-register-tools ()
+  "Test registering multiple gptel tools."
+  (let ((original-tools claude-code-ide-emacs-tools)
+        (gptel-tools '((:name "tool1"
+                        :description "Tool 1"
+                        :parameters ((:name "param1"
+                                     :type "string"
+                                     :required t
+                                     :description "Parameter 1"))
+                        :function test-function1)
+                       (:name "tool2"
+                        :description "Tool 2"
+                        :parameters ((:name "param2"
+                                     :type "number"
+                                     :required nil
+                                     :description "Parameter 2"))
+                        :function test-function2))))
+    (unwind-protect
+        (progn
+          (claude-code-ide-emacs-tools-register-gptel-tools gptel-tools)
+          (should (member 'test-function1 (mapcar #'car claude-code-ide-emacs-tools)))
+          (should (member 'test-function2 (mapcar #'car claude-code-ide-emacs-tools))))
+      (setq claude-code-ide-emacs-tools original-tools))))
+
 (provide 'claude-code-ide-tests)
 
 ;;; claude-code-ide-tests.el ends here

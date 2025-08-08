@@ -41,6 +41,7 @@
 ;; - Selection and buffer state tracking
 ;; - Tool support for file operations, diagnostics, and more
 ;; - Emacs MCP tools for xref and project navigation
+;; - Gptel/LLM tool format compatibility for easy tool reuse
 ;;
 ;; Usage:
 ;; M-x claude-code-ide - Start Claude Code for current project
@@ -55,6 +56,12 @@
 ;; Emacs MCP Tools:
 ;; To enable Emacs tools for Claude, add to your config:
 ;;   (claude-code-ide-emacs-tools-setup)
+;;
+;; Gptel/LLM Compatibility:
+;; To enable gptel/llm tool format compatibility, add to your config:
+;;   (require 'claude-code-ide-gptel-compat)
+;;   (claude-code-ide-gptel-compat-setup)
+;; This allows you to use existing gptel/llm tool libraries with Claude Code IDE.
 
 ;;; Code:
 
