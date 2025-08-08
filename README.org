@@ -406,6 +406,10 @@ Each tool definition in =claude-code-ide-mcp-server-tools= follows this format:
 
 This project is licensed under the GNU General Public License v3.0 or later. See the LICENSE file for details.
 
+* Trademark Notice
+
+Claude® is a registered trademark of Anthropic, PBC. Claude Code is an application developed by Anthropic, PBC.
+
 * Related Projects
 
 - [[https://docs.anthropic.com/en/docs/claude-code][Claude Code CLI]]
