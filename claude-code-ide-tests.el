@@ -512,6 +512,84 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should (processp (cdr result)))
             (should (bufferp mock-eat-buffer))))))))
 
+(ert-deftest claude-code-ide-test-vterm-smart-renderer-passthrough ()
+  "Test that vterm smart renderer passes through normal text immediately."
+  (let ((orig-fun-called nil)
+        (orig-fun-input nil)
+        (claude-code-ide-vterm-anti-flicker t))
+    (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+               (lambda (_) t)))
+      (with-temp-buffer
+        (let ((claude-code-ide--vterm-render-queue nil)
+              (claude-code-ide--vterm-render-timer nil)
+              (mock-process (make-process :name "mock"
+                                          :buffer (current-buffer)
+                                          :command '("true"))))
+          ;; Create a mock original function
+          (let ((orig-fun (lambda (_process input)
+                            (setq orig-fun-called t
+                                  orig-fun-input input))))
+            ;; Test with normal text (no escape sequences)
+            (claude-code-ide--vterm-smart-renderer orig-fun mock-process "Hello World")
+            ;; Should pass through immediately
+            (should orig-fun-called)
+            (should (equal orig-fun-input "Hello World"))
+            (should-not claude-code-ide--vterm-render-queue)))))))
+
+(ert-deftest claude-code-ide-test-vterm-smart-renderer-batching ()
+  "Test that vterm smart renderer batches complex escape sequences."
+  (let ((orig-fun-called nil)
+        (timer-created nil)
+        (claude-code-ide-vterm-anti-flicker t)
+        (claude-code-ide-vterm-render-delay 0.005))
+    (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+               (lambda (_) t))
+              ((symbol-function 'run-at-time)
+               (lambda (delay &rest _)
+                 (setq timer-created delay)
+                 'mock-timer))
+              ((symbol-function 'cancel-timer)
+               (lambda (_) nil)))
+      (with-temp-buffer
+        (let ((claude-code-ide--vterm-render-queue nil)
+              (claude-code-ide--vterm-render-timer nil)
+              (mock-process (make-process :name "mock"
+                                          :buffer (current-buffer)
+                                          :command '("true"))))
+          ;; Create a mock original function
+          (let ((orig-fun (lambda (_process _input)
+                            (setq orig-fun-called t))))
+            ;; Test with complex escape sequence pattern
+            (let ((complex-input "\033[2A\033[K\033[3A\033[K"))
+              (claude-code-ide--vterm-smart-renderer orig-fun mock-process complex-input)
+              ;; Should be queued, not called immediately
+              (should-not orig-fun-called)
+              (should (equal claude-code-ide--vterm-render-queue complex-input))
+              (should (equal timer-created 0.005)))))))))
+
+(ert-deftest claude-code-ide-test-toggle-vterm-optimization ()
+  "Test toggling vterm optimization on and off."
+  (let ((original-value claude-code-ide-vterm-anti-flicker)
+        (message-output nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format &rest args)
+                     (setq message-output (apply #'format format args)))))
+          ;; Start with optimization enabled
+          (setq claude-code-ide-vterm-anti-flicker t)
+
+          ;; Toggle off
+          (claude-code-ide-toggle-vterm-optimization)
+          (should-not claude-code-ide-vterm-anti-flicker)
+          (should (string-match "disabled" message-output))
+
+          ;; Toggle back on
+          (claude-code-ide-toggle-vterm-optimization)
+          (should claude-code-ide-vterm-anti-flicker)
+          (should (string-match "enabled" message-output)))
+      ;; Restore original value
+      (setq claude-code-ide-vterm-anti-flicker original-value))))
+
 (ert-deftest claude-code-ide-test-run-with-cli ()
   "Test successful run command execution."
   (skip-unless nil) ; Skip this test for now
