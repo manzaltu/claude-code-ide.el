@@ -87,7 +87,7 @@ To install using =emacs-version= >= 30 and =use-package= with the =vc= binding:
 
 #+begin_src elisp
 (use-package claude-code-ide
-  :vc (:url "https://github.com/manzaltu/claude-code-ide.el.git" :rev :newest)
+  :vc (:url "https://github.com/manzaltu/claude-code-ide.el" :rev :newest)
   :bind ("C-c C-'" . claude-code-ide-menu) ; Set your favorite keybinding
   :config
   (claude-code-ide-emacs-tools-setup)) ; Optionally enable Emacs MCP tools
