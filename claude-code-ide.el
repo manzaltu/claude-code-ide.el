@@ -560,9 +560,7 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
                  (cond
                   ;; Auto mode: get all emacs-tools names
                   ((eq claude-code-ide-mcp-allowed-tools 'auto)
-                   ;; Try to load emacs-tools if available
-                   (require 'claude-code-ide-emacs-tools nil t)
-                   (mapconcat 'identity (claude-code-ide-emacs-tools-get-all-names) " "))
+                   (mapconcat 'identity (claude-code-ide-mcp-server-get-tool-names "mcp__emacs-tools__") " "))
                   ;; List of specific tools
                   ((listp claude-code-ide-mcp-allowed-tools)
                    (mapconcat 'identity claude-code-ide-mcp-allowed-tools " "))

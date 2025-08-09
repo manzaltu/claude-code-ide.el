@@ -99,6 +99,132 @@ Each entry contains a plist with session information:
   "The session ID for the current MCP tool request.
 This is dynamically bound during tool execution.")
 
+;;; Tool Definition Functions
+
+(defun claude-code-ide-make-tool (&rest slots)
+  "Make a Claude Code IDE tool for MCP use.
+
+The following keyword arguments are available:
+
+NAME: The name of the tool, recommended to be in snake_case.
+
+FUNCTION: The function itself (lambda or symbol) that runs the tool.
+
+DESCRIPTION: A verbose description of what the tool does, how to
+call it and what it returns.
+
+ARGS: A list of plists specifying the arguments, or nil for a function that
+takes no arguments.  Each plist in ARGS should have the following keys:
+- :name - Argument name (string)
+- :type - Argument type (symbol: string, number, integer, boolean, array, object, null)
+- :description - Argument description (string)
+- :optional - Whether the argument is optional (boolean, default nil)
+- :enum - For enumerated types, a vector of allowed values
+- :items - For array types, a plist describing the array items
+- :properties - For object types, a plist of property specifications
+
+CATEGORY: A string indicating a category for the tool (optional).
+
+The tool is automatically added to `claude-code-ide-mcp-server-tools'.
+Returns the tool specification for convenience."
+  (let ((function (plist-get slots :function))
+        (name (plist-get slots :name))
+        (description (plist-get slots :description))
+        (args (plist-get slots :args))
+        (category (plist-get slots :category)))
+    ;; Validate required parameters
+    (unless function
+      (error "Tool :function is required"))
+    (unless name
+      (error "Tool :name is required"))
+    (unless description
+      (error "Tool :description is required"))
+
+    ;; Build the tool specification
+    (let ((spec (list :function function
+                      :name name
+                      :description description)))
+      (when args
+        (setq spec (plist-put spec :args args)))
+      (when category
+        (setq spec (plist-put spec :category category)))
+      ;; Add to the tools list
+      (add-to-list 'claude-code-ide-mcp-server-tools spec)
+      ;; Return the spec for convenience
+      spec)))
+
+;;; Format Detection and Conversion
+
+(defun claude-code-ide--tool-format-p (tool-spec)
+  "Determine format of TOOL-SPEC.
+Returns 'old for (symbol . plist) format, 'new for plist format."
+  (cond
+   ;; Old format: (function-symbol :description "..." :parameters ...)
+   ((and (consp tool-spec)
+         (symbolp (car tool-spec))
+         (not (keywordp (car tool-spec))))
+    'old)
+   ;; New format: (:function fn :name "..." :description "..." :args ...)
+   ((and (listp tool-spec)
+         (keywordp (car tool-spec)))
+    'new)
+   (t
+    (error "Unknown tool format: %S" tool-spec))))
+
+(defun claude-code-ide--normalize-tool-spec (tool-spec)
+  "Convert TOOL-SPEC to normalized format for processing.
+Handles both old format: (func :description ... :parameters ...)
+and new format: (:function func :name ... :args ...).
+Returns a consistent plist format with :args."
+  (let ((format (claude-code-ide--tool-format-p tool-spec)))
+    (cond
+     ((eq format 'old)
+      ;; Convert old format to new normalized format with :args
+      (let* ((func (car tool-spec))
+             (plist (cdr tool-spec))
+             (description (plist-get plist :description))
+             (parameters (plist-get plist :parameters)))
+        ;; Emit deprecation warning
+        (message "Warning: Tool '%s' is using deprecated format. Please use `claude-code-ide-make-tool' instead."
+                 (symbol-name func))
+        (list :function func
+              :name (symbol-name func)
+              :description description
+              :args (claude-code-ide--parameters-to-args parameters))))
+     ((eq format 'new)
+      ;; New format - already in the right format, just return it
+      tool-spec)
+     (t
+      (error "Cannot normalize tool spec: %S" tool-spec)))))
+
+(defun claude-code-ide--parameters-to-args (parameters)
+  "Convert PARAMETERS (old format) to :args (new format).
+PARAMETERS is a list of plists with :name, :type, :description, :required.
+Returns a list of plists with :name, :type, :description, :optional."
+  (mapcar (lambda (param)
+            (let ((name (plist-get param :name))
+                  (type (plist-get param :type))
+                  (description (plist-get param :description))
+                  (required (plist-get param :required)))
+              ;; Build arg spec
+              (let ((arg (list :name name
+                               :type (if (stringp type)
+                                         (intern type)
+                                       type))))
+                (when description
+                  (setq arg (plist-put arg :description description)))
+                (unless required
+                  (setq arg (plist-put arg :optional t)))
+                ;; Handle additional properties
+                (when-let ((enum (plist-get param :enum)))
+                  (setq arg (plist-put arg :enum enum)))
+                (when-let ((items (plist-get param :items)))
+                  (setq arg (plist-put arg :items items)))
+                (when-let ((properties (plist-get param :properties)))
+                  (setq arg (plist-put arg :properties properties)))
+                arg)))
+          parameters))
+
 ;;; Public Functions
 
 (defun claude-code-ide-mcp-server-ensure-server ()
@@ -155,6 +281,19 @@ Returns an alist suitable for JSON encoding."
            (config `((type . "http")
                      (url . ,url))))
       `((mcpServers . ((emacs-tools . ,config)))))))
+
+(defun claude-code-ide-mcp-server-get-tool-names (&optional prefix)
+  "Get a list of all registered MCP tool names.
+If PREFIX is provided, prepend it to each tool name.
+This is useful for generating --allowedTools lists."
+  (mapcar (lambda (tool-spec)
+            (let* ((normalized (claude-code-ide--normalize-tool-spec tool-spec))
+                   (tool-name (or (plist-get normalized :name)
+                                  (symbol-name (plist-get normalized :function)))))
+              (if prefix
+                  (concat prefix tool-name)
+                tool-name)))
+          claude-code-ide-mcp-server-tools))
 
 ;;; Session Management Functions
 

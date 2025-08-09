@@ -1904,28 +1904,133 @@ have completed before cleanup.  Waits up to 5 seconds."
       (delete-file test-file)
       (claude-code-ide-mcp-server-unregister-session session-id))))
 
+(ert-deftest claude-code-ide-test-tool-format-backward-compatibility ()
+  "Test that both old and new tool formats work correctly."
+  (require 'claude-code-ide-mcp-server)
+
+  ;; Define a test function
+  (defun test-tool-func (arg1 arg2)
+    "Test function for tool format testing."
+    (list arg1 arg2))
+
+  ;; Test old format
+  (let ((old-format-tool '(test-tool-func
+                           :description "Test tool in old format"
+                           :parameters ((:name "arg1"
+                                               :type "string"
+                                               :required t
+                                               :description "First argument")
+                                        (:name "arg2"
+                                               :type "number"
+                                               :required nil
+                                               :description "Second argument")))))
+
+    ;; Check format detection
+    (should (eq (claude-code-ide--tool-format-p old-format-tool) 'old))
+
+    ;; Check normalization - should emit warning
+    (let ((warning-msg nil))
+      ;; Capture the warning message
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (when (string-match "deprecated format" fmt)
+                     (setq warning-msg (apply #'format fmt args))))))
+        (let ((normalized (claude-code-ide--normalize-tool-spec old-format-tool)))
+          (should (eq (plist-get normalized :function) 'test-tool-func))
+          (should (equal (plist-get normalized :name) "test-tool-func"))
+          (should (equal (plist-get normalized :description) "Test tool in old format"))
+          (should (equal (length (plist-get normalized :args)) 2))))
+      ;; Verify warning was emitted
+      (should warning-msg)
+      (should (string-match "test-tool-func.*deprecated.*claude-code-ide-make-tool" warning-msg))))
+
+  ;; Test new format
+  (let ((new-format-tool (claude-code-ide-make-tool
+                          :function #'test-tool-func
+                          :name "test_tool_new"
+                          :description "Test tool in new format"
+                          :args '((:name "arg1"
+                                         :type string
+                                         :description "First argument")
+                                  (:name "arg2"
+                                         :type number
+                                         :description "Second argument"
+                                         :optional t)))))
+
+    ;; Check format detection
+    (should (eq (claude-code-ide--tool-format-p new-format-tool) 'new))
+
+    ;; Check normalization
+    (let ((normalized (claude-code-ide--normalize-tool-spec new-format-tool)))
+      (should (eq (plist-get normalized :function) 'test-tool-func))
+      (should (equal (plist-get normalized :name) "test_tool_new"))
+      (should (equal (plist-get normalized :description) "Test tool in new format"))
+      (let ((args (plist-get normalized :args)))
+        (should (equal (length args) 2))
+        ;; Check first argument
+        (let ((arg1 (car args)))
+          (should (equal (plist-get arg1 :name) "arg1"))
+          (should (eq (plist-get arg1 :type) 'string))
+          (should (not (plist-get arg1 :optional))))
+        ;; Check second argument
+        (let ((arg2 (cadr args)))
+          (should (equal (plist-get arg2 :name) "arg2"))
+          (should (eq (plist-get arg2 :type) 'number))
+          (should (plist-get arg2 :optional))))))
+
+  ;; Test that both formats can coexist in the same list
+  (let* ((claude-code-ide-mcp-server-tools
+          (list
+           ;; Old format
+           '(test-func-old
+             :description "Old format tool"
+             :parameters ((:name "param" :type "string" :required t)))
+           ;; New format
+           (claude-code-ide-make-tool
+            :function #'test-func-new
+            :name "test_func_new"
+            :description "New format tool"
+            :args '((:name "param" :type string)))))
+         (normalized-tools (mapcar #'claude-code-ide--normalize-tool-spec
+                                   claude-code-ide-mcp-server-tools)))
+
+    ;; Both tools should normalize correctly
+    (should (equal (length normalized-tools) 2))
+    (should (eq (plist-get (car normalized-tools) :function) 'test-func-old))
+    (should (eq (plist-get (cadr normalized-tools) :function) 'test-func-new))))
+
 (ert-deftest claude-code-ide-emacs-tools-test-tool-configuration ()
   "Test that imenu tool is properly configured."
   (require 'claude-code-ide-emacs-tools)
+  (require 'claude-code-ide-mcp-server)
 
-  ;; Check that the tool is in the configuration
-  (let ((imenu-tool (assq 'claude-code-ide-mcp-imenu-list-symbols
-                          claude-code-ide-emacs-tools)))
+  ;; Setup tools first
+  (claude-code-ide-emacs-tools-setup)
+
+  ;; Find the imenu tool in the registered tools
+  (let ((imenu-tool (cl-find-if
+                     (lambda (tool)
+                       (let ((normalized (claude-code-ide--normalize-tool-spec tool)))
+                         (eq (plist-get normalized :function)
+                             'claude-code-ide-mcp-imenu-list-symbols)))
+                     claude-code-ide-mcp-server-tools)))
     (should imenu-tool)
 
-    ;; Check description
-    (should (equal (plist-get (cdr imenu-tool) :description)
-                   "Navigate and explore a file's structure by listing all its functions, classes, and variables with their locations"))
+    ;; Normalize the tool to check its properties
+    (let ((normalized (claude-code-ide--normalize-tool-spec imenu-tool)))
+      ;; Check description
+      (should (equal (plist-get normalized :description)
+                     "Navigate and explore a file's structure by listing all its functions, classes, and variables with their locations"))
 
-    ;; Check parameters
-    (let ((params (plist-get (cdr imenu-tool) :parameters)))
-      (should (= (length params) 1))
-      (let ((file-path-param (car params)))
-        (should (equal (plist-get file-path-param :name) "file_path"))
-        (should (equal (plist-get file-path-param :type) "string"))
-        (should (equal (plist-get file-path-param :required) t))
-        (should (equal (plist-get file-path-param :description)
-                       "Path to the file to analyze for symbols"))))))
+      ;; Check args
+      (let ((args (plist-get normalized :args)))
+        (should (= (length args) 1))
+        (let ((file-path-arg (car args)))
+          (should (equal (plist-get file-path-arg :name) "file_path"))
+          (should (eq (plist-get file-path-arg :type) 'string))
+          (should (not (plist-get file-path-arg :optional)))
+          (should (equal (plist-get file-path-arg :description)
+                         "Path to the file to analyze for symbols")))))))
 
 (provide 'claude-code-ide-tests)
 

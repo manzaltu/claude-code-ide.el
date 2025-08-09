@@ -334,78 +334,8 @@ If INCLUDE_CHILDREN is non-nil, include child nodes."
 
 ;;; Tool Configuration
 
-(defvar claude-code-ide-emacs-tools
-  '((claude-code-ide-mcp-xref-find-references
-     :description "Find where a function, variable, or class is used throughout your codebase. Perfect for understanding code dependencies and impact analysis"
-     :parameters ((:name "identifier"
-                         :type "string"
-                         :required t
-                         :description "The identifier to find references for")
-                  (:name "file_path"
-                         :type "string"
-                         :required t
-                         :description "File path to use as context for the search")))
+;;; Tool Registration
 
-    (claude-code-ide-mcp-xref-find-apropos
-     :description "Search for functions, variables, or classes by name pattern across your project. Helps you discover code elements when you know part of the name"
-     :parameters ((:name "pattern"
-                         :type "string"
-                         :required t
-                         :description "The pattern to search for symbols")
-                  (:name "file_path"
-                         :type "string"
-                         :required t
-                         :description "File path to use as context for the search")))
-
-    (claude-code-ide-mcp-project-info
-     :description "Get quick overview of your current project context including directory, active file, and project size"
-     :parameters nil)
-
-    (claude-code-ide-mcp-imenu-list-symbols
-     :description "Navigate and explore a file's structure by listing all its functions, classes, and variables with their locations"
-     :parameters ((:name "file_path"
-                         :type "string"
-                         :required t
-                         :description "Path to the file to analyze for symbols")))
-
-    (claude-code-ide-mcp-treesit-info
-     :description "Get tree-sitter syntax tree information for a file, including node types, ranges, and hierarchical structure. Useful for understanding code structure and AST analysis"
-     :parameters ((:name "file_path"
-                         :type "string"
-                         :required t
-                         :description "Path to the file to analyze")
-                  (:name "line"
-                         :type "number"
-                         :required nil
-                         :description "Line number (1-based)")
-                  (:name "column"
-                         :type "number"
-                         :required nil
-                         :description "Column number (0-based)")
-                  (:name "whole_file"
-                         :type "boolean"
-                         :required nil
-                         :description "Show the entire file's syntax tree")
-                  (:name "include_ancestors"
-                         :type "boolean"
-                         :required nil
-                         :description "Include parent node hierarchy")
-                  (:name "include_children"
-                         :type "boolean"
-                         :required nil
-                         :description "Include child nodes"))))
-  "Emacs MCP tools configuration.")
-
-;;; Helper Functions
-
-(defun claude-code-ide-emacs-tools-get-all-names ()
-  "Get a list of all Emacs MCP tool names in the format expected by --allowedTools."
-  (mapcar (lambda (tool-spec)
-            (let* ((func-symbol (car tool-spec))
-                   (func-name (symbol-name func-symbol)))
-              ;; Convert function name to MCP tool name format
-              (concat "mcp__emacs-tools__" func-name)))
-          claude-code-ide-emacs-tools))
 
 ;;; Setup Function
 
@@ -414,9 +344,74 @@ If INCLUDE_CHILDREN is non-nil, include child nodes."
   "Set up Emacs MCP tools for Claude Code IDE."
   (interactive)
   (setq claude-code-ide-enable-mcp-server t)
-  (setq claude-code-ide-mcp-server-tools
-        (append claude-code-ide-mcp-server-tools
-                claude-code-ide-emacs-tools)))
+
+  ;; Register xref tools
+  (claude-code-ide-make-tool
+   :function #'claude-code-ide-mcp-xref-find-references
+   :name "claude-code-ide-mcp-xref-find-references"
+   :description "Find where a function, variable, or class is used throughout your codebase. Perfect for understanding code dependencies and impact analysis"
+   :args '((:name "identifier"
+                  :type string
+                  :description "The identifier to find references for")
+           (:name "file_path"
+                  :type string
+                  :description "File path to use as context for the search")))
+
+  (claude-code-ide-make-tool
+   :function #'claude-code-ide-mcp-xref-find-apropos
+   :name "claude-code-ide-mcp-xref-find-apropos"
+   :description "Search for functions, variables, or classes by name pattern across your project. Helps you discover code elements when you know part of the name"
+   :args '((:name "pattern"
+                  :type string
+                  :description "The pattern to search for symbols")
+           (:name "file_path"
+                  :type string
+                  :description "File path to use as context for the search")))
+
+  ;; Register project info tool
+  (claude-code-ide-make-tool
+   :function #'claude-code-ide-mcp-project-info
+   :name "claude-code-ide-mcp-project-info"
+   :description "Get quick overview of your current project context including directory, active file, and project size"
+   :args nil)
+
+  ;; Register imenu tool
+  (claude-code-ide-make-tool
+   :function #'claude-code-ide-mcp-imenu-list-symbols
+   :name "claude-code-ide-mcp-imenu-list-symbols"
+   :description "Navigate and explore a file's structure by listing all its functions, classes, and variables with their locations"
+   :args '((:name "file_path"
+                  :type string
+                  :description "Path to the file to analyze for symbols")))
+
+  ;; Register tree-sitter tool
+  (claude-code-ide-make-tool
+   :function #'claude-code-ide-mcp-treesit-info
+   :name "claude-code-ide-mcp-treesit-info"
+   :description "Get tree-sitter syntax tree information for a file, including node types, ranges, and hierarchical structure. Useful for understanding code structure and AST analysis"
+   :args '((:name "file_path"
+                  :type string
+                  :description "Path to the file to analyze")
+           (:name "line"
+                  :type number
+                  :description "Line number (1-based)"
+                  :optional t)
+           (:name "column"
+                  :type number
+                  :description "Column number (0-based)"
+                  :optional t)
+           (:name "whole_file"
+                  :type boolean
+                  :description "Show the entire file's syntax tree"
+                  :optional t)
+           (:name "include_ancestors"
+                  :type boolean
+                  :description "Include parent node hierarchy"
+                  :optional t)
+           (:name "include_children"
+                  :type boolean
+                  :description "Include child nodes"
+                  :optional t))))
 
 (provide 'claude-code-ide-emacs-tools)
 ;;; claude-code-ide-emacs-tools.el ends here

@@ -378,24 +378,25 @@ You can expose your own Emacs functions to Claude through the MCP tools system. 
 
 *** Tool Definition Format
 
-Each tool definition in =claude-code-ide-mcp-server-tools= follows this format:
+Define tools using the =claude-code-ide-make-tool= function:
 
 #+begin_src emacs-lisp
-'(function-name
-  :description "Human-readable description for Claude"
-  :parameters ((:name "param1"
-                :type "string"
-                :required t
-                :description "What this parameter does")
-               (:name "param2"
-                :type "number"
-                :required nil
-                :description "Optional parameter")))
+(claude-code-ide-make-tool
+ :function #'function-name     ; The Emacs function to call
+ :name "tool_name"             ; Name for Claude to use (snake_case recommended)
+ :description "..."            ; Human-readable description
+ :args '((:name "param1"       ; List of argument specifications
+          :type string         ; Type: string, number, integer, boolean, etc.
+          :description "..."   ; What this parameter does
+          :optional t)))       ; Optional parameters marked with :optional t
 #+end_src
+
+Available argument types: =string=, =number=, =integer=, =boolean=, =array=, =object=, =null=
 
 *** Context-Aware Tool Example
 
 #+begin_src emacs-lisp
+;; Define a context-aware function that operates in the session's project
 (defun my-project-grep (pattern)
   "Search for PATTERN in the current session's project."
   (claude-code-ide-mcp-server-with-session-context nil
@@ -405,14 +406,20 @@ Each tool definition in =claude-code-ide-mcp-server-tools= follows this format:
                     (format "rg -n '%s' %s" pattern project-dir))))
       results)))
 
-(add-to-list 'claude-code-ide-mcp-server-tools
-             '(my-project-grep
-               :description "Search for pattern in project files"
-               :parameters ((:name "pattern"
-                            :type "string"
-                            :required t
-                            :description "Pattern to search for"))))
+;; Define and register the tool (automatically added to claude-code-ide-mcp-server-tools)
+(claude-code-ide-make-tool
+ :function #'my-project-grep
+ :name "my_project_grep"
+ :description "Search for pattern in project files"
+ :args '((:name "pattern"
+          :type string
+          :description "Pattern to search for")))
+
+;; Enable Emacs tool MCP server
+(claude-code-ide-emacs-tools-setup)
 #+end_src
+
+The =claude-code-ide-mcp-server-with-session-context= macro ensures your tool executes in the correct project context.
 
 * License
 
