@@ -74,6 +74,7 @@ This deep integration means Claude Code understands your project context and can
 - Emacs 28.1 or higher
 - Claude Code CLI installed and available in PATH
 - =vterm= or =eat= package (for terminal support)
+- =websocket= package
 
 ** Installing Claude Code CLI
 
