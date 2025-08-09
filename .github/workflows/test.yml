@@ -77,7 +77,7 @@ jobs:
 
       - name: Run compile and test checks
         run: |
-          ./scripts/compile-and-test.sh
+          ./scripts/compile-and-test.sh --with-native-compile
 
   # This job is used for branch protection rules
   # It passes only when all required jobs pass

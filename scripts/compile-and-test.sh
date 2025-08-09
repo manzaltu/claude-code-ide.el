@@ -4,17 +4,32 @@
 # This script is used by both GitHub Actions and Claude stop hooks
 
 
-# Check if we're in hook mode via --hook argument
+# Parse command line arguments
 HOOK_MODE=false
 HOOK_INPUT=""
-if [ "$1" = "--hook" ]; then
-    HOOK_MODE=true
+WITH_NATIVE_COMPILE=false
 
-    # Read JSON input from stdin when in hook mode
-    if [ ! -t 0 ]; then
-        HOOK_INPUT=$(cat)
-    fi
-fi
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --hook)
+            HOOK_MODE=true
+            # Read JSON input from stdin when in hook mode
+            if [ ! -t 0 ]; then
+                HOOK_INPUT=$(cat)
+            fi
+            shift
+            ;;
+        --with-native-compile)
+            WITH_NATIVE_COMPILE=true
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            echo "Usage: $0 [--hook] [--with-native-compile]" >&2
+            exit 1
+            ;;
+    esac
+done
 
 # Get the script's directory and project root
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -69,12 +84,12 @@ else
     echo "✗ Byte-compilation failed!" >&2
 fi
 
-# STEP 2: Native compile all elisp files (only if byte-compilation succeeded)
+# STEP 2: Native compile all elisp files (only if byte-compilation succeeded and flag is set)
 NATIVE_COMPILE_EXIT_CODE=0
 NATIVE_COMPILE_AVAILABLE=false
 
-# Check if native compilation is available
-if [ $COMPILE_EXIT_CODE -eq 0 ]; then
+# Check if native compilation is requested and available
+if [ $COMPILE_EXIT_CODE -eq 0 ] && [ "$WITH_NATIVE_COMPILE" = true ]; then
     if emacs -batch --eval "(if (featurep 'native-compile) (message \"yes\") (message \"no\"))" 2>&1 | grep -q "yes"; then
         NATIVE_COMPILE_AVAILABLE=true
     fi
@@ -97,6 +112,11 @@ if [ $COMPILE_EXIT_CODE -eq 0 ]; then
         # Set exit code to 0 since this is not an error
         NATIVE_COMPILE_EXIT_CODE=0
     fi
+elif [ $COMPILE_EXIT_CODE -eq 0 ]; then
+    echo "" >&2
+    echo "=== Skipping native-compilation (use --with-native-compile to enable) ===" >&2
+    # Set exit code to 0 since skipping is intentional
+    NATIVE_COMPILE_EXIT_CODE=0
 else
     echo "" >&2
     echo "=== Skipping native-compilation due to byte-compilation errors ===" >&2
@@ -161,10 +181,14 @@ EOF
         echo "" >&2
         echo "=== Summary ===" >&2
         echo "✓ Byte-compilation: PASSED" >&2
-        if [ "$NATIVE_COMPILE_AVAILABLE" = true ]; then
-            echo "✓ Native-compilation: PASSED" >&2
+        if [ "$WITH_NATIVE_COMPILE" = true ]; then
+            if [ "$NATIVE_COMPILE_AVAILABLE" = true ]; then
+                echo "✓ Native-compilation: PASSED" >&2
+            else
+                echo "✓ Native-compilation: SKIPPED (not available)" >&2
+            fi
         else
-            echo "✓ Native-compilation: SKIPPED (not available)" >&2
+            echo "✓ Native-compilation: SKIPPED (not requested)" >&2
         fi
         echo "✓ Tests: PASSED" >&2
         echo "✓ All checks passed!" >&2
