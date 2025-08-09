@@ -202,7 +202,9 @@ PARAMS is the parameters alist."
 
 (defun claude-code-ide-mcp-http-server--handle-tools-list (_params)
   "Handle the tools/list method."
-  (let ((tools (mapcar #'claude-code-ide-mcp-http-server--tool-to-mcp
+  (let ((tools (mapcar (lambda (spec)
+                         (claude-code-ide-mcp-http-server--tool-to-mcp
+                          (claude-code-ide--normalize-tool-spec spec)))
                        claude-code-ide-mcp-server-tools)))
     (claude-code-ide-debug "MCP server returning %d tools" (length tools))
     (dolist (tool tools)
@@ -213,19 +215,27 @@ PARAMS is the parameters alist."
   "Handle the tools/call method with PARAMS."
   (let* ((tool-name (alist-get 'name params))
          (tool-args (alist-get 'arguments params))
-         (tool-symbol (intern tool-name))
-         (tool-config (assq tool-symbol claude-code-ide-mcp-server-tools)))
+         ;; Find the tool spec by name, handling both formats
+         (tool-spec (cl-find-if
+                     (lambda (spec)
+                       (let ((normalized (claude-code-ide--normalize-tool-spec spec)))
+                         (string= (or (plist-get normalized :name)
+                                      (symbol-name (plist-get normalized :function)))
+                                  tool-name)))
+                     claude-code-ide-mcp-server-tools)))
 
-    (unless tool-config
+    (unless tool-spec
       (signal 'json-rpc-error (list -32602 (format "Unknown tool: %s" tool-name))))
 
-    ;; Validate and extract arguments
-    (let* ((param-specs (plist-get (cdr tool-config) :parameters))
-           (args (claude-code-ide-mcp-http-server--validate-args tool-args param-specs)))
+    ;; Normalize the tool spec and extract function and args
+    (let* ((normalized (claude-code-ide--normalize-tool-spec tool-spec))
+           (tool-function (plist-get normalized :function))
+           (arg-specs (plist-get normalized :args))
+           (args (claude-code-ide-mcp-http-server--validate-args tool-args arg-specs)))
 
       ;; Call the function
       (condition-case err
-          (let ((result (apply tool-symbol args)))
+          (let ((result (apply tool-function args)))
             `((content . (((type . "text")
                            (text . ,(claude-code-ide-mcp-http-server--format-result result)))))))
         (quit
@@ -238,53 +248,58 @@ PARAMS is the parameters alist."
 ;;; Helper Functions
 
 (defun claude-code-ide-mcp-http-server--tool-to-mcp (tool-spec)
-  "Convert TOOL-SPEC to MCP tool format."
-  (let* ((name (car tool-spec))
-         (plist (cdr tool-spec))
-         (description (plist-get plist :description))
-         (params (plist-get plist :parameters)))
-    `((name . ,(symbol-name name))
+  "Convert TOOL-SPEC to MCP tool format.
+TOOL-SPEC should already be normalized."
+  (let* ((name (or (plist-get tool-spec :name)
+                   (symbol-name (plist-get tool-spec :function))))
+         (description (plist-get tool-spec :description))
+         (args (plist-get tool-spec :args)))
+    `((name . ,name)
       (description . ,description)
       (inputSchema . ((type . "object")
-                      (properties . ,(claude-code-ide-mcp-http-server--params-to-schema params))
-                      (required . ,(claude-code-ide-mcp-http-server--required-params params)))))))
+                      (properties . ,(claude-code-ide-mcp-http-server--args-to-schema args))
+                      (required . ,(claude-code-ide-mcp-http-server--required-args args)))))))
 
-(defun claude-code-ide-mcp-http-server--params-to-schema (params)
-  "Convert PARAMS list to JSON Schema properties."
-  (if params
+(defun claude-code-ide-mcp-http-server--args-to-schema (args)
+  "Convert ARGS list to JSON Schema properties."
+  (if args
       (let ((schema '()))
-        (dolist (param params (nreverse schema))
-          (let* ((name (plist-get param :name))
-                 (type (plist-get param :type))
-                 (desc (plist-get param :description))
-                 (prop-schema `((type . ,type))))
+        (dolist (arg args (nreverse schema))
+          (let* ((name (plist-get arg :name))
+                 (type (plist-get arg :type))
+                 (desc (plist-get arg :description))
+                 (prop-schema `((type . ,(if (symbolp type)
+                                             (symbol-name type)
+                                           type)))))
             ;; Only add description if it's non-nil
             (when desc
               (setq prop-schema (append prop-schema `((description . ,desc)))))
             (push (cons (intern name) prop-schema) schema))))
-    ;; Return empty hash table for no parameters (encodes as {} not [])
+    ;; Return empty hash table for no args (encodes as {} not [])
     (make-hash-table :test 'equal)))
 
-(defun claude-code-ide-mcp-http-server--required-params (params)
-  "Extract required parameter names from PARAMS."
+(defun claude-code-ide-mcp-http-server--required-args (args)
+  "Extract required argument names from ARGS."
   (let ((required '()))
-    (dolist (param params)
-      (when (plist-get param :required)
-        (push (plist-get param :name) required)))
+    (dolist (arg args)
+      ;; In new format, args are required unless marked :optional t
+      (unless (plist-get arg :optional)
+        (push (plist-get arg :name) required)))
     ;; Return as a vector (JSON array) to ensure proper encoding
     (vconcat (nreverse required))))
 
-(defun claude-code-ide-mcp-http-server--validate-args (args param-specs)
-  "Validate and extract ARGS according to PARAM-SPECS.
+(defun claude-code-ide-mcp-http-server--validate-args (args arg-specs)
+  "Validate and extract ARGS according to ARG-SPECS.
 Returns a list of arguments in the correct order."
   (let ((result '()))
-    (dolist (spec param-specs (nreverse result))
+    (dolist (spec arg-specs (nreverse result))
       (let* ((name (plist-get spec :name))
-             (required (plist-get spec :required))
+             ;; In new format, args are required unless marked :optional t
+             (optional (plist-get spec :optional))
              (value (alist-get (intern name) args)))
-        (when (and required (not value))
+        (when (and (not optional) (not value))
           (signal 'json-rpc-error
-                  (list -32602 (format "Missing required parameter: %s" name))))
+                  (list -32602 (format "Missing required argument: %s" name))))
         (push value result)))))
 
 (defun claude-code-ide-mcp-http-server--format-result (result)
