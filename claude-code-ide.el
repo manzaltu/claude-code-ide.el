@@ -206,6 +206,29 @@ This setting should be removed once the upstream bug is fixed."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-vterm-anti-flicker t
+  "Enable intelligent flicker reduction for vterm display.
+When enabled, this feature optimizes terminal rendering by detecting
+and batching rapid update sequences.  This provides smoother visual
+output during complex terminal operations such as expanding text areas
+and rapid screen updates.
+
+This optimization applies only to vterm and uses advanced pattern
+matching to maintain responsiveness while improving visual quality."
+  :type 'boolean
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-vterm-render-delay 0.005
+  "Rendering optimization delay for batched terminal updates.
+This parameter defines the collection window for related terminal
+update sequences when anti-flicker mode is active.  The timing
+balances visual smoothness with interaction responsiveness.
+
+The 0.005 second (5ms) default delivers optimal rendering quality
+with imperceptible latency."
+  :type 'number
+  :group 'claude-code-ide)
+
 ;;; Constants
 
 (defconst claude-code-ide--active-editor-notification-delay 0.1
@@ -222,6 +245,102 @@ This setting should be removed once the upstream bug is fixed."
 (defvar claude-code-ide--session-ids (make-hash-table :test 'equal)
   "Hash table mapping project/directory roots to their session IDs.")
 
+;;; Vterm Rendering Optimization
+
+(defvar-local claude-code-ide--vterm-render-queue nil
+  "Queue for optimizing terminal rendering sequences.")
+
+(defvar-local claude-code-ide--vterm-render-timer nil
+  "Timer for executing queued rendering operations.")
+
+(defun claude-code-ide--vterm-smart-renderer (orig-fun process input)
+  "Smart rendering filter for optimized vterm display updates.
+This advanced filter analyzes terminal output patterns to identify
+rapid update sequences that benefit from batched processing.
+It significantly improves visual quality during complex operations.
+
+ORIG-FUN is the underlying filter to enhance.
+PROCESS is the terminal process being optimized.
+INPUT contains the terminal output stream."
+  (if (or (not claude-code-ide-vterm-anti-flicker)
+          (not (claude-code-ide--session-buffer-p (process-buffer process))))
+      ;; Feature disabled or not a Claude buffer, pass through normally
+      (funcall orig-fun process input)
+    (with-current-buffer (process-buffer process)
+      ;; Detect rapid terminal redraw sequences
+      ;; Pattern analysis for complex terminal updates:
+      ;; - Vertical cursor movements (ESC[<n>A)
+      ;; - Line clearing operations (ESC[K)
+      ;; - High escape sequence density
+      (let* ((complex-redraw-detected
+              ;; Pattern: vertical movement + clear, repeated
+              (string-match-p "\033\\[[0-9]*A.*\033\\[K.*\033\\[[0-9]*A.*\033\\[K" input))
+             (clear-count (cl-count-if (lambda (s) (string= s "\033[K"))
+                                       (split-string input "\033\\[K" t)))
+             (escape-count (cl-count ?\033 input))
+             (input-length (length input))
+             ;; High escape density indicates redrawing, not normal output
+             (escape-density (if (> input-length 0)
+                                 (/ (float escape-count) input-length)
+                               0)))
+        ;; Optimize rendering for detected patterns:
+        ;; 1. Complex redraw sequence detected, OR
+        ;; 2. Escape sequence density exceeds threshold with line operations
+        ;; 3. OR already queuing (to complete the sequence)
+        (if (or complex-redraw-detected
+                (and (> escape-density 0.3)
+                     (>= clear-count 2))
+                claude-code-ide--vterm-render-queue)
+            (progn
+              ;; Add to buffer
+              (setq claude-code-ide--vterm-render-queue
+                    (concat claude-code-ide--vterm-render-queue input))
+              ;; Reset existing render timer
+              (when claude-code-ide--vterm-render-timer
+                (cancel-timer claude-code-ide--vterm-render-timer))
+              ;; Schedule optimized rendering
+              ;; Timing calibrated for visual quality
+              (setq claude-code-ide--vterm-render-timer
+                    (run-at-time claude-code-ide-vterm-render-delay nil
+                                 (lambda (buf)
+                                   (when (buffer-live-p buf)
+                                     (with-current-buffer buf
+                                       (when claude-code-ide--vterm-render-queue
+                                         (let ((inhibit-redisplay t)
+                                               (data claude-code-ide--vterm-render-queue))
+                                           ;; Clear queue first to prevent recursion
+                                           (setq claude-code-ide--vterm-render-queue nil
+                                                 claude-code-ide--vterm-render-timer nil)
+                                           ;; Execute queued rendering
+                                           (funcall orig-fun
+                                                    (get-buffer-process buf)
+                                                    data))))))
+                                 (current-buffer))))
+          ;; Standard processing for regular output
+          (funcall orig-fun process input))))))
+
+(defun claude-code-ide--configure-vterm-buffer ()
+  "Configure vterm for enhanced performance and visual quality.
+Establishes optimal terminal settings including rendering optimizations,
+cursor management, and process buffering for superior user experience."
+  ;; Disable automatic scrolling to bottom on output to prevent flickering
+  (setq-local vterm-scroll-to-bottom-on-output nil)
+  ;; Disable immediate redraw to batch updates and reduce flickering
+  (when (boundp 'vterm--redraw-immididately)
+    (setq-local vterm--redraw-immididately nil))
+  ;; Try to prevent cursor flickering by disabling Emacs' own cursor management
+  (setq-local cursor-in-non-selected-windows nil)
+  (setq-local blink-cursor-mode nil)
+  (setq-local cursor-type nil)  ; Let vterm handle the cursor entirely
+  ;; Increase process read buffering to batch more updates together
+  (when-let ((proc (get-buffer-process (current-buffer))))
+    (set-process-query-on-exit-flag proc nil)
+    ;; Try to make vterm read larger chunks at once
+    (when (fboundp 'process-put)
+      (process-put proc 'read-output-max 4096)))
+  ;; Set up rendering optimization
+  (when claude-code-ide-vterm-anti-flicker
+    (advice-add 'vterm--filter :around #'claude-code-ide--vterm-smart-renderer)))
 
 
 ;;; Terminal Backend Abstraction
@@ -457,6 +576,11 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
             ;; Remove advice globally when no sessions remain
             (advice-remove (claude-code-ide--terminal-resize-handler)
                            #'claude-code-ide--terminal-reflow-filter))
+          ;; Remove vterm rendering optimization if no sessions remain
+          (when (and (eq claude-code-ide-terminal-backend 'vterm)
+                     claude-code-ide-vterm-anti-flicker
+                     (= (hash-table-count claude-code-ide--processes) 0))
+            (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer))
           ;; Stop MCP server for this project directory
           (claude-code-ide-mcp-stop-session directory)
           ;; Notify MCP tools server about session end with session ID
@@ -619,6 +743,9 @@ Signals an error if terminal fails to initialize."
           ;; Check if vterm successfully created a buffer
           (unless buffer
             (error "Failed to create vterm buffer.  Please ensure vterm is properly installed and compiled"))
+          ;; Configure vterm buffer for optimal performance
+          (with-current-buffer buffer
+            (claude-code-ide--configure-vterm-buffer))
           ;; Get the process that vterm created
           (let ((process (get-buffer-process buffer)))
             (unless process
@@ -875,6 +1002,19 @@ This simulates typing backslash followed by Enter, which Claude Code interprets 
           (sit-for 0.1)
           (claude-code-ide--terminal-send-return))
       (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-toggle-vterm-optimization ()
+  "Toggle vterm rendering optimization.
+This command switches the advanced rendering optimization on or off.
+Use this to balance between visual smoothness and raw responsiveness."
+  (interactive)
+  (setq claude-code-ide-vterm-anti-flicker
+        (not claude-code-ide-vterm-anti-flicker))
+  (message "Vterm rendering optimization %s"
+           (if claude-code-ide-vterm-anti-flicker
+               "enabled (smoother display with minimal latency)"
+             "disabled (direct rendering, maximum responsiveness)")))
 
 ;;;###autoload
 (defun claude-code-ide-send-prompt ()

@@ -151,6 +151,8 @@ You can run multiple Claude Code instances simultaneously for different projects
 | ~claude-code-ide-cli-extra-flags~             | Additional CLI flags (e.g. "--model")       | ~""~                                   |
 | ~claude-code-ide-debug~                       | Enable debug logging                        | ~nil~                                  |
 | ~claude-code-ide-terminal-backend~            | Terminal backend (vterm or eat)             | ~'vterm~                               |
+| ~claude-code-ide-vterm-anti-flicker~          | Enable vterm flicker reduction              | ~t~                                    |
+| ~claude-code-ide-vterm-render-delay~          | vterm render batching delay (seconds)       | ~0.005~                                |
 | ~claude-code-ide-log-with-context~            | Include session context in log messages     | ~t~                                    |
 | ~claude-code-ide-debug-buffer~                | Buffer name for debug output                | ~"*claude-code-ide-debug*"~              |
 | ~claude-code-ide-use-side-window~             | Use side window vs regular buffer           | ~t~                                    |
@@ -213,6 +215,20 @@ Claude Code IDE supports both =vterm= and =eat= as terminal backends. By default
 #+end_src
 
 The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. Both backends provide full terminal functionality including color support and special key handling.
+
+**** vterm Rendering Optimization
+
+Claude Code IDE includes intelligent flicker reduction for vterm terminals to provide smoother visual output:
+
+#+begin_src emacs-lisp
+;; Enable/disable vterm anti-flicker optimization (enabled by default)
+(setq claude-code-ide-vterm-anti-flicker t)
+
+;; Adjust the render delay for batching updates (default is 0.005 seconds)
+(setq claude-code-ide-vterm-render-delay 0.01)  ; Increase for smoother but less responsive
+#+end_src
+
+This optimization detects rapid terminal redraw sequences (like when Claude expands text areas) and batches them for smoother rendering. The 5ms default delay provides optimal visual quality with imperceptible latency.
 
 **** Terminal Keybindings
 
