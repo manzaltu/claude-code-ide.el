@@ -143,32 +143,32 @@ You can run multiple Claude Code instances simultaneously for different projects
 
 *** Configuration Variables
 
-| Variable                                    | Description                                 | Default                              |
-|---------------------------------------------+---------------------------------------------+--------------------------------------|
-| ~claude-code-ide-cli-path~                    | Path to Claude Code CLI                     | ~"claude"~                             |
-| ~claude-code-ide-buffer-name-function~        | Function for buffer naming                  | ~claude-code-ide--default-buffer-name~ |
-| ~claude-code-ide-cli-debug~                   | Enable CLI debug mode (-d flag)             | ~nil~                                  |
-| ~claude-code-ide-cli-extra-flags~             | Additional CLI flags (e.g. "--model")       | ~""~                                   |
-| ~claude-code-ide-debug~                       | Enable debug logging                        | ~nil~                                  |
-| ~claude-code-ide-terminal-backend~            | Terminal backend (vterm or eat)             | ~'vterm~                               |
-| ~claude-code-ide-vterm-anti-flicker~          | Enable vterm flicker reduction              | ~t~                                    |
-| ~claude-code-ide-vterm-render-delay~          | vterm render batching delay (seconds)       | ~0.005~                                |
-| ~claude-code-ide-eat-initialization-delay~    | Initialization delay for eat terminal       | ~0.1~                                  |
-| ~claude-code-ide-log-with-context~            | Include session context in log messages     | ~t~                                    |
-| ~claude-code-ide-debug-buffer~                | Buffer name for debug output                | ~"*claude-code-ide-debug*"~              |
-| ~claude-code-ide-use-side-window~             | Use side window vs regular buffer           | ~t~                                    |
-| ~claude-code-ide-window-side~                 | Side for Claude window                      | ~'right~                               |
-| ~claude-code-ide-window-width~                | Width for side windows (left/right)         | ~90~                                   |
-| ~claude-code-ide-window-height~               | Height for side windows (top/bottom)        | ~20~                                   |
-| ~claude-code-ide-focus-on-open~               | Focus Claude window when opened             | ~t~                                    |
-| ~claude-code-ide-focus-claude-after-ediff~    | Focus Claude window after opening ediff     | ~t~                                    |
-| ~claude-code-ide-show-claude-window-in-ediff~ | Show Claude window during ediff             | ~t~                                    |
-| ~claude-code-ide-system-prompt~               | Custom system prompt to append              | ~nil~                                  |
-| ~claude-code-ide-enable-mcp-server~           | Enable MCP tools server                     | ~nil~                                  |
-| ~claude-code-ide-mcp-server-port~             | Port for MCP tools server                   | ~nil~ (auto-select)                    |
-| ~claude-code-ide-mcp-server-tools~            | Alist of exposed Emacs functions            | ~nil~                                  |
-| ~claude-code-ide-diagnostics-backend~         | Diagnostics backend (auto/flycheck/flymake) | ~'auto~                                |
-| ~claude-code-ide-prevent-reflow-glitch~       | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
+| Variable                                      | Description                                 | Default                              |
+|-----------------------------------------------+---------------------------------------------+--------------------------------------|
+| ~claude-code-ide-cli-path~                      | Path to Claude Code CLI                     | ~"claude"~                             |
+| ~claude-code-ide-buffer-name-function~          | Function for buffer naming                  | ~claude-code-ide--default-buffer-name~ |
+| ~claude-code-ide-cli-debug~                     | Enable CLI debug mode (-d flag)             | ~nil~                                  |
+| ~claude-code-ide-cli-extra-flags~               | Additional CLI flags (e.g. "--model")       | ~""~                                   |
+| ~claude-code-ide-debug~                         | Enable debug logging                        | ~nil~                                  |
+| ~claude-code-ide-terminal-backend~              | Terminal backend (vterm or eat)             | ~'vterm~                               |
+| ~claude-code-ide-vterm-anti-flicker~            | Enable vterm flicker reduction              | ~t~                                    |
+| ~claude-code-ide-vterm-render-delay~            | vterm render batching delay (seconds)       | ~0.005~                                |
+| ~claude-code-ide-terminal-initialization-delay~ | Initialization delay for terminals          | ~0.1~                                  |
+| ~claude-code-ide-log-with-context~              | Include session context in log messages     | ~t~                                    |
+| ~claude-code-ide-debug-buffer~                  | Buffer name for debug output                | ~"*claude-code-ide-debug*"~              |
+| ~claude-code-ide-use-side-window~               | Use side window vs regular buffer           | ~t~                                    |
+| ~claude-code-ide-window-side~                   | Side for Claude window                      | ~'right~                               |
+| ~claude-code-ide-window-width~                  | Width for side windows (left/right)         | ~90~                                   |
+| ~claude-code-ide-window-height~                 | Height for side windows (top/bottom)        | ~20~                                   |
+| ~claude-code-ide-focus-on-open~                 | Focus Claude window when opened             | ~t~                                    |
+| ~claude-code-ide-focus-claude-after-ediff~      | Focus Claude window after opening ediff     | ~t~                                    |
+| ~claude-code-ide-show-claude-window-in-ediff~   | Show Claude window during ediff             | ~t~                                    |
+| ~claude-code-ide-system-prompt~                 | Custom system prompt to append              | ~nil~                                  |
+| ~claude-code-ide-enable-mcp-server~             | Enable MCP tools server                     | ~nil~                                  |
+| ~claude-code-ide-mcp-server-port~               | Port for MCP tools server                   | ~nil~ (auto-select)                    |
+| ~claude-code-ide-mcp-server-tools~              | Alist of exposed Emacs functions            | ~nil~                                  |
+| ~claude-code-ide-diagnostics-backend~           | Diagnostics backend (auto/flycheck/flymake) | ~'auto~                                |
+| ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
 
 *** Side Window Configuration
 
@@ -231,19 +231,19 @@ Claude Code IDE includes intelligent flicker reduction for vterm terminals to pr
 
 This optimization detects rapid terminal redraw sequences (like when Claude expands text areas) and batches them for smoother rendering. The 5ms default delay provides optimal visual quality with imperceptible latency.
 
-**** Eat Terminal Initialization Delay
+**** Terminal Initialization Delay
 
-When using the =eat= terminal backend, Claude Code IDE includes a brief initialization delay to ensure proper terminal layout rendering:
+Claude Code IDE includes a brief initialization delay when launching terminals to ensure proper layout rendering:
 
 #+begin_src emacs-lisp
-;; Adjust the eat initialization delay (default is 0.1 seconds)
-(setq claude-code-ide-eat-initialization-delay 0.15)
+;; Adjust the terminal initialization delay (default is 0.1 seconds)
+(setq claude-code-ide-terminal-initialization-delay 0.15)
 
 ;; Or disable it entirely (may cause visual glitches)
-(setq claude-code-ide-eat-initialization-delay 0)
+(setq claude-code-ide-terminal-initialization-delay 0)
 #+end_src
 
-This delay prevents display artifacts such as misaligned prompts and incorrect cursor positioning that can occur when eat's terminal emulation is initializing. The default 100ms delay is imperceptible but ensures reliable terminal startup.
+This delay prevents display artifacts such as misaligned prompts and incorrect cursor positioning that can occur when terminal emulation is initializing. The default 100ms delay is imperceptible but ensures reliable terminal startup.
 
 **** Terminal Keybindings
 
