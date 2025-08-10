@@ -229,6 +229,19 @@ with imperceptible latency."
   :type 'number
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-eat-initialization-delay 0.1
+  "Initialization delay for eat terminal stability.
+Provides a brief stabilization period when launching eat terminals
+to ensure proper layout calculation and rendering.  This parameter
+addresses timing requirements specific to eat's terminal emulation.
+
+The delay allows eat to complete initial dimension calculations,
+preventing display artifacts like prompt misalignment and cursor
+positioning errors.  The 100ms default ensures reliable initialization
+without noticeable latency."
+  :type 'number
+  :group 'claude-code-ide)
+
 ;;; Constants
 
 (defconst claude-code-ide--active-editor-notification-delay 0.1
@@ -863,6 +876,9 @@ This function handles:
                    ((eq claude-code-ide-terminal-backend 'eat)
                     ;; eat uses kill-buffer-on-exit variable
                     (setq-local eat-kill-buffer-on-exit t))))
+                ;; Stabilization period for eat terminal layout initialization
+                (when (eq claude-code-ide-terminal-backend 'eat)
+                  (sleep-for claude-code-ide-eat-initialization-delay))
                 ;; Display the buffer in a side window
                 (claude-code-ide--display-buffer-in-side-window buffer)
                 (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"
