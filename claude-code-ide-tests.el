@@ -652,6 +652,22 @@ have completed before cleanup.  Waits up to 5 seconds."
     (claude-code-ide-check-status)
     (should claude-code-ide--cli-available)))
 
+(ert-deftest claude-code-ide-test-eat-initialization-delay ()
+  "Test eat terminal initialization delay configuration."
+  ;; Test default value
+  (should (boundp 'claude-code-ide-eat-initialization-delay))
+  (should (numberp claude-code-ide-eat-initialization-delay))
+  (should (= claude-code-ide-eat-initialization-delay 0.1))
+
+  ;; Test customization
+  (let ((original-delay claude-code-ide-eat-initialization-delay))
+    (unwind-protect
+        (progn
+          (setq claude-code-ide-eat-initialization-delay 0.2)
+          (should (= claude-code-ide-eat-initialization-delay 0.2)))
+      ;; Restore original value
+      (setq claude-code-ide-eat-initialization-delay original-delay))))
+
 (ert-deftest claude-code-ide-test-stop-no-session ()
   "Test stop command when no session is running."
   (claude-code-ide-tests--clear-processes)
