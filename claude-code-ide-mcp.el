@@ -551,26 +551,40 @@ Optional SESSION contains the MCP session context."
 (defun claude-code-ide-mcp--on-message (ws frame)
   "Handle incoming WebSocket message from WS in FRAME."
   (claude-code-ide-debug "=== Received WebSocket frame ===")
-  (claude-code-ide-debug "Frame opcode: %s" (websocket-frame-opcode frame))
 
-  ;; Find the session for this websocket
-  (let ((session (claude-code-ide-mcp--find-session-by-websocket ws)))
-    (if session
-        (progn
+  ;; Check if frame is actually a frame struct
+  ;; In some edge cases, the websocket library might pass something else
+  (condition-case err
+      (progn
+        ;; Try to get the opcode - this will fail if frame is not a proper struct
+        (claude-code-ide-debug "Frame opcode: %s" (websocket-frame-opcode frame))
 
-          (let* ((text (websocket-frame-text frame))
-                 (message (condition-case err
-                              (json-read-from-string text)
-                            (error
-                             (claude-code-ide-debug "JSON parse error: %s" err)
-                             (claude-code-ide-debug "Raw text: %s" text)
-                             (claude-code-ide-debug "Failed to parse JSON: %s" err)
-                             nil))))
-            (claude-code-ide-debug "Received: %s" text)
-            (claude-code-ide-debug "MCP received: %s" text)
-            (when message
-              (claude-code-ide-mcp--handle-message message session))))
-      (claude-code-ide-debug "Warning: Could not find session for WebSocket message"))))
+        ;; Find the session for this websocket
+        (let ((session (claude-code-ide-mcp--find-session-by-websocket ws)))
+          (if session
+              (progn
+                (let* ((text (websocket-frame-text frame))
+                       (message (condition-case err
+                                    (json-read-from-string text)
+                                  (error
+                                   (claude-code-ide-debug "JSON parse error: %s" err)
+                                   (claude-code-ide-debug "Raw text: %s" text)
+                                   (claude-code-ide-debug "Failed to parse JSON: %s" err)
+                                   nil))))
+                  (claude-code-ide-debug "Received: %s" text)
+                  (claude-code-ide-debug "MCP received: %s" text)
+                  (when message
+                    (claude-code-ide-mcp--handle-message message session))))
+            (claude-code-ide-debug "Warning: Could not find session for WebSocket message"))))
+    (error
+     ;; If we get an error accessing frame properties, log it and continue
+     (claude-code-ide-debug "Error processing WebSocket frame: %s" err)
+     (claude-code-ide-debug "Frame type: %s, Frame value: %S" (type-of frame) frame)
+     ;; If frame is a string, it might be raw text data
+     (when (stringp frame)
+       (claude-code-ide-debug "Received raw string instead of frame: %s" frame))
+     ;; Don't crash the connection, just skip this message
+     nil)))
 
 (defun claude-code-ide-mcp--on-error (ws type err)
   "Handle WebSocket error from WS of TYPE with ERR."
