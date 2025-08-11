@@ -68,6 +68,7 @@
 
 ;; External variable declarations
 (defvar eat-terminal)
+(defvar eat--synchronize-scroll-function)
 (defvar vterm-shell)
 (defvar vterm-environment)
 (defvar eat-term-name)
@@ -84,6 +85,7 @@
 (declare-function eat-mode "eat" ())
 (declare-function eat-exec "eat" (buffer name command startfile &rest switches))
 (declare-function eat-term-send-string "eat" (terminal string))
+(declare-function eat-term-display-cursor "eat" (terminal))
 (declare-function eat--adjust-process-window-size "eat" (process windows))
 
 ;;; Customization
@@ -239,6 +241,14 @@ preventing display artifacts like prompt misalignment and cursor
 positioning errors.  The 100ms default ensures reliable initialization
 without noticeable latency."
   :type 'number
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-eat-preserve-position t
+  "Maintain terminal scroll position when switching windows.
+When enabled, prevents the eat terminal from jumping to the top
+when you switch focus to other windows and return.  This provides
+a more stable viewing experience when working with multiple windows."
+  :type 'boolean
   :group 'claude-code-ide)
 
 (define-obsolete-variable-alias
@@ -711,6 +721,33 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
               (setq claude-cmd (concat claude-cmd " --allowedTools " allowed-tools)))))))
     claude-cmd))
 
+(defun claude-code-ide--terminal-position-keeper (window-list)
+  "Maintain stable terminal view position across window switches.
+WINDOW-LIST contains windows requiring position synchronization.
+Implements intelligent scroll management to preserve user context
+when navigating between terminal and other buffers."
+  (dolist (win window-list)
+    (if (eq win 'buffer)
+        ;; Direct buffer point update
+        (goto-char (eat-term-display-cursor eat-terminal))
+      ;; Window-specific position management
+      (unless buffer-read-only  ; Skip when terminal is in navigation mode
+        (let ((terminal-point (eat-term-display-cursor eat-terminal)))
+          ;; Update window point to match terminal state
+          (set-window-point win terminal-point)
+          ;; Apply smart positioning strategy
+          (cond
+           ;; Terminal at bottom: maintain bottom alignment for active prompts
+           ((>= terminal-point (- (point-max) 2))
+            (with-selected-window win
+              (goto-char terminal-point)
+              (recenter -1)))  ; Pin to bottom
+           ;; Terminal out of view: restore visibility
+           ((not (pos-visible-in-window-p terminal-point win))
+            (with-selected-window win
+              (goto-char terminal-point)
+              (recenter)))))))))
+
 (defun claude-code-ide--parse-command-string (command-string)
   "Parse a command string into (program . args) for eat-exec.
 COMMAND-STRING is a shell command line to parse.
@@ -784,6 +821,10 @@ Signals an error if terminal fails to initialize."
           ;; Set up eat mode
           (unless (eq major-mode 'eat-mode)
             (eat-mode))
+          ;; Configure position preservation if enabled
+          (when claude-code-ide-eat-preserve-position
+            (setq-local eat--synchronize-scroll-function
+                        #'claude-code-ide--terminal-position-keeper))
           ;; Prepend our env vars to the buffer-local process-environment
           (setq-local process-environment
                       (append env-vars process-environment))
