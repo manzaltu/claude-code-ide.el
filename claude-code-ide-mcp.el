@@ -40,9 +40,12 @@
 (declare-function websocket-frame-opcode "websocket" (frame))
 (declare-function make-websocket-frame "websocket" (&rest args))
 
-;; Try to load websocket - it's required for functionality but we allow
-;; compilation without it for CI/testing environments
-(require 'websocket nil t)
+;; Require websocket at runtime to avoid batch mode issues
+(unless (featurep 'websocket)
+  (condition-case err
+      (require 'websocket)
+    (error
+     (claude-code-ide-debug "Failed to load websocket package: %s" (error-message-string err)))))
 (require 'json)
 (require 'cl-lib)
 (require 'project)
