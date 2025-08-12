@@ -53,6 +53,9 @@
 
 ;; External declarations
 (defvar claude-code-ide--session-ids)
+(declare-function claude-code-ide-mcp--build-tool-list "claude-code-ide-mcp-handlers" ())
+(declare-function claude-code-ide-mcp--build-tool-schemas "claude-code-ide-mcp-handlers" ())
+(declare-function claude-code-ide-mcp--build-tool-descriptions "claude-code-ide-mcp-handlers" ())
 
 ;;; Constants
 
@@ -290,6 +293,10 @@ turn into {}. Recursively processes nested structures."
 (defun claude-code-ide-mcp--handle-tools-list (id _params)
   "Handle the tools/list request with ID."
   (claude-code-ide-debug "Handling tools/list request with id: %s" id)
+  ;; Rebuild tool lists to respect current settings
+  (setq claude-code-ide-mcp-tools (claude-code-ide-mcp--build-tool-list))
+  (setq claude-code-ide-mcp-tool-schemas (claude-code-ide-mcp--build-tool-schemas))
+  (setq claude-code-ide-mcp-tool-descriptions (claude-code-ide-mcp--build-tool-descriptions))
   ;; Ensure handlers are loaded
   (claude-code-ide-debug "Building tools list from %d registered tools"
                          (length claude-code-ide-mcp-tools))

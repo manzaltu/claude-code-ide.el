@@ -1106,9 +1106,17 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-mcp-tool-registry ()
   "Test that all tools are properly registered."
-  (let ((expected-tools '("openFile" "getCurrentSelection" "getOpenEditors"
-                          "getWorkspaceFolders" "getDiagnostics" "saveDocument"
-                          "close_tab" "openDiff")))
+  ;; Build expected tools list dynamically based on configuration
+  (let* ((base-tools '("openFile" "getCurrentSelection" "getOpenEditors"
+                       "getWorkspaceFolders" "getDiagnostics" "saveDocument"
+                       "close_tab" "checkDocumentDirty"))
+         (diff-tools (when (bound-and-true-p claude-code-ide-use-ide-diff)
+                       '("openDiff" "closeAllDiffTabs")))
+         (expected-tools (append base-tools diff-tools)))
+    ;; Rebuild tool lists to match current configuration
+    (setq claude-code-ide-mcp-tools (claude-code-ide-mcp--build-tool-list))
+    (setq claude-code-ide-mcp-tool-schemas (claude-code-ide-mcp--build-tool-schemas))
+    (setq claude-code-ide-mcp-tool-descriptions (claude-code-ide-mcp--build-tool-descriptions))
     (dolist (tool-name expected-tools)
       (should (alist-get tool-name claude-code-ide-mcp-tools nil nil #'string=))
       (let ((handler (alist-get tool-name claude-code-ide-mcp-tools nil nil #'string=))
@@ -1118,6 +1126,37 @@ have completed before cleanup.  Waits up to 5 seconds."
                     (and (symbolp handler) (fboundp handler))))
         ;; Check that schema is provided
         (should schema)))))
+
+(ert-deftest claude-code-ide-test-ediff-flag-disables-tools ()
+  "Test that diff tools are excluded when claude-code-ide-use-ide-diff is nil."
+  (let ((claude-code-ide-use-ide-diff nil))
+    ;; Rebuild tool lists with ediff disabled
+    (setq claude-code-ide-mcp-tools (claude-code-ide-mcp--build-tool-list))
+    (setq claude-code-ide-mcp-tool-schemas (claude-code-ide-mcp--build-tool-schemas))
+    (setq claude-code-ide-mcp-tool-descriptions (claude-code-ide-mcp--build-tool-descriptions))
+    ;; Verify diff tools are not present
+    (should-not (alist-get "openDiff" claude-code-ide-mcp-tools nil nil #'string=))
+    (should-not (alist-get "closeAllDiffTabs" claude-code-ide-mcp-tools nil nil #'string=))
+    (should-not (alist-get "openDiff" claude-code-ide-mcp-tool-schemas nil nil #'string=))
+    (should-not (alist-get "closeAllDiffTabs" claude-code-ide-mcp-tool-schemas nil nil #'string=))
+    (should-not (alist-get "openDiff" claude-code-ide-mcp-tool-descriptions nil nil #'string=))
+    (should-not (alist-get "closeAllDiffTabs" claude-code-ide-mcp-tool-descriptions nil nil #'string=))
+    ;; Verify other tools are still present
+    (should (alist-get "openFile" claude-code-ide-mcp-tools nil nil #'string=))
+    (should (alist-get "getCurrentSelection" claude-code-ide-mcp-tools nil nil #'string=)))
+  ;; Test with ediff enabled
+  (let ((claude-code-ide-use-ide-diff t))
+    ;; Rebuild tool lists with ediff enabled
+    (setq claude-code-ide-mcp-tools (claude-code-ide-mcp--build-tool-list))
+    (setq claude-code-ide-mcp-tool-schemas (claude-code-ide-mcp--build-tool-schemas))
+    (setq claude-code-ide-mcp-tool-descriptions (claude-code-ide-mcp--build-tool-descriptions))
+    ;; Verify diff tools are present
+    (should (alist-get "openDiff" claude-code-ide-mcp-tools nil nil #'string=))
+    (should (alist-get "closeAllDiffTabs" claude-code-ide-mcp-tools nil nil #'string=))
+    (should (alist-get "openDiff" claude-code-ide-mcp-tool-schemas nil nil #'string=))
+    (should (alist-get "closeAllDiffTabs" claude-code-ide-mcp-tool-schemas nil nil #'string=))
+    (should (alist-get "openDiff" claude-code-ide-mcp-tool-descriptions nil nil #'string=))
+    (should (alist-get "closeAllDiffTabs" claude-code-ide-mcp-tool-descriptions nil nil #'string=))))
 
 (ert-deftest claude-code-ide-test-mcp-server-lifecycle ()
   "Test MCP server start and stop."

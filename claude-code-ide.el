@@ -180,6 +180,14 @@ diff comparison."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-use-ide-diff t
+  "Whether to use IDE diff viewer for file differences.
+When non-nil (default), Claude Code will open an IDE diff viewer
+(ediff) when showing file changes.  When nil, Claude Code will
+display diffs in the terminal instead."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-use-side-window t
   "Whether to display Claude Code in a side window.
 When non-nil (default), Claude Code opens in a dedicated side window
