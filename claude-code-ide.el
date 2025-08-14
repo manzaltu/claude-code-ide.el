@@ -437,12 +437,12 @@ This function binds:
   (cond
    ((eq claude-code-ide-terminal-backend 'vterm)
     ;; For vterm, we set up local keybindings in vterm-mode-map
-    (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
+    (local-set-key (kbd "M-<return>") #'claude-code-ide-insert-newline)
     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
    ((eq claude-code-ide-terminal-backend 'eat)
     ;; For eat, we need to modify the semi-char mode map which is the default
     ;; We use local-set-key to make it buffer-local
-    (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
+    (local-set-key (kbd "M-<return>") #'claude-code-ide-insert-newline)
     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
