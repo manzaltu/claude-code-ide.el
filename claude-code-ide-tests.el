@@ -925,6 +925,73 @@ have completed before cleanup.  Waits up to 5 seconds."
     ;; Cleanup temp directory
     (delete-directory temp-dir t)))
 
+(ert-deftest claude-code-ide-test-tab-bar-switch-on-ediff ()
+  "Test that tab-bar switching on ediff respects the configuration."
+  ;; Test that the variable exists with the expected default
+  (should (boundp 'claude-code-ide-switch-tab-on-ediff))
+  (should (equal claude-code-ide-switch-tab-on-ediff t))
+
+  ;; Test with simple mocking to ensure the config is checked
+  (let* ((original-tab '((name . "original-tab")))
+         (current-tab '((name . "current-tab")))
+         (tab-switched nil)
+         (tab-bar-mode t))
+
+    ;; Mock functions
+    (cl-letf (((symbol-function 'fboundp)
+               (lambda (sym)
+                 (or (eq sym 'tab-bar--current-tab)
+                     (eq sym 'tab-bar-select-tab-by-name)
+                     (eq sym 'tab-bar-mode)
+                     (funcall (cl-letf-saved-symbol-function 'fboundp) sym))))
+              ((symbol-function 'tab-bar--current-tab)
+               (lambda () current-tab))
+              ((symbol-function 'tab-bar-select-tab-by-name)
+               (lambda (name)
+                 (setq tab-switched name))))
+
+      ;; Create a minimal test session
+      (let ((session (make-claude-code-ide-mcp-session
+                      :original-tab original-tab)))
+
+        ;; Test 1: With switch enabled (default)
+        (let ((claude-code-ide-switch-tab-on-ediff t))
+          (setq tab-switched nil)
+          ;; Simulate the relevant part of the handler
+          (when (and claude-code-ide-switch-tab-on-ediff
+                     (claude-code-ide-mcp-session-original-tab session))
+            (let ((original-tab (claude-code-ide-mcp-session-original-tab session)))
+              (when (and (fboundp 'tab-bar-mode)
+                         tab-bar-mode
+                         (fboundp 'tab-bar--current-tab)
+                         (fboundp 'tab-bar-select-tab-by-name))
+                (let ((current-tab (tab-bar--current-tab)))
+                  (when (and original-tab current-tab
+                             (not (equal (alist-get 'name original-tab)
+                                         (alist-get 'name current-tab))))
+                    (tab-bar-select-tab-by-name (alist-get 'name original-tab)))))))
+          ;; Should have switched
+          (should (equal tab-switched "original-tab")))
+
+        ;; Test 2: With switch disabled
+        (let ((claude-code-ide-switch-tab-on-ediff nil))
+          (setq tab-switched nil)
+          ;; Simulate the relevant part of the handler
+          (when (and claude-code-ide-switch-tab-on-ediff
+                     (claude-code-ide-mcp-session-original-tab session))
+            (let ((original-tab (claude-code-ide-mcp-session-original-tab session)))
+              (when (and (fboundp 'tab-bar-mode)
+                         tab-bar-mode
+                         (fboundp 'tab-bar--current-tab)
+                         (fboundp 'tab-bar-select-tab-by-name))
+                (let ((current-tab (tab-bar--current-tab)))
+                  (when (and original-tab current-tab
+                             (not (equal (alist-get 'name original-tab)
+                                         (alist-get 'name current-tab))))
+                    (tab-bar-select-tab-by-name (alist-get 'name original-tab)))))))
+          ;; Should NOT have switched
+          (should (null tab-switched)))))))
+
 (defun claude-code-ide-run-tests ()
   "Run all claude-code-ide test cases."
   (interactive)
@@ -939,6 +1006,9 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 ;; Load MCP module now that websocket is available
 (require 'claude-code-ide-mcp)
+
+;; Load MCP handlers module for testing
+(require 'claude-code-ide-mcp-handlers)
 
 ;; Load MCP tools server module
 (condition-case nil

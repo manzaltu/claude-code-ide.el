@@ -188,6 +188,14 @@ display diffs in the terminal instead."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-switch-tab-on-ediff t
+  "Whether to switch back to Claude's original tab when opening ediff.
+When non-nil (default), Claude Code will switch back to the tab
+where Claude Code was started when opening an ediff session.
+When nil, the current tab remains active when ediff is opened."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-use-side-window t
   "Whether to display Claude Code in a side window.
 When non-nil (default), Claude Code opens in a dedicated side window

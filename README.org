@@ -164,6 +164,7 @@ You can run multiple Claude Code instances simultaneously for different projects
 | ~claude-code-ide-focus-claude-after-ediff~      | Focus Claude window after opening ediff     | ~t~                                    |
 | ~claude-code-ide-show-claude-window-in-ediff~   | Show Claude window during ediff             | ~t~                                    |
 | ~claude-code-ide-use-ide-diff~                  | Use IDE diff viewer instead of terminal     | ~t~                                    |
+| ~claude-code-ide-switch-tab-on-ediff~           | Switch to Claude's tab when opening ediff   | ~t~                                    |
 | ~claude-code-ide-system-prompt~                 | Custom system prompt to append              | ~nil~                                  |
 | ~claude-code-ide-enable-mcp-server~             | Enable MCP tools server                     | ~nil~                                  |
 | ~claude-code-ide-mcp-server-port~               | Port for MCP tools server                   | ~nil~ (auto-select)                    |

@@ -489,19 +489,21 @@ ARGUMENTS should contain:
         ;; Clean up existing diff
         (claude-code-ide-mcp--cleanup-diff tab-name session)))
 
-    ;; Switch to original tab if we're on a different one
-    (when-let ((original-tab (claude-code-ide-mcp-session-original-tab session)))
-      (when (and (fboundp 'tab-bar-mode)
-                 tab-bar-mode
-                 (fboundp 'tab-bar--current-tab)
-                 (fboundp 'tab-bar-select-tab-by-name))
-        (let ((current-tab (tab-bar--current-tab)))
-          ;; Compare tab names or indices
-          (when (and original-tab current-tab
-                     (not (equal (alist-get 'name original-tab)
-                                 (alist-get 'name current-tab))))
-            ;; Switch to the original tab
-            (tab-bar-select-tab-by-name (alist-get 'name original-tab))))))
+    ;; Switch to original tab if we're on a different one (when configured)
+    (when (and claude-code-ide-switch-tab-on-ediff
+               (claude-code-ide-mcp-session-original-tab session))
+      (let ((original-tab (claude-code-ide-mcp-session-original-tab session)))
+        (when (and (fboundp 'tab-bar-mode)
+                   tab-bar-mode
+                   (fboundp 'tab-bar--current-tab)
+                   (fboundp 'tab-bar-select-tab-by-name))
+          (let ((current-tab (tab-bar--current-tab)))
+            ;; Compare tab names or indices
+            (when (and original-tab current-tab
+                       (not (equal (alist-get 'name original-tab)
+                                   (alist-get 'name current-tab))))
+              ;; Switch to the original tab
+              (tab-bar-select-tab-by-name (alist-get 'name original-tab)))))))
 
     ;; Save current window configuration
     (let* ((saved-winconf (current-window-configuration))
