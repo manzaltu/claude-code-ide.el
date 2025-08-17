@@ -40,6 +40,7 @@
 (declare-function claude-code-ide-mcp--get-buffer-project "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp-session-active-diffs "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-original-tab "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp--setup-buffer-cache-hooks "claude-code-ide-mcp" ())
 (declare-function claude-code-ide--get-buffer-name "claude-code-ide" (&optional directory))
 (declare-function claude-code-ide--display-buffer-in-side-window "claude-code-ide" (buffer))
@@ -50,6 +51,7 @@
 (defvar claude-code-ide-mcp--sessions)
 (defvar claude-code-ide-show-claude-window-in-ediff)
 (defvar claude-code-ide-focus-claude-after-ediff)
+(defvar claude-code-ide-switch-tab-on-ediff)
 (defvar claude-code-ide-use-ide-diff)
 
 ;;; Tool Registry - Define variables first to ensure they're available
@@ -202,7 +204,8 @@ STARTUP-HOOK-FN is the hook function to remove after use."
           (claude-window nil))
       ;; Restore Claude side window only if user wants it shown during ediff
       (when claude-code-ide-show-claude-window-in-ediff
-        (when-let* ((claude-buffer-name (claude-code-ide--get-buffer-name))
+        (when-let* ((project-dir (claude-code-ide-mcp-session-project-dir session))
+                    (claude-buffer-name (claude-code-ide--get-buffer-name project-dir))
                     (claude-buffer (get-buffer claude-buffer-name)))
           (when (buffer-live-p claude-buffer)
             ;; Display Claude buffer in side window and save the window
