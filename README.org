@@ -103,6 +103,25 @@ To install using =use-package= and [[https://github.com/raxod502/straight.el][st
   (claude-code-ide-emacs-tools-setup)) ; Optionally enable Emacs MCP tools
 #+end_src
 
+*** Doom Emacs
+
+In =packages.el=:
+
+#+begin_src emacs-lisp
+(package! claude-code-ide
+  :recipe (:host github :repo "manzaltu/claude-code-ide.el"))
+#+end_src
+
+In =config.el=:
+#+begin_src emacs-lisp
+(use-package! claude-code-ide
+  :bind ("C-c C-'" . claude-code-ide-menu) ; Set your favorite keybinding
+  :config
+  (claude-code-ide-emacs-tools-setup)) ; Optionally enable Emacs MCP tools
+#+end_src
+
+After saving the above, run: =doom sync= in the terminal.
+
 * Usage
 
 ** Basic Commands
