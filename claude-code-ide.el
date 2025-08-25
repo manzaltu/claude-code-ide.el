@@ -1120,6 +1120,24 @@ This allows you to send prompts to Claude without typing directly in the termina
         (claude-code-ide--toggle-existing-window buffer working-dir)
       (user-error "No Claude Code session for this project"))))
 
+;;;###autoload
+(defun claude-code-ide-send-command (prompt)
+  "Send a command PROMPT to the Claude Code IDE session.
+This function sends the given PROMPT string to the active Claude Code
+terminal session for the current project. If no session exists, it will
+raise a user error."
+  (interactive)
+  (let ((buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let ((buffer (get-buffer buffer-name)))
+        (when (not (string-empty-p prompt))
+          (with-current-buffer buffer
+            (claude-code-ide--terminal-send-string prompt)
+            ;; Small delay to ensure prompt text is processed before sending return
+            (sit-for 0.1)
+            (claude-code-ide--terminal-send-return))
+          (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt))
+      (user-error "No Claude Code session for this project"))))
+
 (provide 'claude-code-ide)
 
 ;;; claude-code-ide.el ends here
