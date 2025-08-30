@@ -288,6 +288,9 @@ a more stable viewing experience when working with multiple windows."
 (defvar claude-code-ide--session-ids (make-hash-table :test 'equal)
   "Hash table mapping project/directory roots to their session IDs.")
 
+(defvar claude-code-ide--last-accessed-buffer nil
+  "The most recently accessed Claude Code buffer.")
+
 ;;; Vterm Rendering Optimization
 
 (defvar-local claude-code-ide--vterm-render-queue nil
@@ -591,6 +594,8 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
                (display-buffer buffer))
            ;; Use regular buffer
            (display-buffer buffer))))
+    ;; Update last accessed buffer whenever we display a Claude buffer
+    (setq claude-code-ide--last-accessed-buffer buffer)
     ;; Select the window to give it focus if configured to do so
     (when (and window claude-code-ide-focus-on-open)
       (select-window window))
@@ -668,6 +673,8 @@ If the window is not visible, it will be shown in a side window."
     (if window
         ;; Window is visible, hide it
         (progn
+          ;; Track this buffer as last accessed when closing
+          (setq claude-code-ide--last-accessed-buffer existing-buffer)
           (delete-window window)
           (claude-code-ide-debug "Claude Code window hidden"))
       ;; Window is not visible, show it
@@ -1119,6 +1126,40 @@ This allows you to send prompts to Claude without typing directly in the termina
     (if buffer
         (claude-code-ide--toggle-existing-window buffer working-dir)
       (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-toggle-recent ()
+  "Toggle visibility of the most recent Claude Code window.
+If any Claude window is visible, hide all of them.
+If no Claude windows are visible, show the most recently accessed one."
+  (interactive)
+  (let ((found-visible nil))
+    ;; Check all sessions and close any visible windows
+    (maphash (lambda (directory _process)
+               (let* ((buffer-name (funcall claude-code-ide-buffer-name-function directory))
+                      (buffer (get-buffer buffer-name)))
+                 (when (and buffer
+                            (buffer-live-p buffer)
+                            (get-buffer-window buffer))
+                   ;; Window is visible, use the toggle function to close it
+                   (claude-code-ide--toggle-existing-window buffer directory)
+                   (setq found-visible t))))
+             claude-code-ide--processes)
+
+    (cond
+     ;; We found and closed visible windows
+     (found-visible
+      (message "Closed all Claude Code windows"))
+
+     ;; No windows were visible, show the most recent one
+     ((and claude-code-ide--last-accessed-buffer
+           (buffer-live-p claude-code-ide--last-accessed-buffer))
+      (claude-code-ide--display-buffer-in-side-window claude-code-ide--last-accessed-buffer)
+      (message "Opened most recent Claude Code session"))
+
+     ;; No recent session available
+     (t
+      (user-error "No recent Claude Code session to toggle")))))
 
 (provide 'claude-code-ide)
 

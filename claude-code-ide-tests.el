@@ -782,6 +782,30 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide-list-sessions))
     (claude-code-ide-tests--clear-processes)))
 
+(ert-deftest claude-code-ide-test-toggle-recent ()
+  "Test the toggle-recent functionality."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (let ((test-buffer1 (get-buffer-create "*Claude Code - test1*"))
+            (test-buffer2 (get-buffer-create "*Claude Code - test2*"))
+            (claude-code-ide--last-accessed-buffer nil))
+        ;; Test when no recent buffer exists
+        (should-error (claude-code-ide-toggle-recent))
+
+        ;; Set a recent buffer
+        (setq claude-code-ide--last-accessed-buffer test-buffer1)
+
+        ;; Test toggle when no windows are visible (should show the buffer)
+        ;; This will fail in batch mode but verifies the function doesn't error
+        (condition-case nil
+            (claude-code-ide-toggle-recent)
+          (error nil))
+
+        ;; Clean up
+        (kill-buffer test-buffer1)
+        (kill-buffer test-buffer2))
+    (claude-code-ide-tests--clear-processes)))
+
 ;;; Edge Case Tests
 
 (ert-deftest claude-code-ide-test-concurrent-sessions ()

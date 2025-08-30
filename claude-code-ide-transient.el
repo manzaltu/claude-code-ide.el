@@ -325,7 +325,8 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("l" "List all sessions" claude-code-ide-list-sessions)]
    ["Navigation"
     ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
-    ("w" "Toggle window visibility" claude-code-ide-toggle-window)]
+    ("w" "Toggle window visibility" claude-code-ide-toggle-window)
+    ("W" "Toggle recent window" claude-code-ide-toggle-recent)]
    ["Interaction"
     ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
     ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)
