@@ -904,17 +904,21 @@ This should be called when the buffer's context might have changed."
           (claude-code-ide-debug "No MCP servers running"))))))
 
 (defun claude-code-ide-mcp-send-at-mentioned ()
-  "Send at-mentioned notification."
-  ;; Only send if there's an actual region selected
-  (when (use-region-p)
-    (let* ((file-path (or (buffer-file-name) ""))
-           (start-line (1- (line-number-at-pos (region-beginning))))
-           (end-line (1- (line-number-at-pos (region-end)))))
-      (claude-code-ide-mcp--send-notification
-       "at_mentioned"
-       `((filePath . ,file-path)
-         (lineStart . ,start-line)
-         (lineEnd . ,end-line))))))
+  "Send at-mentioned notification.
+If a region is selected, send the selected lines.
+Otherwise, send the current line."
+  (let* ((file-path (or (buffer-file-name) ""))
+         (start-line (if (use-region-p)
+                         (1- (line-number-at-pos (region-beginning)))
+                       (1- (line-number-at-pos (point)))))
+         (end-line (if (use-region-p)
+                       (1- (line-number-at-pos (region-end)))
+                     (1- (line-number-at-pos (point))))))
+    (claude-code-ide-mcp--send-notification
+     "at_mentioned"
+     `((filePath . ,file-path)
+       (lineStart . ,start-line)
+       (lineEnd . ,end-line)))))
 
 (defun claude-code-ide-mcp-complete-deferred (session tool-name result &optional unique-key)
   "Complete a deferred response for SESSION and TOOL-NAME with RESULT.
