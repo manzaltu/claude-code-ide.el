@@ -2274,4 +2274,9 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (provide 'claude-code-ide-tests)
 
+;; Local Variables:
+;; no-update-autoloads: t
+;; autoload-compute-prefixes: nil
+;; End:
+
 ;;; claude-code-ide-tests.el ends here
