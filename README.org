@@ -21,7 +21,7 @@ Claude Code IDE for Emacs provides native integration with Claude Code CLI throu
 - Tool support for file operations, editor state, and workspace info
 - Extensible MCP tools server for accessing Emacs commands (xrefs, tree-sitter, project info, e.g.)
 - Diagnostic integration with Flycheck and Flymake
-- Advanced diff view with ediff integration
+- Advanced diff view with ediff integration (modify suggestions before applying)
 - Tab-bar support for proper context switching
 - Selection and buffer tracking for better context awareness
 
@@ -159,6 +159,25 @@ You can run multiple Claude Code instances simultaneously for different projects
 - Running =claude-code-ide= when a session is already active will toggle the window visibility
 - The window can be closed with standard Emacs window commands (=C-x 0=) without stopping Claude
 - Use =claude-code-ide-toggle-recent= to toggle the most recent Claude window from anywhere, regardless of your current project context. This is useful when you're outside a project directory but want to quickly hide/show Claude
+
+** Diff Viewing with Ediff
+
+When =claude-code-ide-use-ide-diff= is enabled (default), Claude's code suggestions are displayed using Emacs' powerful =ediff= interface. This provides two key advantages:
+
+1. *Visual diff comparison* - See exactly what Claude wants to change with side-by-side or unified diff views
+2. *Interactive editing* - You can modify Claude's suggestions before applying them
+
+*** How to use ediff:
+
+1. When Claude suggests code changes, =ediff= opens automatically
+2. The ediff control buffer becomes active (a small window with ediff commands)
+3. Buffer A shows the current code, Buffer B shows Claude's suggestion
+4. You can modify Buffer B to refine Claude's proposed changes
+5. Press =q= in the ediff control buffer to quit
+6. When prompted, choose whether to accept the changes (=y= or =n=)
+7. If you accept (=y=), any changes from Buffer B will be sent back to Claude to be applied on the original file
+
+This allows you to refine Claude's suggestions before they're applied, ensuring the final code meets your exact requirements.
 
 ** Configuration
 
