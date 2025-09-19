@@ -365,6 +365,10 @@ INPUT contains the terminal output stream."
           ;; Standard processing for regular output
           (funcall orig-fun process input))))))
 
+(defun claude-code-ide--vterm-copy-mode-hook ()
+  "Make sure cursor is visible in `vterm-copy-mode'."
+  (setq cursor-type (if vterm-copy-mode t nil)))
+
 (defun claude-code-ide--configure-vterm-buffer ()
   "Configure vterm for enhanced performance and visual quality.
 Establishes optimal terminal settings including rendering optimizations,
@@ -377,7 +381,8 @@ cursor management, and process buffering for superior user experience."
   ;; Try to prevent cursor flickering by disabling Emacs' own cursor management
   (setq-local cursor-in-non-selected-windows nil)
   (setq-local blink-cursor-mode nil)
-  (setq-local cursor-type nil)  ; Let vterm handle the cursor entirely
+  (setq-local cursor-type nil)          ; Let vterm handle the cursor entirely
+  (add-hook 'vterm-copy-mode-hook 'claude-code-ide--vterm-copy-mode-hook nil t)
   ;; Increase process read buffering to batch more updates together
   (when-let ((proc (get-buffer-process (current-buffer))))
     (set-process-query-on-exit-flag proc nil)
