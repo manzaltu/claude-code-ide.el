@@ -297,7 +297,7 @@ when starting Claude Code."
   "Obfuscate sensitive values in ENV-VARS list for logging.
 Returns a new list with sensitive values masked."
   (mapcar (lambda (env-var)
-            (if (string-match "\\`\\(ANTHROPIC_AUTH_TOKEN\\|.*_TOKEN\\|.*_SECRET\\|.*_KEY\\)=\\(.*\\)\\'" env-var)
+            (if (string-match "\\`\\(.*_TOKEN\\|.*_SECRET\\|.*_KEY\\)=\\(.*\\)\\'" env-var)
                 (format "%s=***masked***" (match-string 1 env-var))
               env-var))
           env-vars))
