@@ -315,11 +315,14 @@ Supported providers: api.anthropic.com, api.moonshot.ai, api.z.ai"
   "Delay in seconds before sending active editor notification after connection.")
 
 (defconst claude-code-ide--api-providers
-  '(("api.anthropic.com" . "https://api.anthropic.com/v1")
-    ("api.moonshot.ai" . "https://api.moonshot.ai/anthropic")
-    ("api.z.ai" . "https://api.z.ai/api/anthropic"))
+  '(("api.anthropic.com" . ("https://api.anthropic.com/v1"))
+    ("api.moonshot.ai" . ("https://api.moonshot.ai/anthropic"))
+    ("api.z.ai" . ("https://api.z.ai/api/anthropic"
+                   "ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.5-air"
+                   "ANTHROPIC_DEFAULT_SONNET_MODEL=glm-4.6"
+                   "ANTHROPIC_DEFAULT_OPUS_MODEL=glm-4.6")))
   "Known Anthropic-compatible API providers.
-Alist mapping hostname to base URL.")
+Alist mapping hostname to a list containing base URL and environment variables.")
 
 ;;; Variables
 
@@ -630,14 +633,17 @@ is configured or if credentials cannot be retrieved.
 Logs an error if provider is configured but credentials are missing."
   (when claude-code-ide-api-provider
     (let* ((hostname claude-code-ide-api-provider)
-           (base-url (alist-get hostname claude-code-ide--api-providers
-                                nil nil #'equal))
+           (provider-config (alist-get hostname claude-code-ide--api-providers
+                                       nil nil #'equal))
+           (base-url (if (listp provider-config) (car provider-config) provider-config))
+           (provider-env-vars (if (listp provider-config) (cdr provider-config) nil))
            (token (claude-code-ide--get-provider-credential hostname)))
       (if token
           (progn
             (claude-code-ide-debug "Using API provider: %s (URL: %s)" hostname base-url)
-            (list (format "ANTHROPIC_BASE_URL=%s" base-url)
-                  (format "ANTHROPIC_AUTH_TOKEN=%s" token)))
+            (append provider-env-vars
+                    (list (format "ANTHROPIC_BASE_URL=%s" base-url)
+                          (format "ANTHROPIC_AUTH_TOKEN=%s" token))))
         (claude-code-ide-log
          "ERROR: API provider '%s' configured but credentials not found in auth-source. "
          hostname)

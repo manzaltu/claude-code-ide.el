@@ -2285,8 +2285,18 @@ have completed before cleanup.  Waits up to 5 seconds."
   ;; Check format of entries
   (dolist (provider claude-code-ide--api-providers)
     (should (stringp (car provider)))
-    (should (stringp (cdr provider)))
-    (should (string-prefix-p "https://" (cdr provider)))))
+    (let ((value (cdr provider)))
+      ;; Value can be either a string (base URL) or a list (base URL + env vars)
+      (if (listp value)
+          (progn
+            (should (stringp (car value)))
+            (should (string-prefix-p "https://" (car value)))
+            ;; Check that all env vars are strings
+            (dolist (env-var (cdr value))
+              (should (stringp env-var))))
+        (progn
+          (should (stringp value))
+          (should (string-prefix-p "https://" value)))))))
 
 (ert-deftest claude-code-ide-test-get-provider-credential ()
   "Test getting provider credentials from auth-source."
@@ -2325,7 +2335,13 @@ have completed before cleanup.  Waits up to 5 seconds."
                                :secret "test-secret-token"))))))
       (let ((env-vars (claude-code-ide--get-provider-env-vars)))
         (should (listp env-vars))
-        (should (= (length env-vars) 2))
+        ;; Should have 5 env vars: 3 from provider config + 2 standard ones
+        (should (= (length env-vars) 5))
+        ;; Check provider-specific env vars
+        (should (member "ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.5-air" env-vars))
+        (should (member "ANTHROPIC_DEFAULT_SONNET_MODEL=glm-4.6" env-vars))
+        (should (member "ANTHROPIC_DEFAULT_OPUS_MODEL=glm-4.6" env-vars))
+        ;; Check standard env vars
         (should (member "ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic" env-vars))
         (should (member "ANTHROPIC_AUTH_TOKEN=test-secret-token" env-vars))))))
 
