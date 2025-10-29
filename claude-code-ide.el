@@ -1024,9 +1024,7 @@ If the buffer is already visible, switch focus to it."
     (if-let ((buffer (get-buffer buffer-name)))
         (if (equal (buffer-name) buffer-name)
             ;; Already in Claude Code buffer, switch to MRU window
-            (if-let ((prev-window (get-mru-window nil nil t)))
-                (select-window prev-window)
-              (user-error "No other windows available to switch to"))
+            (select-window (get-mru-window nil nil t))
           ;; Not in Claude Code buffer, switch to it
           (if-let ((window (get-buffer-window buffer)))
               ;; Buffer is visible, just focus it
