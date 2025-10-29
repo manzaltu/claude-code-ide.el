@@ -1013,46 +1013,21 @@ conversation in the current directory."
       (claude-code-ide-log "No Claude Code session is running in this directory"))))
 
 
-(defun claude-code-ide--save-previous-window ()
-  "Save the current window in frame parameters."
-  (set-frame-parameter nil 'claude-code-ide-previous-window (selected-window)))
-
-(defun claude-code-ide--get-previous-window ()
-  "Get the previously saved window from frame parameters.
-Returns nil if no window was saved or if the window is no longer live."
-  (let ((window (frame-parameter nil 'claude-code-ide-previous-window)))
-    (when (window-live-p window)
-      window)))
-
-(defun claude-code-ide--find-fallback-window ()
-  "Find a suitable non-Claude-Code window to switch to.
-Returns the first live window that is not displaying a Claude Code buffer,
-or nil if no such window exists."
-  (let ((buffer-name (claude-code-ide--get-buffer-name)))
-    (cl-find-if (lambda (window)
-                  (not (equal (buffer-name (window-buffer window))
-                              buffer-name)))
-                (window-list nil 'no-minibuf))))
-
 ;;;###autoload
 (defun claude-code-ide-switch-to-buffer ()
   "Switch to the Claude Code buffer for the current project.
-If already in the Claude Code buffer, switch back to the previous window.
+If already in the Claude Code buffer, switch back to the most recently used window.
 If the buffer is not visible, display it in the configured side window.
 If the buffer is already visible, switch focus to it."
   (interactive)
   (let ((buffer-name (claude-code-ide--get-buffer-name)))
     (if-let ((buffer (get-buffer buffer-name)))
         (if (equal (buffer-name) buffer-name)
-            ;; Already in Claude Code buffer, switch back
-            (if-let ((prev-window (claude-code-ide--get-previous-window)))
+            ;; Already in Claude Code buffer, switch to MRU window
+            (if-let ((prev-window (get-mru-window nil nil t)))
                 (select-window prev-window)
-              ;; Previous window is gone, find another window
-              (if-let ((fallback-window (claude-code-ide--find-fallback-window)))
-                  (select-window fallback-window)
-                (user-error "No other windows available to switch to")))
-          ;; Not in Claude Code buffer, save current window and switch
-          (claude-code-ide--save-previous-window)
+              (user-error "No other windows available to switch to"))
+          ;; Not in Claude Code buffer, switch to it
           (if-let ((window (get-buffer-window buffer)))
               ;; Buffer is visible, just focus it
               (select-window window)
