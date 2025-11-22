@@ -1,0 +1,6 @@
+Line 1: This is a test file
+Line 2: for testing goto-location
+Line 3: and reload-buffer
+Line 4: functionality
+Line 5: in the MCP tools
+Line 6: Testing reload-buffer functionality!
