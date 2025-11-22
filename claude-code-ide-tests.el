@@ -1159,6 +1159,42 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should-error (claude-code-ide-mcp-handle-goto-location '((file_path . "/tmp/test.txt")))
                 :type 'mcp-error))
 
+(ert-deftest claude-code-ide-test-mcp-reload-buffer ()
+  "Test the reloadBuffer tool implementation."
+  ;; Test reloading a buffer that has been modified externally
+  (claude-code-ide-mcp-tests--with-temp-file test-file "Original content"
+                                             ;; Open the file in a buffer
+                                             (find-file test-file)
+                                             (should (string= (buffer-string) "Original content"))
+                                             ;; Modify the file externally (simulating Edit/Write tool)
+                                             (with-temp-file test-file
+                                               (insert "Modified content"))
+                                             ;; Buffer still has old content
+                                             (should (string= (buffer-string) "Original content"))
+                                             ;; Reload the buffer
+                                             (let ((result (claude-code-ide-mcp-handle-reload-buffer
+                                                            `((file_path . ,test-file)))))
+                                               (should (listp result))
+                                               (let ((first-item (car result)))
+                                                 (should (equal (alist-get 'type first-item) "text"))
+                                                 (should (string-match-p "Buffer reloaded from disk" (alist-get 'text first-item))))
+                                               ;; Buffer should now have new content
+                                               (should (string= (buffer-string) "Modified content")))
+                                             (kill-buffer)))
+
+;; Test reloading a file that's not currently open
+(claude-code-ide-mcp-tests--with-temp-file test-file "Some content"
+                                           (let ((result (claude-code-ide-mcp-handle-reload-buffer
+                                                          `((file_path . ,test-file)))))
+                                             (should (listp result))
+                                             (let ((first-item (car result)))
+                                               (should (equal (alist-get 'type first-item) "text"))
+                                               (should (string-match-p "Buffer not open" (alist-get 'text first-item))))))
+
+;; Test missing file_path parameter
+(should-error (claude-code-ide-mcp-handle-reload-buffer '())
+              :type 'mcp-error)
+
 (ert-deftest claude-code-ide-test-mcp-get-current-selection ()
   "Test the getCurrentSelection tool implementation."
   ;; Test with active selection
