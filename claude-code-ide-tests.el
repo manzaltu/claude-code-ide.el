@@ -61,6 +61,25 @@
   "")
 (provide 'claude-code-ide-debug)
 
+;; === Mock claude-code-ide-transient module ===
+;; Provide mock transient menu functions to avoid loading the real transient module
+(defun claude-code-ide-menu ()
+  "Mock transient menu."
+  (interactive)
+  (message "Transient menu not available in batch mode"))
+
+(defun claude-code-ide-config-menu ()
+  "Mock config menu."
+  (interactive)
+  (message "Config menu not available in batch mode"))
+
+(defun claude-code-ide-debug-menu ()
+  "Mock debug menu."
+  (interactive)
+  (message "Debug menu not available in batch mode"))
+
+(provide 'claude-code-ide-transient)
+
 ;; === Mock websocket module ===
 ;; Try to load real websocket, otherwise provide comprehensive mocks
 (condition-case nil
@@ -1092,6 +1111,52 @@ have completed before cleanup.  Waits up to 5 seconds."
 
   ;; Test missing path parameter
   (should-error (claude-code-ide-mcp-handle-open-file '())
+                :type 'mcp-error))
+
+(ert-deftest claude-code-ide-test-mcp-goto-location ()
+  "Test the gotoLocation tool implementation."
+  ;; Test basic jump to line
+  (claude-code-ide-mcp-tests--with-temp-file test-file "Line 1\nLine 2\nLine 3\nLine 4\nLine 5"
+                                             (let ((result (claude-code-ide-mcp-handle-goto-location
+                                                            `((file_path . ,test-file)
+                                                              (line . 3)))))
+                                               ;; Handler returns success message
+                                               (should (listp result))
+                                               (let ((first-item (car result)))
+                                                 (should (equal (alist-get 'type first-item) "text"))
+                                                 (should (string-match-p "Jumped to.*:3" (alist-get 'text first-item))))
+                                               ;; Verify we're on line 3
+                                               (should (= (line-number-at-pos) 3))
+                                               (kill-buffer)))
+
+  ;; Test jump to line and column
+  (claude-code-ide-mcp-tests--with-temp-file test-file "abcdefgh\nijklmnop\nqrstuvwx"
+                                             (let ((result (claude-code-ide-mcp-handle-goto-location
+                                                            `((file_path . ,test-file)
+                                                              (line . 2)
+                                                              (column . 5)))))
+                                               (should (listp result))
+                                               ;; Verify position
+                                               (should (= (line-number-at-pos) 2))
+                                               (should (= (current-column) 5))
+                                               (kill-buffer)))
+
+  ;; Test with highlight option (just verify it doesn't error)
+  (claude-code-ide-mcp-tests--with-temp-file test-file "Line 1\nLine 2\nLine 3"
+                                             (let ((result (claude-code-ide-mcp-handle-goto-location
+                                                            `((file_path . ,test-file)
+                                                              (line . 2)
+                                                              (highlight . t)))))
+                                               (should (listp result))
+                                               (should (= (line-number-at-pos) 2))
+                                               (kill-buffer)))
+
+  ;; Test missing file_path parameter
+  (should-error (claude-code-ide-mcp-handle-goto-location '((line . 1)))
+                :type 'mcp-error)
+
+  ;; Test missing line parameter
+  (should-error (claude-code-ide-mcp-handle-goto-location '((file_path . "/tmp/test.txt")))
                 :type 'mcp-error))
 
 (ert-deftest claude-code-ide-test-mcp-get-current-selection ()
