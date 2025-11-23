@@ -432,7 +432,11 @@ If INCLUDE_CHILDREN is non-nil, include child nodes."
   ;; Enable by setting: (setq claude-code-ide-eval-enabled t)
   ;; Or interactively: M-x claude-code-ide-eval-toggle
   (require 'claude-code-ide-tool-eval)
-  (claude-code-ide-tool-eval-setup))
+  (claude-code-ide-tool-eval-setup)
+
+  ;; Load and register LSP-aware xref tool
+  (require 'claude-code-ide-tool-xref)
+  (claude-code-ide-tool-xref-setup))
 
 ;;;###autoload
 (defun claude-code-ide-emacs-tools-restart ()
