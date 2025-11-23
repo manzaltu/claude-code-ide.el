@@ -35,6 +35,12 @@
 (require 'cl-lib)
 (require 'imenu)
 
+;; Add mcp-tools.d to load-path for modular tools
+(add-to-list 'load-path
+             (expand-file-name "mcp-tools.d"
+                               (file-name-directory
+                                (or load-file-name buffer-file-name))))
+
 ;; Tree-sitter declarations
 (declare-function treesit-node-at "treesit" (pos &optional parser-or-lang named))
 (declare-function treesit-node-text "treesit" (node &optional no-property))
@@ -411,7 +417,29 @@ If INCLUDE_CHILDREN is non-nil, include child nodes."
            (:name "include_children"
                   :type boolean
                   :description "Include child nodes"
-                  :optional t))))
+                  :optional t)))
+
+  ;; Load and register buffer management tools
+  (require 'claude-code-ide-tool-buffer-management)
+  (claude-code-ide-tool-buffer-management-setup))
+
+;;;###autoload
+(defun claude-code-ide-emacs-tools-restart ()
+  "Restart the MCP tools server to pick up changes.
+This is useful during development when tools are added or modified."
+  (interactive)
+  (require 'claude-code-ide-mcp-server)
+  ;; Stop the server if running
+  (when (and (boundp 'claude-code-ide-mcp-server--server)
+             claude-code-ide-mcp-server--server)
+    (claude-code-ide-mcp-server--stop-server)
+    (message "MCP server stopped"))
+  ;; Reload the emacs-tools file
+  (load-file (or load-file-name buffer-file-name))
+  (message "Reloaded claude-code-ide-emacs-tools.el")
+  ;; Re-setup tools (which will restart the server)
+  (claude-code-ide-emacs-tools-setup)
+  (message "MCP tools server restarted"))
 
 (provide 'claude-code-ide-emacs-tools)
 ;;; claude-code-ide-emacs-tools.el ends here

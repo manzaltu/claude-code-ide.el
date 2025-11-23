@@ -2373,6 +2373,85 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (equal (plist-get file-path-arg :description)
                          "Path to the file to analyze for symbols")))))))
 
+(ert-deftest claude-code-ide-emacs-tools-test-read-buffer ()
+  "Test the read-buffer MCP tool."
+  (require 'claude-code-ide-emacs-tools)
+  (require 'claude-code-ide-tool-buffer-management)
+
+  (let ((session-id "test-session-read-buffer")
+        (project-dir (temporary-file-directory)))
+    (unwind-protect
+        (progn
+          ;; Register a mock session
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+
+          ;; Create a test buffer with known content
+          (with-temp-buffer
+            (insert "Line 1\n"
+                    "Line 2\n"
+                    "Line 3\n"
+                    "Line 4\n"
+                    "Line 5\n"
+                    "Line 6\n"
+                    "Line 7\n"
+                    "Line 8\n"
+                    "Line 9\n"
+                    "Line 10\n")
+            (let ((test-buffer (current-buffer))
+                  (buffer-name (buffer-name)))
+
+              ;; Test with session context
+              (let ((claude-code-ide-mcp-server--current-session-id session-id))
+
+                ;; Test reading entire buffer
+                (let ((result (claude-code-ide-mcp-read-buffer buffer-name)))
+                  (should (stringp result))
+                  (should (string-match "Line 1" result))
+                  (should (string-match "Line 10" result))
+                  (should (string-match "lines 1-10 of 10" result)))
+
+                ;; Test reading specific range (lines 3-5)
+                (let ((result (claude-code-ide-mcp-read-buffer buffer-name 3 5)))
+                  (should (stringp result))
+                  (should (string-match "Line 3" result))
+                  (should (string-match "Line 4" result))
+                  (should (string-match "Line 5" result))
+                  (should-not (string-match "Line 2" result))
+                  (should-not (string-match "Line 6" result))
+                  (should (string-match "lines 3-5 of 10" result)))
+
+                ;; Test reading last N lines with negative start-line
+                (let ((result (claude-code-ide-mcp-read-buffer buffer-name -3)))
+                  (should (stringp result))
+                  (should (string-match "Line 8" result))
+                  (should (string-match "Line 9" result))
+                  (should (string-match "Line 10" result))
+                  (should-not (string-match "Line 7" result))
+                  (should (string-match "lines 8-10 of 10" result)))
+
+                ;; Test reading with negative end-line (-9 = line 2)
+                (let ((result (claude-code-ide-mcp-read-buffer buffer-name 1 -9)))
+                  (should (stringp result))
+                  (should (string-match "Line 1" result))
+                  (should (string-match "Line 2" result))
+                  (should-not (string-match "Line 3" result))
+                  (should (string-match "lines 1-2 of 10" result)))
+
+                ;; Test error handling - buffer not found
+                (let ((result (claude-code-ide-mcp-read-buffer "*nonexistent-buffer*")))
+                  (should (stringp result))
+                  (should (string-match "Buffer not found" result)))
+
+                ;; Test error handling - invalid range (start > end)
+                (let ((result (condition-case err
+                                  (claude-code-ide-mcp-read-buffer buffer-name 5 3)
+                                (error (error-message-string err)))))
+                  (should (stringp result))
+                  (should (string-match "Error\\|Invalid range" result)))))))
+
+      ;; Cleanup
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

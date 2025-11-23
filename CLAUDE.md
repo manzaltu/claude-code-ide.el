@@ -16,7 +16,7 @@ This package integrates Claude Code CLI with Emacs via WebSocket and the Model C
 **Support Files:**
 - `claude-code-ide-mcp-server.el` - HTTP-based MCP tools server framework
 - `claude-code-ide-mcp-http-server.el` - HTTP transport implementation
-- `claude-code-ide-emacs-tools.el` - Emacs tools: xref, project info, imenu
+- `claude-code-ide-emacs-tools.el` - Emacs tools: xref, project info, imenu, buffer listing, tree-sitter, goto-location
 - `claude-code-ide-diagnostics.el` - Flycheck integration
 - `claude-code-ide-transient.el` - Transient menu interface
 - `claude-code-ide-debug.el` - Debug logging utilities
@@ -78,3 +78,4 @@ Tests use mocks for external dependencies (vterm, websocket) to run in batch mod
 
 ## Committing code
 Never commit changes unless the user explicitly asks you to.
+- You can use the read-buffer tool to read *Messages* to help diagnose emacs runtime issues
