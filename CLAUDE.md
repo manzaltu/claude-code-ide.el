@@ -22,6 +22,10 @@ This package integrates Claude Code CLI with Emacs via WebSocket and the Model C
 - `claude-code-ide-debug.el` - Debug logging utilities
 - `claude-code-ide-tests.el` - ERT test suite with mocks
 
+**Modular MCP Tools (mcp-tools.d/):**
+- `claude-code-ide-tool-buffer-management.el` - Buffer operations (list, read, goto, reload)
+- `claude-code-ide-tool-eval.el` - Emacs Lisp evaluation (disabled by default, see Security section)
+
 ## Hooks
 
 This project uses Claude Code hooks to automatically maintain code quality. The hooks are configured in `.claude/settings.json` and include:
@@ -75,6 +79,38 @@ Tests use mocks for external dependencies (vterm, websocket) to run in batch mod
 - Core functionality (session management, CLI detection)
 - MCP handlers (file operations, diagnostics)
 - Edge cases (side windows, multiple sessions)
+
+## Security
+
+### Emacs Lisp Eval Tool
+
+The `claude-code-ide-tool-eval` MCP tool allows Claude to evaluate arbitrary Emacs Lisp expressions. This is **disabled by default** for security.
+
+**To enable:**
+```elisp
+(setq claude-code-ide-eval-enabled t)
+```
+
+Or interactively: `M-x claude-code-ide-eval-toggle`
+
+**Security features:**
+- Disabled by default (must be explicitly enabled)
+- All evaluations are logged to `*claude-code-ide-eval-log*` buffer
+- View log: `M-x claude-code-ide-eval-show-log`
+- Clear log: `M-x claude-code-ide-eval-clear-log`
+- Can be toggled on/off at any time
+
+**Additional protection:**
+Consider requiring user approval for the eval tool in `~/.claude/settings.json`:
+```json
+{
+  "permissions": {
+    "ask": [
+      "mcp__emacs-tools__claude-code-ide-mcp-eval"
+    ]
+  }
+}
+```
 
 ## Committing code
 Never commit changes unless the user explicitly asks you to.
