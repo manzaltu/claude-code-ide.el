@@ -80,6 +80,25 @@ Tests use mocks for external dependencies (vterm, websocket) to run in batch mod
 - MCP handlers (file operations, diagnostics)
 - Edge cases (side windows, multiple sessions)
 
+### Interactive Testing Procedure
+
+When conducting interactive tests of MCP tools or user-facing features:
+
+1. **Run the complete test plan first** - Execute all tests before starting any debugging or fixes
+2. **Save results in a temporary file** - Use a temporary file (e.g., `test_results.md`) to track results as you go
+3. **Incorporate results into DEBUGGING_NOTES.md** - At the end of testing, before debugging, update `DEBUGGING_NOTES.md` with:
+   - Test execution summary
+   - Detailed results table
+   - Root cause analysis of failures
+   - Next steps
+
+**Rationale:** This approach ensures you have complete context about what works and what doesn't before making changes. It also provides a clear record for future sessions.
+
+**After fixing code:** MCP tools require server restart to pick up changes:
+1. User runs `(claude-code-ide-emacs-tools-restart)` in Emacs
+2. Restart Claude Code session
+3. Re-run failed tests to verify fixes
+
 ## Security
 
 ### Emacs Lisp Eval Tool
