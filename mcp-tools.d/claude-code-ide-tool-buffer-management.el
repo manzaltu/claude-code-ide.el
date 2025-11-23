@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2025
 
-;; Author: Yoav Orot
+;; Author (this file only): John D. Blair
 ;; Keywords: ai, claude, mcp, buffer
 
 ;; This file is not part of GNU Emacs.

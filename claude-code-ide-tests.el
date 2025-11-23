@@ -2452,6 +2452,67 @@ have completed before cleanup.  Waits up to 5 seconds."
       ;; Cleanup
       (claude-code-ide-mcp-server-unregister-session session-id))))
 
+(ert-deftest claude-code-ide-emacs-tools-test-eval ()
+  "Test the eval MCP tool."
+  (require 'claude-code-ide-emacs-tools)
+  (require 'claude-code-ide-tool-eval)
+
+  (let ((session-id "test-session-eval")
+        (project-dir (temporary-file-directory))
+        (claude-code-ide-eval-enabled nil)
+        (claude-code-ide-eval-log nil))
+    (unwind-protect
+        (progn
+          ;; Register a mock session
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+
+          ;; Test with session context
+          (let ((claude-code-ide-mcp-server--current-session-id session-id))
+
+            ;; Test that eval is disabled by default
+            (let ((result (claude-code-ide-mcp-eval "(+ 1 2)")))
+              (should (stringp result))
+              (should (string-match "disabled" result)))
+
+            ;; Enable eval for testing
+            (setq claude-code-ide-eval-enabled t)
+
+            ;; Test simple arithmetic
+            (let ((result (claude-code-ide-mcp-eval "(+ 1 2)")))
+              (should (stringp result))
+              (should (string-match "Result: 3" result))
+              (should (string-match "Type: integer" result)))
+
+            ;; Test string evaluation
+            (let ((result (claude-code-ide-mcp-eval "(concat \"hello\" \" \" \"world\")")))
+              (should (stringp result))
+              (should (string-match "Result: \"hello world\"" result))
+              (should (string-match "Type: string" result)))
+
+            ;; Test list evaluation
+            (let ((result (claude-code-ide-mcp-eval "(list 1 2 3)")))
+              (should (stringp result))
+              (should (string-match "Result: (1 2 3)" result))
+              (should (string-match "Type: cons" result)))
+
+            ;; Test error handling - syntax error
+            (let ((result (claude-code-ide-mcp-eval "(+ 1")))
+              (should (stringp result))
+              (should (string-match "Error" result)))
+
+            ;; Test error handling - undefined variable
+            (let ((result (claude-code-ide-mcp-eval "undefined-variable-xyz")))
+              (should (stringp result))
+              (should (string-match "Error" result)))
+
+            ;; Test buffer-local variable
+            (let ((result (claude-code-ide-mcp-eval "(buffer-name)")))
+              (should (stringp result))
+              (should (string-match "Result:" result)))))
+
+      ;; Cleanup
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
