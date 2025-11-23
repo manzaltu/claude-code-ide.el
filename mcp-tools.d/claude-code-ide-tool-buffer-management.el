@@ -118,17 +118,22 @@ If both are nil, reads the entire buffer."
       (error
        (format "Error reading buffer: %s" (error-message-string err))))))
 
-(defun claude-code-ide-mcp-goto-location (file-path line &optional column highlight)
+(defun claude-code-ide-mcp-goto-location (file-path line &optional column highlight use-other-window)
   "Jump to a specific line and column in a file.
 FILE-PATH is the absolute path to the file.
 LINE is the line number (1-based).
 COLUMN is the column number (0-based, optional).
-HIGHLIGHT temporarily highlights the line if non-nil (optional)."
+HIGHLIGHT temporarily highlights the line if non-nil (optional).
+USE-OTHER-WINDOW if non-nil opens in another window and returns focus (default: t)."
   (claude-code-ide-mcp-server-with-session-context nil
     (condition-case err
-        (progn
-          ;; Open the file
-          (find-file (expand-file-name file-path))
+        (let ((original-window (selected-window))
+              (use-other (if (eq use-other-window 'json-false) nil
+                           (if use-other-window use-other-window t))))
+          ;; Open the file in other window or current window
+          (if use-other
+              (find-file-other-window (expand-file-name file-path))
+            (find-file (expand-file-name file-path)))
           ;; Go to the specified line
           (goto-char (point-min))
           (forward-line (1- line))
@@ -142,27 +147,42 @@ HIGHLIGHT temporarily highlights the line if non-nil (optional)."
             (let ((overlay (make-overlay (line-beginning-position) (line-end-position))))
               (overlay-put overlay 'face 'highlight)
               (run-with-timer 0.5 nil (lambda () (delete-overlay overlay)))))
+          ;; Switch back to the original window if using other window
+          (when (and use-other (window-live-p original-window))
+            (select-window original-window))
           ;; Return success message
-          (format "Jumped to %s:%d%s"
+          (format "Jumped to %s:%d%s%s"
                   file-path
                   line
-                  (if column (format ":%d" column) "")))
+                  (if column (format ":%d" column) "")
+                  (if use-other " in other window" "")))
       (error
        (format "Failed to goto location: %s" (error-message-string err))))))
 
-(defun claude-code-ide-mcp-reload-buffer (file-path)
+(defun claude-code-ide-mcp-reload-buffer (file-path &optional use-other-window)
   "Reload a buffer from disk, syncing with external file modifications.
-FILE-PATH is the absolute path to the file to reload."
+FILE-PATH is the absolute path to the file to reload.
+USE-OTHER-WINDOW if non-nil displays the buffer in another window (default: t)."
   (claude-code-ide-mcp-server-with-session-context nil
     (condition-case err
         (let* ((expanded-path (expand-file-name file-path))
-               (buffer (find-buffer-visiting expanded-path)))
+               (buffer (find-buffer-visiting expanded-path))
+               (original-window (selected-window))
+               (use-other (if (eq use-other-window 'json-false) nil
+                            (if use-other-window use-other-window t))))
           (if buffer
               (progn
                 (with-current-buffer buffer
                   ;; Revert buffer from disk without confirmation
                   ;; Args: ignore-auto noconfirm preserve-modes
                   (revert-buffer t t t))
+                ;; Display the reloaded buffer in another window if requested
+                (when use-other
+                  (display-buffer buffer '(display-buffer-reuse-window
+                                           display-buffer-pop-up-window))
+                  ;; Switch back to original window to keep focus on Claude
+                  (when (window-live-p original-window)
+                    (select-window original-window)))
                 (format "Buffer reloaded from disk: %s" file-path))
             ;; Buffer not currently open - that's fine, just report it
             (format "Buffer not open (no reload needed): %s" file-path)))
@@ -202,6 +222,10 @@ FILE-PATH is the absolute path to the file to reload."
            (:name "highlight"
                   :type boolean
                   :description "Whether to temporarily highlight the line"
+                  :optional t)
+           (:name "use_other_window"
+                  :type boolean
+                  :description "Open in another window and keep focus on current window (default: true)"
                   :optional t)))
 
   ;; Register reload-buffer tool
@@ -211,7 +235,11 @@ FILE-PATH is the absolute path to the file to reload."
    :description "Reload a buffer from disk to sync with external file modifications. Use this after Edit, Write, or shell commands modify files to ensure the user's editor shows the updated content."
    :args '((:name "file_path"
                   :type string
-                  :description "Absolute path to the file to reload")))
+                  :description "Absolute path to the file to reload")
+           (:name "use_other_window"
+                  :type boolean
+                  :description "Display buffer in another window and keep focus on current window (default: true)"
+                  :optional t)))
 
   ;; Register read-buffer tool
   (claude-code-ide-make-tool
