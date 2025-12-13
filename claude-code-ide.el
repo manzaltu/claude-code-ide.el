@@ -395,6 +395,12 @@ cursor management, and process buffering for superior user experience."
   (setq-local cursor-in-non-selected-windows nil)
   (setq-local blink-cursor-mode nil)
   (setq-local cursor-type nil)  ; Let vterm handle the cursor entirely
+  ;; disable hl-line-mode, eliminates another source of flicker
+  (setq-local global-hl-line-mode nil)
+  (when (featurep 'hl-line)
+    (hl-line-mode -1))
+  ;; make sure the non-breaking space in the prompt isn't themed
+  (face-remap-add-relative 'nobreak-space :underline nil :foreground nil)
   ;; Register hook for copy-mode cursor visibility
   (add-hook 'vterm-copy-mode-hook #'claude-code-ide--vterm-copy-mode-hook nil t)
   ;; Increase process read buffering to batch more updates together
