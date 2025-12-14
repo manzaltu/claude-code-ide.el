@@ -365,6 +365,23 @@ INPUT contains the terminal output stream."
           ;; Standard processing for regular output
           (funcall orig-fun process input))))))
 
+(defvar-local claude-code-ide--saved-cursor-type nil
+  "Saved cursor-type before entering vterm-copy-mode.")
+
+(defun claude-code-ide--vterm-copy-mode-hook ()
+  "Make sure cursor is visible in `vterm-copy-mode'.
+Saves the current cursor-type when entering copy mode and restores it
+when exiting, ensuring compatibility with evil-mode and other packages
+that manage cursor appearance."
+  (if vterm-copy-mode
+      ;; Entering copy mode: save current cursor-type and make cursor visible
+      (progn
+        (setq claude-code-ide--saved-cursor-type cursor-type)
+        (when (null cursor-type)
+          (setq cursor-type t)))
+    ;; Exiting copy mode: restore previous cursor-type
+    (setq cursor-type claude-code-ide--saved-cursor-type)))
+
 (defun claude-code-ide--configure-vterm-buffer ()
   "Configure vterm for enhanced performance and visual quality.
 Establishes optimal terminal settings including rendering optimizations,
@@ -378,6 +395,8 @@ cursor management, and process buffering for superior user experience."
   (setq-local cursor-in-non-selected-windows nil)
   (setq-local blink-cursor-mode nil)
   (setq-local cursor-type nil)  ; Let vterm handle the cursor entirely
+  ;; Register hook for copy-mode cursor visibility
+  (add-hook 'vterm-copy-mode-hook #'claude-code-ide--vterm-copy-mode-hook nil t)
   ;; Increase process read buffering to batch more updates together
   (when-let ((proc (get-buffer-process (current-buffer))))
     (set-process-query-on-exit-flag proc nil)
