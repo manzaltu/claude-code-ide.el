@@ -290,6 +290,76 @@ ARGUMENTS should contain:
        (signal 'mcp-error (list (format "Failed to open file: %s"
                                         (error-message-string err))))))))
 
+(defun claude-code-ide-mcp-handle-goto-location (arguments)
+  "Jump to a specific line and column in a file.
+ARGUMENTS should contain:
+- `file_path': Absolute path to the file (required)
+- `line': Line number (1-based, required)
+- `column': Column number (0-based, optional)
+- `highlight': Whether to temporarily highlight the line (optional, default nil)"
+  (let ((file-path (alist-get 'file_path arguments))
+        (line (alist-get 'line arguments))
+        (column (alist-get 'column arguments))
+        (highlight (alist-get 'highlight arguments)))
+    (unless file-path
+      (signal 'mcp-error '("Missing required parameter: file_path")))
+    (unless line
+      (signal 'mcp-error '("Missing required parameter: line")))
+    (condition-case err
+        (progn
+          ;; Open the file
+          (find-file (expand-file-name file-path))
+          ;; Set up buffer cache hooks for the newly opened file
+          (with-current-buffer (current-buffer)
+            (claude-code-ide-mcp--setup-buffer-cache-hooks))
+          ;; Go to the specified line
+          (goto-char (point-min))
+          (forward-line (1- line))
+          ;; Go to column if specified
+          (when column
+            (move-to-column column))
+          ;; Recenter to make sure the location is visible
+          (recenter)
+          ;; Highlight if requested
+          (when highlight
+            (let ((overlay (make-overlay (line-beginning-position) (line-end-position))))
+              (overlay-put overlay 'face 'highlight)
+              (run-with-timer 0.5 nil (lambda () (delete-overlay overlay)))))
+          ;; Return success
+          (list `((type . "text")
+                  (text . ,(format "Jumped to %s:%d%s"
+                                   file-path
+                                   line
+                                   (if column (format ":%d" column) ""))))))
+      (error
+       (signal 'mcp-error (list (format "Failed to goto location: %s"
+                                        (error-message-string err))))))))
+
+(defun claude-code-ide-mcp-handle-reload-buffer (arguments)
+  "Reload a buffer from disk, syncing with external file modifications.
+ARGUMENTS should contain:
+- `file_path': Absolute path to the file to reload (required)"
+  (let ((file-path (alist-get 'file_path arguments)))
+    (unless file-path
+      (signal 'mcp-error '("Missing required parameter: file_path")))
+    (condition-case err
+        (let* ((expanded-path (expand-file-name file-path))
+               (buffer (find-buffer-visiting expanded-path)))
+          (if buffer
+              (progn
+                (with-current-buffer buffer
+                  ;; Revert buffer from disk without confirmation
+                  ;; Args: ignore-auto noconfirm preserve-modes
+                  (revert-buffer t t t))
+                (list `((type . "text")
+                        (text . ,(format "Buffer reloaded from disk: %s" file-path)))))
+            ;; Buffer not currently open - that's fine, just report it
+            (list `((type . "text")
+                    (text . ,(format "Buffer not open (no reload needed): %s" file-path))))))
+      (error
+       (signal 'mcp-error (list (format "Failed to reload buffer: %s"
+                                        (error-message-string err))))))))
+
 (defun claude-code-ide-mcp-handle-get-current-selection (_arguments)
   "Get the currently selected text and its context."
   (let ((file-path (or (buffer-file-name) ""))
@@ -730,6 +800,8 @@ ARGUMENTS should contain `filePath`."
 (defun claude-code-ide-mcp--build-tool-list ()
   "Build the tool list, conditionally including ediff tools."
   `(("openFile" . claude-code-ide-mcp-handle-open-file)
+    ("gotoLocation" . claude-code-ide-mcp-handle-goto-location)
+    ("reloadBuffer" . claude-code-ide-mcp-handle-reload-buffer)
     ("getCurrentSelection" . claude-code-ide-mcp-handle-get-current-selection)
     ("getOpenEditors" . claude-code-ide-mcp-handle-get-open-editors)
     ("getWorkspaceFolders" . claude-code-ide-mcp-handle-get-workspace-folders)
@@ -757,6 +829,20 @@ ARGUMENTS should contain `filePath`."
                                   (endText . ((type . "string")
                                               (description . "End text pattern for selection")))))
                    (required . ["path"])))
+    ("gotoLocation" . ((type . "object")
+                       (properties . ((file_path . ((type . "string")
+                                                    (description . "Absolute path to the file")))
+                                      (line . ((type . "integer")
+                                               (description . "Line number (1-based)")))
+                                      (column . ((type . "integer")
+                                                 (description . "Column number (0-based, optional)")))
+                                      (highlight . ((type . "boolean")
+                                                    (description . "Whether to temporarily highlight the line (optional)")))))
+                       (required . ["file_path" "line"])))
+    ("reloadBuffer" . ((type . "object")
+                       (properties . ((file_path . ((type . "string")
+                                                    (description . "Absolute path to the file to reload")))))
+                       (required . ["file_path"])))
     ("getCurrentSelection" . ((type . "object")
                               (properties . :json-empty)))
     ("getOpenEditors" . ((type . "object")
@@ -800,6 +886,8 @@ ARGUMENTS should contain `filePath`."
 (defun claude-code-ide-mcp--build-tool-descriptions ()
   "Build the tool descriptions, conditionally including ediff tools."
   `(("openFile" . "Open a file in the editor and optionally select a range of text")
+    ("gotoLocation" . "Jump to a specific line and column in a file, optionally highlighting the location")
+    ("reloadBuffer" . "Reload a buffer from disk to sync with external file modifications")
     ("getCurrentSelection" . "Get the currently selected text and its location")
     ("getOpenEditors" . "Get the list of currently open editors/buffers")
     ("getWorkspaceFolders" . "Get the current workspace/project folders")
