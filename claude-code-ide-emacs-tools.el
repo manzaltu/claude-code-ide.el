@@ -34,6 +34,17 @@
 (require 'project)
 (require 'cl-lib)
 (require 'imenu)
+(require 'apropos)
+
+;; Add mcp-tools.d to load-path for modular tools
+(eval-and-compile
+  (let ((tools-dir (expand-file-name
+                    "mcp-tools.d"
+                    (file-name-directory
+                     (or load-file-name
+                         buffer-file-name
+                         default-directory)))))
+    (add-to-list 'load-path tools-dir)))
 
 ;; Tree-sitter declarations
 (declare-function treesit-node-at "treesit" (pos &optional parser-or-lang named))
@@ -411,7 +422,37 @@ If INCLUDE_CHILDREN is non-nil, include child nodes."
            (:name "include_children"
                   :type boolean
                   :description "Include child nodes"
-                  :optional t))))
+                  :optional t)))
+
+  ;; Load and register buffer management tools
+  (require 'claude-code-ide-tool-buffer-management)
+  (claude-code-ide-tool-buffer-management-setup)
+
+  ;; Load and register eval tool (OPTIONAL - disabled by default for security)
+  ;; Enable by setting: (setq claude-code-ide-eval-enabled t)
+  ;; Or interactively: M-x claude-code-ide-eval-toggle
+  (require 'claude-code-ide-tool-eval)
+  (claude-code-ide-tool-eval-setup)
+
+  ;; Load and register LSP-aware xref tool
+  (require 'claude-code-ide-tool-xref)
+  (claude-code-ide-tool-xref-setup))
+
+;;;###autoload
+(defun claude-code-ide-emacs-tools-restart ()
+  "Restart the MCP tools server to pick up changes.
+This is useful during development when tools are added or modified."
+  (interactive)
+  (require 'claude-code-ide-mcp-server)
+  ;; Stop the server if running
+  (when (and (boundp 'claude-code-ide-mcp-server--server)
+             claude-code-ide-mcp-server--server)
+    (claude-code-ide-mcp-server--stop-server)
+    (message "MCP server stopped"))
+  ;; Just re-setup tools (file is already loaded)
+  ;; If you need to reload from disk, use M-x load-file manually
+  (claude-code-ide-emacs-tools-setup)
+  (message "MCP tools server restarted"))
 
 (provide 'claude-code-ide-emacs-tools)
 ;;; claude-code-ide-emacs-tools.el ends here
