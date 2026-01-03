@@ -34,6 +34,7 @@
 (require 'project)
 (require 'cl-lib)
 (require 'imenu)
+(require 'apropos)
 
 ;; Tree-sitter declarations
 (declare-function treesit-node-at "treesit" (pos &optional parser-or-lang named))
