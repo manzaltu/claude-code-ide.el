@@ -216,7 +216,7 @@ MAX-DEPTH is the maximum depth to traverse."
            (child-count (treesit-node-child-count node)))
       ;; Add children
       (dotimes (i child-count)
-        (when-let ((child (treesit-node-child node i)))
+        (when-let* ((child (treesit-node-child node i)))
           (setq result (concat result
                                (claude-code-ide-mcp-treesit--format-tree
                                 child (1+ level) max-depth)))))
