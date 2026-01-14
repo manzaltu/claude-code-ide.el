@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025
 
 ;; Author: Yoav Orot
-;; Version: 0.2.5
+;; Version: 0.2.6
 ;; Package-Requires: ((emacs "28.1") (websocket "1.12") (transient "0.9.0") (web-server "0.1.2"))
 ;; Keywords: ai, claude, code, assistant, mcp, websocket
 ;; URL: https://github.com/manzaltu/claude-code-ide.el
@@ -400,7 +400,7 @@ cursor management, and process buffering for superior user experience."
   (when (featurep 'hl-line)
     (hl-line-mode -1))
   ;; make sure the non-breaking space in the prompt isn't themed
-  (face-remap-add-relative 'nobreak-space :underline nil :foreground nil)
+  (face-remap-add-relative 'nobreak-space :inherit 'default)
   ;; Register hook for copy-mode cursor visibility
   (add-hook 'vterm-copy-mode-hook #'claude-code-ide--vterm-copy-mode-hook nil t)
   ;; Increase process read buffering to batch more updates together
