@@ -267,6 +267,14 @@ a more stable viewing experience when working with multiple windows."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-fix-char-widths t
+  "Fix character widths for Claude Code's Unicode symbols.
+Claude uses spinner and bullet characters that have ambiguous East Asian
+width, causing display jumping.  When non-nil, sets these characters to
+single-width in Claude session buffers."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 (define-obsolete-variable-alias
   'claude-code-ide-eat-initialization-delay
   'claude-code-ide-terminal-initialization-delay
@@ -309,6 +317,16 @@ More efficient than split-string + cl-count-if for simple counting."
       (cl-incf start (length sequence)))
     count))
 
+(defun claude-code-ide--fix-char-widths ()
+  "Set character widths for Claude's Unicode symbols to prevent flickering.
+Applied to buffer-local char-width-table in Claude session buffers.
+Claude uses spinner (✢✳∗✻✽) and bullet (⏺) characters with ambiguous
+East Asian width, causing Emacs to miscalculate display width."
+  (setq-local char-width-table (copy-sequence char-width-table))
+  (dolist (range '((#x23FA . #x23FA)   ; ⏺ bullet
+                   (#x2700 . #x27BF)   ; Dingbats (spinner chars ✢✳✻✽)
+                   (#x2200 . #x22FF))) ; Math operators (∗)
+    (set-char-table-range char-width-table range 1)))
 (defun claude-code-ide--vterm-smart-renderer (orig-fun process input)
   "Smart rendering filter for optimized vterm display updates.
 This advanced filter analyzes terminal output patterns to identify
@@ -416,6 +434,9 @@ cursor management, and process buffering for superior user experience."
     (hl-line-mode -1))
   ;; make sure the non-breaking space in the prompt isn't themed
   (face-remap-add-relative 'nobreak-space :inherit 'default)
+  ;; Fix character widths for Claude's Unicode symbols
+  (when claude-code-ide-fix-char-widths
+    (claude-code-ide--fix-char-widths))
   ;; Register hook for copy-mode cursor visibility
   (add-hook 'vterm-copy-mode-hook #'claude-code-ide--vterm-copy-mode-hook nil t)
   ;; Increase process read buffering to batch more updates together
