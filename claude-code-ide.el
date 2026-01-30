@@ -276,6 +276,17 @@ single-width in Claude session buffers."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-buffer-font nil
+  "Font to use for Claude Code session buffers.
+When non-nil, this font will be applied to the entire Claude Code buffer.
+This can help with display issues if your default font doesn't render
+Claude's output well.  Set to a font name string like \"Iosevka\" or
+a full font spec like \"Iosevka-12\".  When nil (default), the buffer
+uses the default Emacs font."
+  :type '(choice (const :tag "Use default font" nil)
+                 (string :tag "Font name"))
+  :group 'claude-code-ide)
+
 (define-obsolete-variable-alias
   'claude-code-ide-eat-initialization-delay
   'claude-code-ide-terminal-initialization-delay
@@ -335,6 +346,14 @@ East Asian width, causing Emacs to miscalculate display width."
                    (#x2700 . #x27BF)   ; Dingbats (spinner chars ✢✳✻✽)
                    (#x2200 . #x22FF))) ; Math operators (∗)
     (set-char-table-range char-width-table range 1)))
+
+(defun claude-code-ide--apply-buffer-font ()
+  "Apply custom font to Claude Code buffer if configured.
+Uses `buffer-face-mode' to set a buffer-local font face."
+  (when claude-code-ide-buffer-font
+    (setq-local buffer-face-mode-face `(:family ,claude-code-ide-buffer-font))
+    (buffer-face-mode 1)))
+
 (defun claude-code-ide--vterm-smart-renderer (orig-fun process input)
   "Smart rendering filter for optimized vterm display updates.
 This advanced filter analyzes terminal output patterns to identify
@@ -495,6 +514,8 @@ cursor management, and process buffering for superior user experience."
   ;; Fix character widths for Claude's Unicode symbols
   (when claude-code-ide-fix-char-widths
     (claude-code-ide--fix-char-widths))
+  ;; Apply custom buffer font if configured
+  (claude-code-ide--apply-buffer-font)
   ;; Register hook for copy-mode cursor visibility
   (add-hook 'vterm-copy-mode-hook #'claude-code-ide--vterm-copy-mode-hook nil t)
   ;; Increase process read buffering to batch more updates together
@@ -523,6 +544,8 @@ and display fixes for superior user experience."
   ;; Fix character widths for Claude's Unicode symbols
   (when claude-code-ide-fix-char-widths
     (claude-code-ide--fix-char-widths))
+  ;; Apply custom buffer font if configured
+  (claude-code-ide--apply-buffer-font)
   ;; Set up rendering optimization
   (when claude-code-ide-vterm-anti-flicker
     (advice-add 'eat--filter :around #'claude-code-ide--eat-smart-renderer)))

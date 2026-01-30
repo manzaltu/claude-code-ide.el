@@ -194,6 +194,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-vterm-anti-flicker~            | Enable flicker reduction (vterm and eat)    | ~t~                                    |
 | ~claude-code-ide-vterm-render-delay~            | vterm render batching delay (seconds)       | ~0.016~                                |
 | ~claude-code-ide-fix-char-widths~               | Fix Unicode char widths to prevent flicker  | ~t~                                    |
+| ~claude-code-ide-buffer-font~                   | Custom font for Claude Code buffers         | ~nil~                                  |
 | ~claude-code-ide-terminal-initialization-delay~ | Initialization delay for terminals          | ~0.1~                                  |
 | ~claude-code-ide-log-with-context~              | Include session context in log messages     | ~t~                                    |
 | ~claude-code-ide-debug-buffer~                  | Buffer name for debug output                | ~"*claude-code-ide-debug*"~              |
@@ -290,6 +291,21 @@ Claude Code IDE includes a brief initialization delay when launching terminals t
 #+end_src
 
 This delay prevents display artifacts such as misaligned prompts and incorrect cursor positioning that can occur when terminal emulation is initializing. The default 100ms delay is imperceptible but ensures reliable terminal startup.
+
+**** Buffer Font
+
+You can set a custom font for Claude Code buffers, which may help if your default font doesn't render Claude's output well:
+
+#+begin_src emacs-lisp
+;; Use a specific font for Claude Code buffers
+(setq claude-code-ide-buffer-font "Source Code Pro")
+
+;; Or with a size specification
+(setq claude-code-ide-buffer-font "Iosevka-12")
+
+;; Disable (use default font) - this is the default
+(setq claude-code-ide-buffer-font nil)
+#+end_src
 
 **** Terminal Keybindings
 
