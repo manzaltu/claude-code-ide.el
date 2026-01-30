@@ -236,14 +236,15 @@ matching to maintain responsiveness while improving visual quality."
   :type 'boolean
   :group 'claude-code-ide)
 
-(defcustom claude-code-ide-vterm-render-delay 0.005
+(defcustom claude-code-ide-vterm-render-delay 0.016
   "Rendering optimization delay for batched terminal updates.
 This parameter defines the collection window for related terminal
 update sequences when anti-flicker mode is active.  The timing
 balances visual smoothness with interaction responsiveness.
 
-The 0.005 second (5ms) default delivers optimal rendering quality
-with imperceptible latency."
+The 0.016 second (16ms) default delivers optimal rendering quality
+with imperceptible latency.  Users with severe flickering can try
+0.032 to 0.050 for more aggressive batching."
   :type 'number
   :group 'claude-code-ide)
 
