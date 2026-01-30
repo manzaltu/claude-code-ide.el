@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025
 
 ;; Author: Yoav Orot
-;; Version: 0.2.6
+;; Version: 0.2.7
 ;; Package-Requires: ((emacs "28.1") (websocket "1.12") (transient "0.9.0") (web-server "0.1.2"))
 ;; Keywords: ai, claude, code, assistant, mcp, websocket
 ;; URL: https://github.com/manzaltu/claude-code-ide.el
