@@ -465,6 +465,18 @@ cursor management, and process buffering for superior user experience."
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
+(defun claude-code-ide--sync-terminal-dimensions (buffer window)
+  "Sync terminal dimensions in BUFFER to match WINDOW size.
+This ensures the terminal process has the correct dimensions after
+the buffer has been displayed in its final window, which may differ
+from the window where it was initially created."
+  (when (and buffer window (buffer-live-p buffer) (window-live-p window))
+    (with-current-buffer buffer
+      (when-let ((proc (get-buffer-process buffer)))
+        (let ((height (window-body-height window))
+              (width (window-body-width window)))
+          (set-process-window-size proc height width))))))
+
 (defun claude-code-ide--setup-terminal-keybindings ()
   "Set up keybindings for the Claude Code terminal buffer.
 This function binds:
@@ -630,6 +642,11 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
                (memq claude-code-ide-window-side '(top bottom)))
       (set-window-text-height window claude-code-ide-window-height)
       (set-window-dedicated-p window t))
+    ;; Sync terminal dimensions with the actual window size
+    ;; This is necessary because vterm/eat may have been created with
+    ;; different dimensions before being displayed in this window
+    (when window
+      (claude-code-ide--sync-terminal-dimensions buffer window))
     window))
 
 (defvar claude-code-ide--cleanup-in-progress nil
