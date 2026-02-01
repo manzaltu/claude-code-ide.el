@@ -125,7 +125,7 @@
 
 (defun claude-code-ide--session-status ()
   "Return a string describing the current session status."
-  (if-let ((session (claude-code-ide-mcp--get-current-session)))
+  (if-let* ((session (claude-code-ide-mcp--get-current-session)))
       (let* ((project-dir (claude-code-ide-mcp-session-project-dir session))
              (project-name (file-name-nondirectory (directory-file-name project-dir)))
              (connected (if (claude-code-ide-mcp-session-client session) "connected" "disconnected")))

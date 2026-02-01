@@ -203,6 +203,8 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-focus-on-open~                 | Focus Claude window when opened             | ~t~                                    |
 | ~claude-code-ide-focus-claude-after-ediff~      | Focus Claude window after opening ediff     | ~t~                                    |
 | ~claude-code-ide-show-claude-window-in-ediff~   | Show Claude window during ediff             | ~t~                                    |
+| ~claude-code-ide-ediff-split-orientation~       | Ediff buffer orientation (vertical/horizontal/sensible) | ~'vertical~                |
+| ~claude-code-ide-ediff-control-panel-style~     | Ediff control panel style (auto/gui/terminal) | ~'auto~                                |
 | ~claude-code-ide-use-ide-diff~                  | Use IDE diff viewer instead of terminal     | ~t~                                    |
 | ~claude-code-ide-switch-tab-on-ediff~           | Switch to Claude's tab when opening ediff   | ~t~                                    |
 | ~claude-code-ide-system-prompt~                 | Custom system prompt to append              | ~nil~                                  |
@@ -247,6 +249,69 @@ Or, if you'd prefer to use a regular window:
 ;; Use regular window instead of side window
 (setq claude-code-ide-use-side-window nil)
 #+end_src
+
+*** Ediff Configuration
+
+Claude Code IDE provides several options to customize how diffs are displayed:
+
+**** Buffer Orientation
+
+Control how the comparison buffers are arranged:
+
+#+begin_src emacs-lisp
+;; Top-and-bottom layout (default) - easier to see full lines
+(setq claude-code-ide-ediff-split-orientation 'vertical)
+
+;; Side-by-side layout - easier to compare aligned content
+(setq claude-code-ide-ediff-split-orientation 'horizontal)
+
+;; Let Emacs decide based on window dimensions
+(setq claude-code-ide-ediff-split-orientation 'sensible)
+#+end_src
+
+**** Control Panel Style
+
+Control the ediff control panel appearance:
+
+#+begin_src emacs-lisp
+;; Auto-detect based on environment (default)
+;; GUI style in graphical Emacs, terminal style in terminal
+(setq claude-code-ide-ediff-control-panel-style 'auto)
+
+;; Always use GUI style (separate small window)
+(setq claude-code-ide-ediff-control-panel-style 'gui)
+
+;; Always use terminal style (single-line panel below buffers)
+(setq claude-code-ide-ediff-control-panel-style 'terminal)
+#+end_src
+
+**** Frame Management (GUI Mode Only)
+
+In graphical Emacs, you can control whether ediff opens in a separate frame to keep Claude visible:
+
+When ~claude-code-ide-show-claude-window-in-ediff~ is ~t~ (default):
+- If you have one frame: Creates a new frame for the comparison buffers, keeping Claude visible in the original frame
+- If you have multiple frames: Uses a different frame than the Claude frame for comparisons
+
+When ~claude-code-ide-show-claude-window-in-ediff~ is ~nil~:
+- Ediff opens in the same frame as Claude, temporarily hiding the Claude buffer
+
+The ~claude-code-ide-focus-claude-after-ediff~ variable controls which frame is raised after ediff opens:
+- When ~t~ (default): Raises the Claude frame and focuses the Claude window
+- When ~nil~: Raises the ediff frame and focuses the comparison buffers
+
+#+begin_src emacs-lisp
+;; Keep Claude visible in a separate frame during ediff (default)
+(setq claude-code-ide-show-claude-window-in-ediff t)
+
+;; Hide Claude during ediff for maximum screen space
+(setq claude-code-ide-show-claude-window-in-ediff nil)
+
+;; Focus the ediff comparison after opening (requires GUI mode)
+(setq claude-code-ide-focus-claude-after-ediff nil)
+#+end_src
+
+*Note:* Frame management only applies to graphical Emacs. In terminal mode, ~claude-code-ide-show-claude-window-in-ediff~ and ~claude-code-ide-focus-claude-after-ediff~ work as before.
 
 *** Terminal Backend Configuration
 

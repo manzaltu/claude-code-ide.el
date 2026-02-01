@@ -8,19 +8,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This package integrates Claude Code CLI with Emacs via WebSocket and the Model Context Protocol (MCP).
 
+### Core Architecture
+
+The package uses a bidirectional communication model:
+- **WebSocket server** (`claude-code-ide-mcp.el`) receives JSON-RPC requests from Claude Code CLI
+- **Session management** tracks multiple project-specific Claude instances with separate buffers
+- **MCP handlers** (`claude-code-ide-mcp-handlers.el`) implement tools that Claude can invoke (file operations, diagnostics, ediff)
+- **Terminal backends** (vterm or eat) provide the interactive CLI interface
+- **Context tracking** monitors active files, selections, and project state to provide Claude with current editor context
+
+### File Organization
+
 **Core Files:**
-- `claude-code-ide.el` - Main entry: user commands, session management, terminal buffers
-- `claude-code-ide-mcp.el` - WebSocket server, JSON-RPC handling, session state
+- `claude-code-ide.el` - Main entry: user commands, session management, terminal buffers, window management
+- `claude-code-ide-mcp.el` - WebSocket server, JSON-RPC handling, session state, buffer/selection tracking
 - `claude-code-ide-mcp-handlers.el` - MCP tool implementations (file ops, ediff, diagnostics)
 
-**Support Files:**
-- `claude-code-ide-mcp-server.el` - HTTP-based MCP tools server framework
+**MCP Tools Server (Optional):**
+- `claude-code-ide-mcp-server.el` - HTTP-based MCP tools server framework for exposing Emacs functions
 - `claude-code-ide-mcp-http-server.el` - HTTP transport implementation
-- `claude-code-ide-emacs-tools.el` - Emacs tools: xref, project info, imenu
-- `claude-code-ide-diagnostics.el` - Flycheck integration
+- `claude-code-ide-emacs-tools.el` - Built-in Emacs tools: xref, tree-sitter, project info, imenu
+
+**Support Files:**
+- `claude-code-ide-diagnostics.el` - Flycheck/Flymake integration for code diagnostics
 - `claude-code-ide-transient.el` - Transient menu interface
 - `claude-code-ide-debug.el` - Debug logging utilities
-- `claude-code-ide-tests.el` - ERT test suite with mocks
+- `claude-code-ide-tests.el` - ERT test suite with mocks for external dependencies
 
 ## Hooks
 
@@ -52,6 +65,43 @@ emacs -batch -L . -l ert -l claude-code-ide-tests.el -f claude-code-ide-run-all-
 # Record WebSocket messages between VS Code and Claude Code for debugging
 ./record-claude-messages.sh [working_directory]
 ```
+
+## Ediff Integration
+
+When `claude-code-ide-use-ide-diff` is enabled (default), file edits trigger an interactive ediff session:
+
+1. **MCP handler receives edit request** - `ide_edit` tool is called with file path and new content
+2. **Ediff session opens** - Shows current content (Buffer A) vs proposed changes (Buffer B)
+3. **User can modify Buffer B** - Important: users can refine your suggestions before applying
+4. **User accepts or rejects** - On quit (pressing `q`), user chooses to accept (`y`) or reject (`n`)
+5. **Modified content returned** - If accepted, the (potentially modified) content from Buffer B is sent back via `ide_edit_complete`
+6. **Final write occurs** - The content is written to the actual file
+
+**Key insight**: The content you receive back via `ide_edit_complete` may differ from what you originally proposed in `ide_edit`. Users can and do modify your suggestions. Always use the returned content when writing the final file.
+
+### Ediff Configuration
+
+The ediff interface can be customized through several configuration variables:
+
+**Buffer Layout** - `claude-code-ide-ediff-split-orientation` controls how comparison buffers are arranged:
+- `'vertical` (default): Top-and-bottom layout, easier to see full lines
+- `'horizontal`: Side-by-side layout, easier to compare aligned content
+- `'sensible`: Let Emacs decide based on window dimensions
+
+**Control Panel Style** - `claude-code-ide-ediff-control-panel-style` controls the control panel appearance:
+- `'auto` (default): GUI style in graphical Emacs, terminal style in terminal
+- `'gui`: Always use a separate small window (GUI style)
+- `'terminal`: Always use a single-line panel below buffers (terminal style)
+
+**Frame Management (GUI Mode Only)** - In graphical Emacs, the behavior depends on `claude-code-ide-show-claude-window-in-ediff`:
+- When `t` (default): Creates a separate frame for ediff comparisons, keeping Claude visible in the original frame
+- When `nil`: Opens ediff in the same frame as Claude, temporarily hiding the Claude buffer
+
+The `claude-code-ide-focus-claude-after-ediff` variable controls which frame is raised after ediff opens (GUI mode only):
+- When `t` (default): Raises the Claude frame and focuses the Claude window
+- When `nil`: Raises the ediff frame and focuses the comparison buffers
+
+Frame management does not apply in terminal mode, and `claude-code-ide-show-claude-window-in-ediff` and `claude-code-ide-focus-claude-after-ediff` work as before.
 
 ## Debugging
 
