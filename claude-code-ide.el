@@ -475,7 +475,14 @@ from the window where it was initially created."
       (when-let ((proc (get-buffer-process buffer)))
         (let ((height (window-body-height window))
               (width (window-body-width window)))
-          (set-process-window-size proc height width))))))
+          ;; Update process window size (sends SIGWINCH)
+          (set-process-window-size proc height width)
+          ;; For vterm, also update internal terminal state
+          (when (and (eq major-mode 'vterm-mode)
+                     (fboundp 'vterm--set-size)
+                     (boundp 'vterm--term)
+                     vterm--term)
+            (vterm--set-size vterm--term height width)))))))
 
 (defun claude-code-ide--setup-terminal-keybindings ()
   "Set up keybindings for the Claude Code terminal buffer.
