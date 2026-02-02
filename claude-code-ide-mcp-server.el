@@ -139,6 +139,17 @@ Returns the tool specification for convenience."
       (error "Tool :name is required"))
     (unless description
       (error "Tool :description is required"))
+    (when args
+      (dolist (arg args)
+        (let ((name (plist-get arg :name))
+              (type (plist-get arg :type))
+              (desc (plist-get arg :description)))
+          (unless name
+            (error "Argument :name is required"))
+          (unless type
+            (error "Argument :type is required"))
+          (unless description
+            (error "Argument :description is required")))))
 
     ;; Build the tool specification
     (let ((spec (list :function function
