@@ -2275,6 +2275,156 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (equal (plist-get file-path-arg :description)
                          "Path to the file to analyze for symbols")))))))
 
+;;; Anti-Flicker Feature Tests
+
+(ert-deftest claude-code-ide-test-eat-smart-renderer-passthrough ()
+  "Test that eat smart renderer passes through normal text immediately."
+  (let ((orig-fun-called nil)
+        (orig-fun-input nil)
+        (claude-code-ide-vterm-anti-flicker t))
+    (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+               (lambda (_) t)))
+      (with-temp-buffer
+        (let ((claude-code-ide--eat-render-queue nil)
+              (claude-code-ide--eat-render-timer nil)
+              (mock-process (make-process :name "mock-eat"
+                                          :buffer (current-buffer)
+                                          :command '("true"))))
+          (let ((orig-fun (lambda (_process input)
+                            (setq orig-fun-called t
+                                  orig-fun-input input))))
+            ;; Test with normal text (no escape sequences)
+            (claude-code-ide--eat-smart-renderer orig-fun mock-process "Hello World")
+            ;; Should pass through immediately
+            (should orig-fun-called)
+            (should (equal orig-fun-input "Hello World"))
+            (should-not claude-code-ide--eat-render-queue)))))))
+
+(ert-deftest claude-code-ide-test-eat-smart-renderer-batching ()
+  "Test that eat smart renderer batches complex escape sequences."
+  (let ((orig-fun-called nil)
+        (timer-created nil)
+        (claude-code-ide-vterm-anti-flicker t)
+        (claude-code-ide-vterm-render-delay 0.005))
+    (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+               (lambda (_) t))
+              ((symbol-function 'run-at-time)
+               (lambda (delay &rest _)
+                 (setq timer-created delay)
+                 'mock-timer))
+              ((symbol-function 'cancel-timer)
+               (lambda (_) nil)))
+      (with-temp-buffer
+        (let ((claude-code-ide--eat-render-queue nil)
+              (claude-code-ide--eat-render-timer nil)
+              (mock-process (make-process :name "mock-eat"
+                                          :buffer (current-buffer)
+                                          :command '("true"))))
+          (let ((orig-fun (lambda (_process _input)
+                            (setq orig-fun-called t))))
+            ;; Test with complex escape sequence pattern
+            (let ((complex-input "\033[2A\033[K\033[3A\033[K"))
+              (claude-code-ide--eat-smart-renderer orig-fun mock-process complex-input)
+              ;; Should be queued, not called immediately
+              (should-not orig-fun-called)
+              ;; Queue is a list (pushed in reverse order for O(1))
+              (should (listp claude-code-ide--eat-render-queue))
+              (should (equal (apply #'concat (nreverse claude-code-ide--eat-render-queue))
+                             complex-input))
+              (should (equal timer-created 0.005)))))))))
+
+(ert-deftest claude-code-ide-test-fix-char-widths ()
+  "Test that fix-char-widths modifies char-width-table correctly."
+  (with-temp-buffer
+    (let ((claude-code-ide-fix-char-widths t))
+      ;; Apply the fix
+      (claude-code-ide--fix-char-widths)
+      ;; Check that the table was modified locally
+      (should (local-variable-p 'char-width-table))
+      ;; Check specific character widths
+      ;; Bullet character (U+23FA)
+      (should (= (char-width ?\x23FA) 1))
+      ;; Dingbats range - test a sample character (U+273A - ✺)
+      (should (= (char-width ?\x273A) 1))
+      ;; Math operators range - test a sample character (U+2217 - ∗)
+      (should (= (char-width ?\x2217) 1)))))
+
+(ert-deftest claude-code-ide-test-apply-buffer-font ()
+  "Test that apply-buffer-font sets buffer-face-mode correctly."
+  ;; Ensure face-remap is loaded
+  (require 'face-remap)
+  (with-temp-buffer
+    ;; Test with no font configured
+    (let ((claude-code-ide-buffer-font nil))
+      (claude-code-ide--apply-buffer-font)
+      ;; buffer-face-mode should not be enabled (check if bound and nil)
+      (should (or (not (boundp 'buffer-face-mode))
+                  (not buffer-face-mode))))
+
+    ;; Test with font configured
+    (let ((claude-code-ide-buffer-font "Fira Code"))
+      (claude-code-ide--apply-buffer-font)
+      ;; buffer-face-mode should be enabled
+      (should (and (boundp 'buffer-face-mode) buffer-face-mode))
+      ;; Face should be set correctly
+      (should (equal buffer-face-mode-face '(:family "Fira Code"))))))
+
+(ert-deftest claude-code-ide-test-sync-terminal-dimensions ()
+  "Test terminal dimension synchronization."
+  (let ((dimensions-set nil))
+    (cl-letf (((symbol-function 'set-process-window-size)
+               (lambda (proc height width)
+                 (setq dimensions-set (list height width)))))
+      (with-temp-buffer
+        ;; Create a mock process
+        (let ((mock-process (make-process :name "mock-dim"
+                                          :buffer (current-buffer)
+                                          :command '("true"))))
+          ;; Test with valid buffer and window
+          (when-let ((window (selected-window)))
+            (claude-code-ide--sync-terminal-dimensions (current-buffer) window)
+            ;; Dimensions should have been set
+            (should dimensions-set)
+            ;; Values should match window dimensions
+            (should (= (car dimensions-set) (window-body-height window)))
+            (should (= (cadr dimensions-set) (window-body-width window))))
+
+          ;; Test with nil buffer (should not error)
+          (setq dimensions-set nil)
+          (claude-code-ide--sync-terminal-dimensions nil (selected-window))
+          (should-not dimensions-set)
+
+          ;; Test with nil window (should not error)
+          (setq dimensions-set nil)
+          (claude-code-ide--sync-terminal-dimensions (current-buffer) nil)
+          (should-not dimensions-set))))))
+
+(ert-deftest claude-code-ide-test-eat-advice-cleanup ()
+  "Test that eat advice is properly removed during cleanup."
+  (let ((advice-removed nil)
+        (claude-code-ide-terminal-backend 'eat)
+        (claude-code-ide-vterm-anti-flicker t)
+        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--cleanup-in-progress nil))
+    ;; Mock advice-remove to track calls
+    (cl-letf (((symbol-function 'advice-remove)
+               (lambda (symbol function)
+                 (when (and (eq symbol 'eat--filter)
+                            (eq function 'claude-code-ide--eat-smart-renderer))
+                   (setq advice-removed t))))
+              ((symbol-function 'claude-code-ide-mcp-stop-session)
+               (lambda (_) nil))
+              ((symbol-function 'claude-code-ide-mcp-server-session-ended)
+               (lambda (_) nil))
+              ((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda (_) "*test-buffer*")))
+      ;; Add a mock session first
+      (puthash "/tmp/test" (current-buffer) claude-code-ide--processes)
+      ;; Now cleanup should remove the advice since this is the last session
+      (claude-code-ide--cleanup-on-exit "/tmp/test")
+      ;; Verify advice was removed
+      (should advice-removed))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

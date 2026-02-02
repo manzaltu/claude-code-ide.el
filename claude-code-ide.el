@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025
 
 ;; Author: Yoav Orot
-;; Version: 0.2.6
+;; Version: 0.2.7
 ;; Package-Requires: ((emacs "28.1") (websocket "1.12") (transient "0.9.0") (web-server "0.1.2"))
 ;; Keywords: ai, claude, code, assistant, mcp, websocket
 ;; URL: https://github.com/manzaltu/claude-code-ide.el
@@ -225,25 +225,26 @@ This setting should be removed once the upstream bug is fixed."
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-vterm-anti-flicker t
-  "Enable intelligent flicker reduction for vterm display.
+  "Enable intelligent flicker reduction for terminal display.
 When enabled, this feature optimizes terminal rendering by detecting
 and batching rapid update sequences.  This provides smoother visual
 output during complex terminal operations such as expanding text areas
 and rapid screen updates.
 
-This optimization applies only to vterm and uses advanced pattern
-matching to maintain responsiveness while improving visual quality."
+This optimization applies to both vterm and eat backends, using advanced
+pattern matching to maintain responsiveness while improving visual quality."
   :type 'boolean
   :group 'claude-code-ide)
 
-(defcustom claude-code-ide-vterm-render-delay 0.005
+(defcustom claude-code-ide-vterm-render-delay 0.016
   "Rendering optimization delay for batched terminal updates.
 This parameter defines the collection window for related terminal
 update sequences when anti-flicker mode is active.  The timing
 balances visual smoothness with interaction responsiveness.
 
-The 0.005 second (5ms) default delivers optimal rendering quality
-with imperceptible latency."
+The 0.016 second (16ms) default delivers optimal rendering quality
+with imperceptible latency.  Users with severe flickering can try
+0.032 to 0.050 for more aggressive batching."
   :type 'number
   :group 'claude-code-ide)
 
@@ -265,6 +266,25 @@ When enabled, prevents the eat terminal from jumping to the top
 when you switch focus to other windows and return.  This provides
 a more stable viewing experience when working with multiple windows."
   :type 'boolean
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-fix-char-widths t
+  "Fix character widths for Claude Code's Unicode symbols.
+Claude uses spinner and bullet characters that have ambiguous East Asian
+width, causing display jumping.  When non-nil, sets these characters to
+single-width in Claude session buffers."
+  :type 'boolean
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-buffer-font nil
+  "Font to use for Claude Code session buffers.
+When non-nil, this font will be applied to the entire Claude Code buffer.
+This can help with display issues if your default font doesn't render
+Claude's output well.  Set to a font name string like \"Iosevka\" or
+a full font spec like \"Iosevka-12\".  When nil (default), the buffer
+uses the default Emacs font."
+  :type '(choice (const :tag "Use default font" nil)
+                 (string :tag "Font name"))
   :group 'claude-code-ide)
 
 (define-obsolete-variable-alias
@@ -291,14 +311,21 @@ a more stable viewing experience when working with multiple windows."
 (defvar claude-code-ide--last-accessed-buffer nil
   "The most recently accessed Claude Code buffer.")
 
-;;; Vterm Rendering Optimization
+;;; Terminal Rendering Optimization
 
 (defvar-local claude-code-ide--vterm-render-queue nil
-  "List of pending terminal output strings awaiting batched rendering.
+  "List of pending vterm output strings awaiting batched rendering.
 Stored in reverse order for O(1) push, joined at flush time.")
 
 (defvar-local claude-code-ide--vterm-render-timer nil
-  "Timer for executing queued rendering operations.")
+  "Timer for executing queued vterm rendering operations.")
+
+(defvar-local claude-code-ide--eat-render-queue nil
+  "List of pending eat output strings awaiting batched rendering.
+Stored in reverse order for O(1) push, joined at flush time.")
+
+(defvar-local claude-code-ide--eat-render-timer nil
+  "Timer for executing queued eat rendering operations.")
 
 (defun claude-code-ide--count-escape-sequence (sequence input)
   "Count occurrences of escape SEQUENCE in INPUT.
@@ -308,6 +335,24 @@ More efficient than split-string + cl-count-if for simple counting."
       (cl-incf count)
       (cl-incf start (length sequence)))
     count))
+
+(defun claude-code-ide--fix-char-widths ()
+  "Set character widths for Claude's Unicode symbols to prevent flickering.
+Applied to buffer-local char-width-table in Claude session buffers.
+Claude uses spinner (✢✳∗✻✽) and bullet (⏺) characters with ambiguous
+East Asian width, causing Emacs to miscalculate display width."
+  (setq-local char-width-table (copy-sequence char-width-table))
+  (dolist (range '((#x23FA . #x23FA)   ; ⏺ bullet
+                   (#x2700 . #x27BF)   ; Dingbats (spinner chars ✢✳✻✽)
+                   (#x2200 . #x22FF))) ; Math operators (∗)
+    (set-char-table-range char-width-table range 1)))
+
+(defun claude-code-ide--apply-buffer-font ()
+  "Apply custom font to Claude Code buffer if configured.
+Uses `buffer-face-mode' to set a buffer-local font face."
+  (when claude-code-ide-buffer-font
+    (setq-local buffer-face-mode-face `(:family ,claude-code-ide-buffer-font))
+    (buffer-face-mode 1)))
 
 (defun claude-code-ide--vterm-smart-renderer (orig-fun process input)
   "Smart rendering filter for optimized vterm display updates.
@@ -380,6 +425,56 @@ INPUT contains the terminal output stream."
             ;; Standard processing for regular output
             (funcall orig-fun process input)))))))
 
+(defun claude-code-ide--eat-smart-renderer (orig-fun process input)
+  "Smart rendering filter for optimized eat display updates.
+Similar to vterm smart renderer - detects rapid redraw sequences
+and batches them for smoother visual output.
+
+ORIG-FUN is the underlying filter to enhance.
+PROCESS is the terminal process being optimized.
+INPUT contains the terminal output stream."
+  (if (or (not claude-code-ide-vterm-anti-flicker)
+          (not (claude-code-ide--session-buffer-p (process-buffer process))))
+      (funcall orig-fun process input)
+    (with-current-buffer (process-buffer process)
+      ;; Fast path: plain text with no active queue skips all pattern detection
+      (if (and (not claude-code-ide--eat-render-queue)
+               (not (string-search "\033" input)))
+          (funcall orig-fun process input)
+        ;; Same pattern detection as vterm: escape density, clear count
+        (let* ((complex-redraw-detected
+                (string-match-p "\033\\[[0-9]*A.*\033\\[K.*\033\\[[0-9]*A.*\033\\[K" input))
+               (clear-count (claude-code-ide--count-escape-sequence "\033[K" input))
+               (escape-count (cl-count ?\033 input))
+               (input-length (length input))
+               (escape-density (if (> input-length 0)
+                                   (/ (float escape-count) input-length)
+                                 0)))
+          (if (or complex-redraw-detected
+                  (and (> escape-density 0.3) (>= clear-count 2))
+                  claude-code-ide--eat-render-queue)
+              (progn
+                ;; Add to queue (list for O(1) push, joined at flush time)
+                (push input claude-code-ide--eat-render-queue)
+                (when claude-code-ide--eat-render-timer
+                  (cancel-timer claude-code-ide--eat-render-timer))
+                (setq claude-code-ide--eat-render-timer
+                      (run-at-time claude-code-ide-vterm-render-delay nil
+                                   (lambda (buf)
+                                     (when (buffer-live-p buf)
+                                       (with-current-buffer buf
+                                         (when claude-code-ide--eat-render-queue
+                                           (let* ((inhibit-redisplay t)
+                                                  (queue claude-code-ide--eat-render-queue)
+                                                  (data (apply #'concat (nreverse queue))))
+                                             (setq claude-code-ide--eat-render-queue nil
+                                                   claude-code-ide--eat-render-timer nil)
+                                             (funcall orig-fun
+                                                      (get-buffer-process buf)
+                                                      data))))))
+                                   (current-buffer))))
+            (funcall orig-fun process input)))))))
+
 (defvar-local claude-code-ide--saved-cursor-type nil
   "Saved cursor-type before entering vterm-copy-mode.")
 
@@ -416,6 +511,11 @@ cursor management, and process buffering for superior user experience."
     (hl-line-mode -1))
   ;; make sure the non-breaking space in the prompt isn't themed
   (face-remap-add-relative 'nobreak-space :inherit 'default)
+  ;; Fix character widths for Claude's Unicode symbols
+  (when claude-code-ide-fix-char-widths
+    (claude-code-ide--fix-char-widths))
+  ;; Apply custom buffer font if configured
+  (claude-code-ide--apply-buffer-font)
   ;; Register hook for copy-mode cursor visibility
   (add-hook 'vterm-copy-mode-hook #'claude-code-ide--vterm-copy-mode-hook nil t)
   ;; Increase process read buffering to batch more updates together
@@ -427,6 +527,28 @@ cursor management, and process buffering for superior user experience."
   ;; Set up rendering optimization
   (when claude-code-ide-vterm-anti-flicker
     (advice-add 'vterm--filter :around #'claude-code-ide--vterm-smart-renderer)))
+
+(defun claude-code-ide--configure-eat-buffer ()
+  "Configure eat for enhanced performance and visual quality.
+Establishes optimal terminal settings including rendering optimizations
+and display fixes for superior user experience."
+  ;; Disable cursor in non-selected windows to reduce flicker
+  (setq-local cursor-in-non-selected-windows nil)
+  (setq-local blink-cursor-mode nil)
+  (setq-local cursor-type nil)  ; Let eat handle the cursor entirely
+  ;; Disable hl-line-mode to eliminate another source of flicker
+  (when (featurep 'hl-line)
+    (hl-line-mode -1))
+  ;; Make sure the non-breaking space in the prompt isn't themed
+  (face-remap-add-relative 'nobreak-space :inherit 'default)
+  ;; Fix character widths for Claude's Unicode symbols
+  (when claude-code-ide-fix-char-widths
+    (claude-code-ide--fix-char-widths))
+  ;; Apply custom buffer font if configured
+  (claude-code-ide--apply-buffer-font)
+  ;; Set up rendering optimization
+  (when claude-code-ide-vterm-anti-flicker
+    (advice-add 'eat--filter :around #'claude-code-ide--eat-smart-renderer)))
 
 
 ;;; Terminal Backend Abstraction
@@ -681,11 +803,14 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
             ;; Remove advice globally when no sessions remain
             (advice-remove (claude-code-ide--terminal-resize-handler)
                            #'claude-code-ide--terminal-reflow-filter))
-          ;; Remove vterm rendering optimization if no sessions remain
-          (when (and (eq claude-code-ide-terminal-backend 'vterm)
-                     claude-code-ide-vterm-anti-flicker
+          ;; Remove rendering optimization if no sessions remain
+          (when (and claude-code-ide-vterm-anti-flicker
                      (= (hash-table-count claude-code-ide--processes) 0))
-            (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer))
+            (cond
+             ((eq claude-code-ide-terminal-backend 'vterm)
+              (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer))
+             ((eq claude-code-ide-terminal-backend 'eat)
+              (advice-remove 'eat--filter #'claude-code-ide--eat-smart-renderer))))
           ;; Stop MCP server for this project directory
           (claude-code-ide-mcp-stop-session directory)
           ;; Notify MCP tools server about session end with session ID
@@ -804,29 +929,20 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
 (defun claude-code-ide--terminal-position-keeper (window-list)
   "Maintain stable terminal view position across window switches.
 WINDOW-LIST contains windows requiring position synchronization.
-Implements intelligent scroll management to preserve user context
-when navigating between terminal and other buffers."
+Uses eat's default scroll calculation for consistent behavior."
   (dolist (win window-list)
     (if (eq win 'buffer)
-        ;; Direct buffer point update
         (goto-char (eat-term-display-cursor eat-terminal))
-      ;; Window-specific position management
-      (unless buffer-read-only  ; Skip when terminal is in navigation mode
+      (unless buffer-read-only
         (let ((terminal-point (eat-term-display-cursor eat-terminal)))
-          ;; Update window point to match terminal state
           (set-window-point win terminal-point)
-          ;; Apply smart positioning strategy
-          (cond
-           ;; Terminal at bottom: maintain bottom alignment for active prompts
-           ((>= terminal-point (- (point-max) 2))
-            (with-selected-window win
-              (goto-char terminal-point)
-              (recenter -1)))  ; Pin to bottom
-           ;; Terminal out of view: restore visibility
-           ((not (pos-visible-in-window-p terminal-point win))
-            (with-selected-window win
-              (goto-char terminal-point)
-              (recenter)))))))))
+          (with-selected-window win
+            (recenter
+             (- (how-many "\n" (eat-term-display-beginning eat-terminal)
+                          terminal-point)
+                (cdr (eat-term-size eat-terminal))
+                (max 0 (- (floor (window-screen-lines))
+                          (cdr (eat-term-size eat-terminal))))))))))))
 
 (defun claude-code-ide--parse-command-string (command-string)
   "Parse a command string into (program . args) for eat-exec.
@@ -901,6 +1017,8 @@ Signals an error if terminal fails to initialize."
           ;; Set up eat mode
           (unless (eq major-mode 'eat-mode)
             (eat-mode))
+          ;; Configure eat buffer for optimal performance
+          (claude-code-ide--configure-eat-buffer)
           ;; Configure position preservation if enabled
           (when claude-code-ide-eat-preserve-position
             (setq-local eat--synchronize-scroll-function

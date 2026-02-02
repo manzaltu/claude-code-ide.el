@@ -191,8 +191,10 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-cli-extra-flags~               | Additional CLI flags (e.g. "--model")       | ~""~                                   |
 | ~claude-code-ide-debug~                         | Enable debug logging                        | ~nil~                                  |
 | ~claude-code-ide-terminal-backend~              | Terminal backend (vterm or eat)             | ~'vterm~                               |
-| ~claude-code-ide-vterm-anti-flicker~            | Enable vterm flicker reduction              | ~t~                                    |
-| ~claude-code-ide-vterm-render-delay~            | vterm render batching delay (seconds)       | ~0.005~                                |
+| ~claude-code-ide-vterm-anti-flicker~            | Enable flicker reduction (vterm and eat)    | ~t~                                    |
+| ~claude-code-ide-vterm-render-delay~            | vterm render batching delay (seconds)       | ~0.016~                                |
+| ~claude-code-ide-fix-char-widths~               | Fix Unicode char widths to prevent flicker  | ~t~                                    |
+| ~claude-code-ide-buffer-font~                   | Custom font for Claude Code buffers         | ~nil~                                  |
 | ~claude-code-ide-terminal-initialization-delay~ | Initialization delay for terminals          | ~0.1~                                  |
 | ~claude-code-ide-log-with-context~              | Include session context in log messages     | ~t~                                    |
 | ~claude-code-ide-debug-buffer~                  | Buffer name for debug output                | ~"*claude-code-ide-debug*"~              |
@@ -262,19 +264,19 @@ Claude Code IDE supports both =vterm= and =eat= as terminal backends. By default
 
 The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. Both backends provide full terminal functionality including color support and special key handling.
 
-**** vterm Rendering Optimization
+**** Terminal Rendering Optimization
 
-Claude Code IDE includes intelligent flicker reduction for vterm terminals to provide smoother visual output:
+Claude Code IDE includes intelligent flicker reduction for both vterm and eat terminals to provide smoother visual output:
 
 #+begin_src emacs-lisp
-;; Enable/disable vterm anti-flicker optimization (enabled by default)
+;; Enable/disable anti-flicker optimization for vterm and eat (enabled by default)
 (setq claude-code-ide-vterm-anti-flicker t)
 
-;; Adjust the render delay for batching updates (default is 0.005 seconds)
-(setq claude-code-ide-vterm-render-delay 0.01)  ; Increase for smoother but less responsive
+;; Adjust the render delay for batching updates (default is 0.016 seconds)
+(setq claude-code-ide-vterm-render-delay 0.032)  ; Increase for smoother but less responsive
 #+end_src
 
-This optimization detects rapid terminal redraw sequences (like when Claude expands text areas) and batches them for smoother rendering. The 5ms default delay provides optimal visual quality with imperceptible latency.
+This optimization detects rapid terminal redraw sequences (like when Claude expands text areas) and batches them for smoother rendering. The 16ms default delay provides optimal visual quality with imperceptible latency. Users with severe flickering can try 0.032 to 0.050.
 
 **** Terminal Initialization Delay
 
@@ -289,6 +291,21 @@ Claude Code IDE includes a brief initialization delay when launching terminals t
 #+end_src
 
 This delay prevents display artifacts such as misaligned prompts and incorrect cursor positioning that can occur when terminal emulation is initializing. The default 100ms delay is imperceptible but ensures reliable terminal startup.
+
+**** Buffer Font
+
+You can set a custom font for Claude Code buffers, which may help if your default font doesn't render Claude's output well:
+
+#+begin_src emacs-lisp
+;; Use a specific font for Claude Code buffers
+(setq claude-code-ide-buffer-font "Source Code Pro")
+
+;; Or with a size specification
+(setq claude-code-ide-buffer-font "Iosevka-12")
+
+;; Disable (use default font) - this is the default
+(setq claude-code-ide-buffer-font nil)
+#+end_src
 
 **** Terminal Keybindings
 
