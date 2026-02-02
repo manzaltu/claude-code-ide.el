@@ -573,7 +573,9 @@ width has actually changed, working around the scrolling glitch."
 (defun claude-code-ide--default-buffer-name (directory)
   "Generate default buffer name for DIRECTORY."
   (format "*claude-code[%s]*"
-          (file-name-nondirectory (directory-file-name directory))))
+          (if-let ((project (project-current nil directory)))
+              (project-name project)
+            (file-name-nondirectory (directory-file-name directory)))))
 
 (defun claude-code-ide--get-working-directory ()
   "Get the current working directory (project root or current directory)."
