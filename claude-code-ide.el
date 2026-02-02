@@ -294,10 +294,20 @@ a more stable viewing experience when working with multiple windows."
 ;;; Vterm Rendering Optimization
 
 (defvar-local claude-code-ide--vterm-render-queue nil
-  "Queue for optimizing terminal rendering sequences.")
+  "List of pending terminal output strings awaiting batched rendering.
+Stored in reverse order for O(1) push, joined at flush time.")
 
 (defvar-local claude-code-ide--vterm-render-timer nil
   "Timer for executing queued rendering operations.")
+
+(defun claude-code-ide--count-escape-sequence (sequence input)
+  "Count occurrences of escape SEQUENCE in INPUT.
+More efficient than split-string + cl-count-if for simple counting."
+  (let ((count 0) (start 0))
+    (while (setq start (string-search sequence input start))
+      (cl-incf count)
+      (cl-incf start (length sequence)))
+    count))
 
 (defun claude-code-ide--vterm-smart-renderer (orig-fun process input)
   "Smart rendering filter for optimized vterm display updates.
@@ -313,57 +323,62 @@ INPUT contains the terminal output stream."
       ;; Feature disabled or not a Claude buffer, pass through normally
       (funcall orig-fun process input)
     (with-current-buffer (process-buffer process)
-      ;; Detect rapid terminal redraw sequences
-      ;; Pattern analysis for complex terminal updates:
-      ;; - Vertical cursor movements (ESC[<n>A)
-      ;; - Line clearing operations (ESC[K)
-      ;; - High escape sequence density
-      (let* ((complex-redraw-detected
-              ;; Pattern: vertical movement + clear, repeated
-              (string-match-p "\033\\[[0-9]*A.*\033\\[K.*\033\\[[0-9]*A.*\033\\[K" input))
-             (clear-count (cl-count-if (lambda (s) (string= s "\033[K"))
-                                       (split-string input "\033\\[K" t)))
-             (escape-count (cl-count ?\033 input))
-             (input-length (length input))
-             ;; High escape density indicates redrawing, not normal output
-             (escape-density (if (> input-length 0)
-                                 (/ (float escape-count) input-length)
-                               0)))
-        ;; Optimize rendering for detected patterns:
-        ;; 1. Complex redraw sequence detected, OR
-        ;; 2. Escape sequence density exceeds threshold with line operations
-        ;; 3. OR already queuing (to complete the sequence)
-        (if (or complex-redraw-detected
-                (and (> escape-density 0.3)
-                     (>= clear-count 2))
-                claude-code-ide--vterm-render-queue)
-            (progn
-              ;; Add to buffer
-              (setq claude-code-ide--vterm-render-queue
-                    (concat claude-code-ide--vterm-render-queue input))
-              ;; Reset existing render timer
-              (when claude-code-ide--vterm-render-timer
-                (cancel-timer claude-code-ide--vterm-render-timer))
-              ;; Schedule optimized rendering
-              ;; Timing calibrated for visual quality
-              (setq claude-code-ide--vterm-render-timer
-                    (run-at-time claude-code-ide-vterm-render-delay nil
-                                 (lambda (buf)
-                                   (when (buffer-live-p buf)
-                                     (with-current-buffer buf
-                                       (when claude-code-ide--vterm-render-queue
-                                         (let ((inhibit-redisplay t)
-                                               (data claude-code-ide--vterm-render-queue))
-                                           ;; Clear queue first to prevent recursion
-                                           (setq claude-code-ide--vterm-render-queue nil
-                                                 claude-code-ide--vterm-render-timer nil)
-                                           ;; Execute queued rendering
-                                           (funcall orig-fun
-                                                    (get-buffer-process buf)
-                                                    data))))))
-                                 (current-buffer))))
-          ;; Standard processing for regular output
-          (funcall orig-fun process input))))))
+      ;; Fast path: plain text with no active queue skips all pattern detection
+      ;; This optimizes the common case of typing in the prompt
+      (if (and (not claude-code-ide--vterm-render-queue)
+               (not (string-search "\033" input)))
+          (funcall orig-fun process input)
+        ;; Detect rapid terminal redraw sequences
+        ;; Pattern analysis for complex terminal updates:
+        ;; - Vertical cursor movements (ESC[<n>A)
+        ;; - Line clearing operations (ESC[K)
+        ;; - High escape sequence density
+        (let* ((complex-redraw-detected
+                ;; Pattern: vertical movement + clear, repeated
+                (string-match-p "\033\\[[0-9]*A.*\033\\[K.*\033\\[[0-9]*A.*\033\\[K" input))
+               (clear-count (claude-code-ide--count-escape-sequence "\033[K" input))
+               (escape-count (cl-count ?\033 input))
+               (input-length (length input))
+               ;; High escape density indicates redrawing, not normal output
+               (escape-density (if (> input-length 0)
+                                   (/ (float escape-count) input-length)
+                                 0)))
+          ;; Optimize rendering for detected patterns:
+          ;; 1. Complex redraw sequence detected, OR
+          ;; 2. Escape sequence density exceeds threshold with line operations
+          ;; 3. OR already queuing (to complete the sequence)
+          (if (or complex-redraw-detected
+                  (and (> escape-density 0.3)
+                       (>= clear-count 2))
+                  claude-code-ide--vterm-render-queue)
+              (progn
+                ;; Add to queue (list for O(1) push, joined at flush time)
+                (push input claude-code-ide--vterm-render-queue)
+                ;; Reset existing render timer
+                (when claude-code-ide--vterm-render-timer
+                  (cancel-timer claude-code-ide--vterm-render-timer))
+                ;; Schedule optimized rendering
+                ;; Timing calibrated for visual quality
+                (setq claude-code-ide--vterm-render-timer
+                      (run-at-time claude-code-ide-vterm-render-delay nil
+                                   (lambda (buf)
+                                     (when (buffer-live-p buf)
+                                       (with-current-buffer buf
+                                         (when claude-code-ide--vterm-render-queue
+                                           (let* ((inhibit-redisplay t)
+                                                  (queue claude-code-ide--vterm-render-queue)
+                                                  ;; Join list in correct order
+                                                  (data (apply #'concat (nreverse queue))))
+                                             ;; Clear queue first to prevent recursion
+                                             (setq claude-code-ide--vterm-render-queue nil
+                                                   claude-code-ide--vterm-render-timer nil)
+                                             ;; Execute queued rendering
+                                             (funcall orig-fun
+                                                      (get-buffer-process buf)
+                                                      data))))))
+                                   (current-buffer))))
+            ;; Standard processing for regular output
+            (funcall orig-fun process input)))))))
 
 (defvar-local claude-code-ide--saved-cursor-type nil
   "Saved cursor-type before entering vterm-copy-mode.")
