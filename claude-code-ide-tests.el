@@ -564,7 +564,10 @@ have completed before cleanup.  Waits up to 5 seconds."
               (claude-code-ide--vterm-smart-renderer orig-fun mock-process complex-input)
               ;; Should be queued, not called immediately
               (should-not orig-fun-called)
-              (should (equal claude-code-ide--vterm-render-queue complex-input))
+              ;; Queue is a list (pushed in reverse order for O(1))
+              (should (listp claude-code-ide--vterm-render-queue))
+              (should (equal (apply #'concat (nreverse claude-code-ide--vterm-render-queue))
+                             complex-input))
               (should (equal timer-created 0.005)))))))))
 
 (ert-deftest claude-code-ide-test-toggle-vterm-optimization ()
