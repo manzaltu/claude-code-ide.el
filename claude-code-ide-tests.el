@@ -2275,6 +2275,94 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (equal (plist-get file-path-arg :description)
                          "Path to the file to analyze for symbols")))))))
 
+;;; API Provider Tests
+
+(ert-deftest claude-code-ide-test-api-providers-constant ()
+  "Test that API providers constant is properly defined."
+  (should (listp claude-code-ide--api-providers))
+  (should (> (length claude-code-ide--api-providers) 0))
+  ;; Check that known providers are present
+  (should (assoc "api.anthropic.com" claude-code-ide--api-providers))
+  (should (assoc "api.moonshot.ai" claude-code-ide--api-providers))
+  (should (assoc "api.z.ai" claude-code-ide--api-providers))
+  ;; Check format of entries
+  (dolist (provider claude-code-ide--api-providers)
+    (should (stringp (car provider)))
+    (let ((value (cdr provider)))
+      ;; Value can be either a string (base URL) or a list (base URL + env vars)
+      (if (listp value)
+          (progn
+            (should (stringp (car value)))
+            (should (string-prefix-p "https://" (car value)))
+            ;; Check that all env vars are strings
+            (dolist (env-var (cdr value))
+              (should (stringp env-var))))
+        (progn
+          (should (stringp value))
+          (should (string-prefix-p "https://" value)))))))
+
+(ert-deftest claude-code-ide-test-get-provider-credential ()
+  "Test getting provider credentials from auth-source."
+  (cl-letf (((symbol-function 'auth-source-search)
+             (lambda (&rest args)
+               (let ((host (plist-get args :host)))
+                 (cond
+                  ((equal host "api.anthropic.com")
+                   (list (list :host "api.anthropic.com"
+                               :secret "test-token-123")))
+                  ((equal host "api.z.ai")
+                   (list (list :host "api.z.ai"
+                               :secret (lambda () "test-token-456"))))
+                  (t nil))))))
+    ;; Test retrieving string secret
+    (should (equal (claude-code-ide--get-provider-credential "api.anthropic.com")
+                   "test-token-123"))
+    ;; Test retrieving function secret
+    (should (equal (claude-code-ide--get-provider-credential "api.z.ai")
+                   "test-token-456"))
+    ;; Test non-existent provider
+    (should (null (claude-code-ide--get-provider-credential "api.nonexistent.com")))))
+
+(ert-deftest claude-code-ide-test-get-provider-env-vars-nil ()
+  "Test provider env vars when no provider is configured."
+  (let ((claude-code-ide-api-provider nil))
+    (should (null (claude-code-ide--get-provider-env-vars)))))
+
+(ert-deftest claude-code-ide-test-get-provider-env-vars-success ()
+  "Test provider env vars with valid credentials."
+  (let ((claude-code-ide-api-provider "api.z.ai"))
+    (cl-letf (((symbol-function 'auth-source-search)
+               (lambda (&rest args)
+                 (when (equal (plist-get args :host) "api.z.ai")
+                   (list (list :host "api.z.ai"
+                               :secret "test-secret-token"))))))
+      (let ((env-vars (claude-code-ide--get-provider-env-vars)))
+        (should (listp env-vars))
+        ;; Should have 5 env vars: 3 from provider config + 2 standard ones
+        (should (= (length env-vars) 5))
+        ;; Check provider-specific env vars
+        (should (member "ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.5-air" env-vars))
+        (should (member "ANTHROPIC_DEFAULT_SONNET_MODEL=glm-4.6" env-vars))
+        (should (member "ANTHROPIC_DEFAULT_OPUS_MODEL=glm-4.6" env-vars))
+        ;; Check standard env vars
+        (should (member "ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic" env-vars))
+        (should (member "ANTHROPIC_AUTH_TOKEN=test-secret-token" env-vars))))))
+
+(ert-deftest claude-code-ide-test-get-provider-env-vars-missing-credentials ()
+  "Test provider env vars when credentials are missing."
+  (let ((claude-code-ide-api-provider "api.z.ai")
+        (log-messages nil))
+    (cl-letf (((symbol-function 'auth-source-search)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'claude-code-ide-log)
+               (lambda (msg &rest args)
+                 (push (apply #'format msg args) log-messages))))
+      (let ((env-vars (claude-code-ide--get-provider-env-vars)))
+        (should (null env-vars))
+        (should (= (length log-messages) 2))
+        (should (string-match-p "ERROR.*api.z.ai.*not found" (nth 1 log-messages)))
+        (should (string-match-p "authinfo.*api.z.ai" (nth 0 log-messages)))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

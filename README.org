@@ -211,6 +211,42 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-mcp-server-tools~              | Alist of exposed Emacs functions            | ~nil~                                  |
 | ~claude-code-ide-diagnostics-backend~           | Diagnostics backend (auto/flycheck/flymake) | ~'auto~                                |
 | ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
+| ~claude-code-ide-api-provider~                  | Anthropic API provider hostname             | ~nil~ (use default)                    |
+
+*** API Provider Configuration
+
+Claude Code IDE supports alternative Anthropic-compatible API providers such as Moonshot AI and Z.ai. This is useful for:
+- Using models from alternative providers (e.g., GLM-4.5 via Z.ai)
+- Accessing Anthropic's API through different endpoints
+- Testing against multiple providers
+
+To configure an alternative provider:
+
+1. Add credentials to =~/.authinfo= or =~/.authinfo.gpg=:
+
+#+begin_src
+machine api.z.ai login anthropic password YOUR_API_KEY
+#+end_src
+
+2. Set the provider in your Emacs configuration:
+
+#+begin_src emacs-lisp
+;; Use Z.ai as the API provider
+(setq claude-code-ide-api-provider "api.z.ai")
+
+;; Or use Moonshot AI
+(setq claude-code-ide-api-provider "api.moonshot.ai")
+
+;; Or use the official Anthropic API (default)
+(setq claude-code-ide-api-provider nil)
+#+end_src
+
+Supported providers:
+- =api.anthropic.com= - Official Anthropic API (default)
+- =api.moonshot.ai= - Moonshot AI
+- =api.z.ai= - Z.ai GLM models
+
+The API endpoint and credentials are automatically configured when you start Claude Code.
 
 *** Side Window Configuration
 

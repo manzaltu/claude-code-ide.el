@@ -55,6 +55,23 @@
 ;; Emacs MCP Tools:
 ;; To enable Emacs tools for Claude, add to your config:
 ;;   (claude-code-ide-emacs-tools-setup)
+;;
+;; API Provider Configuration:
+;; Use alternative Anthropic-compatible API providers (Moonshot, Z.ai, etc.)
+;; by configuring `claude-code-ide-api-provider':
+;;
+;; 1. Add credentials to ~/.authinfo or ~/.authinfo.gpg:
+;;      machine api.z.ai login anthropic password YOUR_API_KEY
+;;
+;; 2. Set the provider in your Emacs config:
+;;      (setq claude-code-ide-api-provider "api.z.ai")
+;;
+;; Supported providers:
+;;   - api.anthropic.com (official Anthropic API)
+;;   - api.moonshot.ai (Moonshot AI)
+;;   - api.z.ai (Z.ai GLM models)
+;;
+;; The API endpoint and credentials are automatically configured at startup.
 
 ;;; Code:
 
@@ -267,6 +284,26 @@ a more stable viewing experience when working with multiple windows."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-api-provider nil
+  "Hostname of Anthropic API provider to use.
+When set, credentials will be automatically retrieved from auth-source
+and used to configure the API endpoint.  The hostname must match an entry
+in `claude-code-ide--api-providers'.
+
+To use an alternative provider, add credentials to ~/.authinfo:
+  machine api.z.ai login anthropic password your_api_key
+
+Then set this variable in your config:
+  (setq claude-code-ide-api-provider \"api.z.ai\")
+
+Supported providers: api.anthropic.com, api.moonshot.ai, api.z.ai"
+  :type '(choice (const :tag "Default (Anthropic)" nil)
+                 (const :tag "Anthropic (official)" "api.anthropic.com")
+                 (const :tag "Moonshot AI" "api.moonshot.ai")
+                 (const :tag "Z.ai" "api.z.ai")
+                 (string :tag "Custom hostname"))
+  :group 'claude-code-ide)
+
 (define-obsolete-variable-alias
   'claude-code-ide-eat-initialization-delay
   'claude-code-ide-terminal-initialization-delay
@@ -276,6 +313,16 @@ a more stable viewing experience when working with multiple windows."
 
 (defconst claude-code-ide--active-editor-notification-delay 0.1
   "Delay in seconds before sending active editor notification after connection.")
+
+(defconst claude-code-ide--api-providers
+  '(("api.anthropic.com" . ("https://api.anthropic.com/v1"))
+    ("api.moonshot.ai" . ("https://api.moonshot.ai/anthropic"))
+    ("api.z.ai" . ("https://api.z.ai/api/anthropic"
+                   "ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.5-air"
+                   "ANTHROPIC_DEFAULT_SONNET_MODEL=glm-4.6"
+                   "ANTHROPIC_DEFAULT_OPUS_MODEL=glm-4.6")))
+  "Known Anthropic-compatible API providers.
+Alist mapping hostname to a list containing base URL and environment variables.")
 
 ;;; Variables
 
@@ -621,6 +668,42 @@ If DIRECTORY is not provided, use the current working directory."
 ;; Ensure cleanup on Emacs exit
 (add-hook 'kill-emacs-hook #'claude-code-ide--cleanup-all-sessions)
 
+(defun claude-code-ide--get-provider-credential (hostname)
+  "Get API credential for HOSTNAME from auth-source.
+Returns the secret (token) as a string, or nil if not found."
+  (require 'auth-source)
+  (when-let* ((auth-info (car (auth-source-search :host hostname :max 1)))
+              (secret (plist-get auth-info :secret)))
+    (if (functionp secret)
+        (funcall secret)
+      secret)))
+
+(defun claude-code-ide--get-provider-env-vars ()
+  "Get environment variables for configured API provider.
+Returns a list of \"KEY=value\" strings to inject, or nil if no provider
+is configured or if credentials cannot be retrieved.
+Logs an error if provider is configured but credentials are missing."
+  (when claude-code-ide-api-provider
+    (let* ((hostname claude-code-ide-api-provider)
+           (provider-config (alist-get hostname claude-code-ide--api-providers
+                                       nil nil #'equal))
+           (base-url (if (listp provider-config) (car provider-config) provider-config))
+           (provider-env-vars (if (listp provider-config) (cdr provider-config) nil))
+           (token (claude-code-ide--get-provider-credential hostname)))
+      (if token
+          (progn
+            (claude-code-ide-debug "Using API provider: %s (URL: %s)" hostname base-url)
+            (append provider-env-vars
+                    (list (format "ANTHROPIC_BASE_URL=%s" base-url)
+                          (format "ANTHROPIC_AUTH_TOKEN=%s" token))))
+        (claude-code-ide-log
+         "ERROR: API provider '%s' configured but credentials not found in auth-source. "
+         hostname)
+        (claude-code-ide-log
+         "Please add to ~/.authinfo: machine %s login anthropic password YOUR_TOKEN"
+         hostname)
+        nil))))
+
 (defun claude-code-ide--display-buffer-in-side-window (buffer)
   "Display BUFFER in a side window according to customization.
 The window is displayed on the side specified by
@@ -852,10 +935,12 @@ Signals an error if terminal fails to initialize."
   (claude-code-ide--terminal-ensure-backend)
   (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
          (default-directory working-dir)
-         (env-vars (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
-                         "ENABLE_IDE_INTEGRATION=true"
-                         "TERM_PROGRAM=emacs"
-                         "FORCE_CODE_TERMINAL=true")))
+         (provider-env-vars (claude-code-ide--get-provider-env-vars))
+         (env-vars (append (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
+                                 "ENABLE_IDE_INTEGRATION=true"
+                                 "TERM_PROGRAM=emacs"
+                                 "FORCE_CODE_TERMINAL=true")
+                           provider-env-vars)))
     ;; Log the command for debugging
     (claude-code-ide-debug "Starting Claude with command: %s" claude-cmd)
     (claude-code-ide-debug "Working directory: %s" working-dir)
