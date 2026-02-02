@@ -55,6 +55,12 @@
 ;; Emacs MCP Tools:
 ;; To enable Emacs tools for Claude, add to your config:
 ;;   (claude-code-ide-emacs-tools-setup)
+;;
+;; Customization:
+;; Additional environment variables can be passed to Claude Code CLI:
+;;   (setq claude-code-ide-additional-env-vars
+;;         '("ANTHROPIC_AUTH_TOKEN=your_token"
+;;           "ANTHROPIC_BASE_URL=https://your.custom.api"))
 
 ;;; Code:
 
@@ -267,6 +273,14 @@ a more stable viewing experience when working with multiple windows."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-additional-env-vars nil
+  "Additional environment variables to pass to Claude Code CLI.
+This should be a list of strings in the format \"KEY=value\".
+These variables will be added to the default environment variables
+when starting Claude Code."
+  :type '(repeat string)
+  :group 'claude-code-ide)
+
 (define-obsolete-variable-alias
   'claude-code-ide-eat-initialization-delay
   'claude-code-ide-terminal-initialization-delay
@@ -276,6 +290,17 @@ a more stable viewing experience when working with multiple windows."
 
 (defconst claude-code-ide--active-editor-notification-delay 0.1
   "Delay in seconds before sending active editor notification after connection.")
+
+;;; Helper Functions
+
+(defun claude-code-ide--obfuscate-env-vars (env-vars)
+  "Obfuscate sensitive values in ENV-VARS list for logging.
+Returns a new list with sensitive values masked."
+  (mapcar (lambda (env-var)
+            (if (string-match "\\`\\(.*_TOKEN\\|.*_SECRET\\|.*_KEY\\)=\\(.*\\)\\'" env-var)
+                (format "%s=***masked***" (match-string 1 env-var))
+              env-var))
+          env-vars))
 
 ;;; Variables
 
@@ -852,14 +877,18 @@ Signals an error if terminal fails to initialize."
   (claude-code-ide--terminal-ensure-backend)
   (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
          (default-directory working-dir)
-         (env-vars (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
-                         "ENABLE_IDE_INTEGRATION=true"
-                         "TERM_PROGRAM=emacs"
-                         "FORCE_CODE_TERMINAL=true")))
+         (env-vars (append (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
+                                 "ENABLE_IDE_INTEGRATION=true"
+                                 "TERM_PROGRAM=emacs"
+                                 "FORCE_CODE_TERMINAL=true")
+                           claude-code-ide-additional-env-vars)))
     ;; Log the command for debugging
     (claude-code-ide-debug "Starting Claude with command: %s" claude-cmd)
     (claude-code-ide-debug "Working directory: %s" working-dir)
     (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%d" port)
+    (when claude-code-ide-additional-env-vars
+      (claude-code-ide-debug "Additional environment variables: %s"
+                             (claude-code-ide--obfuscate-env-vars claude-code-ide-additional-env-vars)))
     (claude-code-ide-debug "Session ID: %s" session-id)
     (claude-code-ide-debug "Terminal backend: %s" claude-code-ide-terminal-backend)
 
