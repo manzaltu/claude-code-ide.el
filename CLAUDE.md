@@ -16,11 +16,15 @@ This package integrates Claude Code CLI with Emacs via WebSocket and the Model C
 **Support Files:**
 - `claude-code-ide-mcp-server.el` - HTTP-based MCP tools server framework
 - `claude-code-ide-mcp-http-server.el` - HTTP transport implementation
-- `claude-code-ide-emacs-tools.el` - Emacs tools: xref, project info, imenu
+- `claude-code-ide-emacs-tools.el` - Emacs tools: xref, project info, imenu, buffer listing, tree-sitter, goto-location
 - `claude-code-ide-diagnostics.el` - Flycheck integration
 - `claude-code-ide-transient.el` - Transient menu interface
 - `claude-code-ide-debug.el` - Debug logging utilities
 - `claude-code-ide-tests.el` - ERT test suite with mocks
+
+**Modular MCP Tools (mcp-tools.d/):**
+- `claude-code-ide-tool-buffer-management.el` - Buffer operations (list, read, goto, reload)
+- `claude-code-ide-tool-eval.el` - Emacs Lisp evaluation (disabled by default, see Security section)
 
 ## Hooks
 
@@ -76,5 +80,57 @@ Tests use mocks for external dependencies (vterm, websocket) to run in batch mod
 - MCP handlers (file operations, diagnostics)
 - Edge cases (side windows, multiple sessions)
 
+### Interactive Testing Procedure
+
+When conducting interactive tests of MCP tools or user-facing features:
+
+1. **Run the complete test plan first** - Execute all tests before starting any debugging or fixes
+2. **Save results in a temporary file** - Use a temporary file (e.g., `test_results.md`) to track results as you go
+3. **Incorporate results into DEBUGGING_NOTES.md** - At the end of testing, before debugging, update `DEBUGGING_NOTES.md` with:
+   - Test execution summary
+   - Detailed results table
+   - Root cause analysis of failures
+   - Next steps
+
+**Rationale:** This approach ensures you have complete context about what works and what doesn't before making changes. It also provides a clear record for future sessions.
+
+**After fixing code:** MCP tools require server restart to pick up changes:
+1. User runs `(claude-code-ide-emacs-tools-restart)` in Emacs
+2. Restart Claude Code session
+3. Re-run failed tests to verify fixes
+
+## Security
+
+### Emacs Lisp Eval Tool
+
+The `claude-code-ide-tool-eval` MCP tool allows Claude to evaluate arbitrary Emacs Lisp expressions. This is **disabled by default** for security.
+
+**To enable:**
+```elisp
+(setq claude-code-ide-eval-enabled t)
+```
+
+Or interactively: `M-x claude-code-ide-eval-toggle`
+
+**Security features:**
+- Disabled by default (must be explicitly enabled)
+- All evaluations are logged to `*claude-code-ide-eval-log*` buffer
+- View log: `M-x claude-code-ide-eval-show-log`
+- Clear log: `M-x claude-code-ide-eval-clear-log`
+- Can be toggled on/off at any time
+
+**Additional protection:**
+Consider requiring user approval for the eval tool in `~/.claude/settings.json`:
+```json
+{
+  "permissions": {
+    "ask": [
+      "mcp__emacs-tools__claude-code-ide-mcp-eval"
+    ]
+  }
+}
+```
+
 ## Committing code
 Never commit changes unless the user explicitly asks you to.
+- You can use the read-buffer tool to read *Messages* to help diagnose emacs runtime issues

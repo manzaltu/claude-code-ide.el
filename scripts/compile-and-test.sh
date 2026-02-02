@@ -63,6 +63,14 @@ if WEBSOCKET_DIR=$(find_emacs_package "emacs-websocket"); then
     LOAD_PATH="$LOAD_PATH -L $WEBSOCKET_DIR"
 fi
 
+if COMPAT_DIR=$(find_emacs_package "compat"); then
+    LOAD_PATH="$LOAD_PATH -L $COMPAT_DIR"
+fi
+
+if COND_LET_DIR=$(find_emacs_package "cond-let"); then
+    LOAD_PATH="$LOAD_PATH -L $COND_LET_DIR"
+fi
+
 if TRANSIENT_DIR=$(find_emacs_package "transient"); then
     LOAD_PATH="$LOAD_PATH -L $TRANSIENT_DIR"
 fi
