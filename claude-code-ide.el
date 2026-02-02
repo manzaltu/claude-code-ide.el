@@ -797,7 +797,7 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
                    (mapconcat 'identity claude-code-ide-mcp-allowed-tools " "))
                   ;; String pattern or nil
                   (t claude-code-ide-mcp-allowed-tools))))
-            (when allowed-tools
+            (when (and allowed-tools (not (string-empty-p allowed-tools)))
               (setq claude-cmd (concat claude-cmd " --allowedTools " allowed-tools)))))))
     claude-cmd))
 
