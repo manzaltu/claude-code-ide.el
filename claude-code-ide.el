@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025
 
 ;; Author: Yoav Orot
-;; Version: 0.2.5
+;; Version: 0.2.6
 ;; Package-Requires: ((emacs "28.1") (websocket "1.12") (transient "0.9.0") (web-server "0.1.2"))
 ;; Keywords: ai, claude, code, assistant, mcp, websocket
 ;; URL: https://github.com/manzaltu/claude-code-ide.el
@@ -400,7 +400,7 @@ cursor management, and process buffering for superior user experience."
   (when (featurep 'hl-line)
     (hl-line-mode -1))
   ;; make sure the non-breaking space in the prompt isn't themed
-  (face-remap-add-relative 'nobreak-space :underline nil :foreground nil)
+  (face-remap-add-relative 'nobreak-space :inherit 'default)
   ;; Register hook for copy-mode cursor visibility
   (add-hook 'vterm-copy-mode-hook #'claude-code-ide--vterm-copy-mode-hook nil t)
   ;; Increase process read buffering to batch more updates together
@@ -464,6 +464,18 @@ cursor management, and process buffering for superior user experience."
       (eat-term-send-string eat-terminal "\r")))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
+
+(defun claude-code-ide--sync-terminal-dimensions (buffer window)
+  "Sync terminal dimensions in BUFFER to match WINDOW size.
+This ensures the terminal process has the correct dimensions after
+the buffer has been displayed in its final window, which may differ
+from the window where it was initially created."
+  (when (and buffer window (buffer-live-p buffer) (window-live-p window))
+    (with-current-buffer buffer
+      (when-let ((proc (get-buffer-process buffer)))
+        (let ((height (window-body-height window))
+              (width (window-body-width window)))
+          (set-process-window-size proc height width))))))
 
 (defun claude-code-ide--setup-terminal-keybindings ()
   "Set up keybindings for the Claude Code terminal buffer.
@@ -630,6 +642,11 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
                (memq claude-code-ide-window-side '(top bottom)))
       (set-window-text-height window claude-code-ide-window-height)
       (set-window-dedicated-p window t))
+    ;; Sync terminal dimensions with the actual window size
+    ;; This is necessary because vterm/eat may have been created with
+    ;; different dimensions before being displayed in this window
+    (when window
+      (claude-code-ide--sync-terminal-dimensions buffer window))
     window))
 
 (defvar claude-code-ide--cleanup-in-progress nil
