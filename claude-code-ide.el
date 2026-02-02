@@ -1174,6 +1174,37 @@ When called programmatically, sends the given PROMPT string."
             (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt-to-send)))
       (user-error "No Claude Code session for this project"))))
 
+(declare-function whisper-run "ext:whisper" ())
+
+;;;###autoload
+(defun claude-code-ide-talk ()
+  "Talk to the assistent by recording audio and transcribing it."
+  (interactive)
+  (unless (require 'whisper nil t)
+    (user-error "Whisper.el is not available, please install it first"))
+  (let ((buffer (get-buffer-create "*whisper-stdout*")))
+    (with-current-buffer buffer
+      (erase-buffer)
+      (make-local-variable 'whisper-after-transcription-hook)
+      (add-hook 'whisper-after-transcription-hook
+                (lambda ()
+                  (let ((prompt-to-send (string-trim
+                                         (buffer-substring-no-properties
+                                          (point-min) (point-max)))))
+                    (when (not (string-empty-p prompt-to-send))
+                      (with-current-buffer (claude-code-ide--get-buffer-name)
+                        (claude-code-ide--terminal-send-string prompt-to-send)
+                        ;; Small delay to ensure prompt text is processed before sending return
+                        (sit-for 0.1)
+                        (claude-code-ide--terminal-send-return))
+                      (claude-code-ide-debug "Sent transcribed prompt to Claude Code: %s" prompt-to-send))))
+                nil t)
+      (whisper-run)
+      (message "Recording audio. Press RET when you are done.")
+      (while (not (equal ?\r (read-char)))
+        (sit-for 0.5))
+      (whisper-run))))
+
 ;;;###autoload
 (defun claude-code-ide-toggle ()
   "Toggle visibility of Claude Code window for the current project."
