@@ -1073,16 +1073,21 @@ conversation in the current directory."
 ;;;###autoload
 (defun claude-code-ide-switch-to-buffer ()
   "Switch to the Claude Code buffer for the current project.
+If already in the Claude Code buffer, switch back to the most recently used window.
 If the buffer is not visible, display it in the configured side window.
 If the buffer is already visible, switch focus to it."
   (interactive)
   (let ((buffer-name (claude-code-ide--get-buffer-name)))
     (if-let ((buffer (get-buffer buffer-name)))
-        (if-let ((window (get-buffer-window buffer)))
-            ;; Buffer is visible, just focus it
-            (select-window window)
-          ;; Buffer exists but not visible, display it
-          (claude-code-ide--display-buffer-in-side-window buffer))
+        (if (equal (buffer-name) buffer-name)
+            ;; Already in Claude Code buffer, switch to MRU window
+            (select-window (get-mru-window nil nil t))
+          ;; Not in Claude Code buffer, switch to it
+          (if-let ((window (get-buffer-window buffer)))
+              ;; Buffer is visible, just focus it
+              (select-window window)
+            ;; Buffer exists but not visible, display it
+            (claude-code-ide--display-buffer-in-side-window buffer)))
       (user-error "No Claude Code session for this project.  Use M-x claude-code-ide to start one"))))
 
 ;;;###autoload
