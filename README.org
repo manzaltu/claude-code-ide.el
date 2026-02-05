@@ -134,6 +134,7 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-emacs-tools-setup=   | Set up built-in MCP tools (e.g. xref, project)    |
 | =M-x claude-code-ide=                     | Start Claude Code for the current project         |
 | =M-x claude-code-ide-send-prompt=         | Send prompt to Claude from minibuffer input       |
+| =M-x claude-code-ide-edit-prompt=         | Edit prompt in a dedicated buffer (C-c ')         |
 | =M-x claude-code-ide-continue=            | Continue most recent conversation in directory    |
 | =M-x claude-code-ide-resume=              | Resume Claude Code with previous conversation     |
 | =M-x claude-code-ide-stop=                | Stop Claude Code for the current project          |
@@ -160,6 +161,26 @@ You can run multiple Claude Code instances simultaneously for different projects
 - The window can be closed with standard Emacs window commands (=C-x 0=) without stopping Claude
 - Use =claude-code-ide-toggle-recent= to toggle the most recent Claude window from anywhere, regardless of your current project context. This is useful when you're outside a project directory but want to quickly hide/show Claude
 
+** Editing Prompts in a Dedicated Buffer
+
+For composing longer or more complex prompts, you can use =M-x claude-code-ide-edit-prompt= (or the ='= key in the transient menu) to open a dedicated editing buffer. This works similar to how org-mode's =C-c '= opens a source block for editing.
+
+*** Keybindings in the Edit Buffer
+
+| Keybinding | Action                                      |
+|------------+---------------------------------------------|
+| =C-c '=      | Send prompt to terminal (for review)        |
+| =C-c C-c=    | Send prompt and submit (press Return)       |
+| =C-c C-k=    | Cancel and close without sending            |
+
+This feature gives you full Emacs editing capabilities when composing prompts: syntax highlighting, paredit, spell-check, multiple cursors, and any other editing modes you have configured.
+
+The buffer starts empty. After composing your prompt:
+- Use =C-c '= to send the text to the terminal without submitting, allowing you to review it first
+- Use =C-c C-c= to send and immediately submit the prompt to Claude
+
+Multi-line prompts are automatically handled by inserting the appropriate escape sequences (=\= + Return).
+
 ** Diff Viewing with Ediff
 
 When =claude-code-ide-use-ide-diff= is enabled (default), Claude's code suggestions are displayed using Emacs' powerful =ediff= interface. This provides two key advantages:
@@ -183,8 +204,8 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 
 *** Configuration Variables
 
-| Variable                                      | Description                                 | Default                              |
-|-----------------------------------------------+---------------------------------------------+--------------------------------------|
+| Variable                                        | Description                                 | Default                                |
+|-------------------------------------------------+---------------------------------------------+----------------------------------------|
 | ~claude-code-ide-cli-path~                      | Path to Claude Code CLI                     | ~"claude"~                             |
 | ~claude-code-ide-buffer-name-function~          | Function for buffer naming                  | ~claude-code-ide--default-buffer-name~ |
 | ~claude-code-ide-cli-debug~                     | Enable CLI debug mode (-d flag)             | ~nil~                                  |
@@ -195,7 +216,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-vterm-render-delay~            | vterm render batching delay (seconds)       | ~0.005~                                |
 | ~claude-code-ide-terminal-initialization-delay~ | Initialization delay for terminals          | ~0.1~                                  |
 | ~claude-code-ide-log-with-context~              | Include session context in log messages     | ~t~                                    |
-| ~claude-code-ide-debug-buffer~                  | Buffer name for debug output                | ~"*claude-code-ide-debug*"~              |
+| ~claude-code-ide-debug-buffer~                  | Buffer name for debug output                | ~"*claude-code-ide-debug*"~            |
 | ~claude-code-ide-use-side-window~               | Use side window vs regular buffer           | ~t~                                    |
 | ~claude-code-ide-window-side~                   | Side for Claude window                      | ~'right~                               |
 | ~claude-code-ide-window-width~                  | Width for side windows (left/right)         | ~90~                                   |
@@ -294,8 +315,8 @@ This delay prevents display artifacts such as misaligned prompts and incorrect c
 
 Claude Code IDE adds custom keybindings to the terminal for easier interaction:
 
-| Keybinding | Command                        | Description                          |
-|------------+--------------------------------+--------------------------------------|
+| Keybinding   | Command                          | Description                          |
+|--------------+----------------------------------+--------------------------------------|
 | =M-RET=      | =claude-code-ide-insert-newline= | Insert a newline in the prompt       |
 | =C-<escape>= | =claude-code-ide-send-escape=    | Send escape key to cancel operations |
 

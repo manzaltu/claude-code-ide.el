@@ -126,6 +126,10 @@ fi
 # STEP 3: Run tests (only if both compilations succeeded)
 TEST_FAILED=0
 if [ $COMPILE_EXIT_CODE -eq 0 ] && [ $NATIVE_COMPILE_EXIT_CODE -eq 0 ]; then
+    # Clean up .elc files before running tests to avoid stale bytecode issues
+    # This ensures tests run against source code and avoids transient version mismatches
+    rm -f *.elc
+    find . -name "*.eln" -type f -delete 2>/dev/null || true
     echo "" >&2
     echo "=== Running tests ===" >&2
     emacs -batch -L . -l ert -l claude-code-ide-tests.el -f ert-run-tests-batch-and-exit >&2

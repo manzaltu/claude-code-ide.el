@@ -1219,6 +1219,135 @@ If no Claude windows are visible, show the most recently accessed one."
      (t
       (user-error "No recent Claude Code session to toggle")))))
 
+;;; Prompt Edit Buffer
+
+(defvar-local claude-code-ide-prompt-edit--target-buffer nil
+  "The Claude Code terminal buffer that this edit buffer is associated with.")
+
+(defvar claude-code-ide-prompt-edit-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c '") #'claude-code-ide-prompt-edit-send)
+    (define-key map (kbd "C-c C-c") #'claude-code-ide-prompt-edit-send-and-submit)
+    (define-key map (kbd "C-c C-k") #'claude-code-ide-prompt-edit-cancel)
+    map)
+  "Keymap for `claude-code-ide-prompt-edit-mode'.")
+
+(define-minor-mode claude-code-ide-prompt-edit-mode
+  "Minor mode for editing Claude Code prompts in a dedicated buffer.
+
+\\{claude-code-ide-prompt-edit-mode-map}"
+  :lighter " Claude-Edit"
+  :keymap claude-code-ide-prompt-edit-mode-map
+  (when claude-code-ide-prompt-edit-mode
+    (setq header-line-format
+          (substitute-command-keys
+           "Edit prompt.  \\[claude-code-ide-prompt-edit-send]: send  \
+\\[claude-code-ide-prompt-edit-send-and-submit]: send+submit  \
+\\[claude-code-ide-prompt-edit-cancel]: cancel"))))
+
+(defun claude-code-ide--prompt-edit-buffer-name (terminal-buffer)
+  "Return the name for the prompt edit buffer associated with TERMINAL-BUFFER."
+  (format "*claude-prompt-edit[%s]*"
+          (replace-regexp-in-string
+           "\\*claude-code\\[\\(.*\\)\\]\\*" "\\1"
+           (buffer-name terminal-buffer))))
+
+(defun claude-code-ide--send-prompt-text (text &optional submit)
+  "Send TEXT to the terminal, optionally pressing return if SUBMIT is non-nil.
+Handles multi-line text by converting newlines to backslash+return sequences."
+  (let ((lines (split-string text "\n")))
+    ;; Send each line, inserting backslash+return between lines
+    (dotimes (i (length lines))
+      (let ((line (nth i lines)))
+        (claude-code-ide--terminal-send-string line)
+        ;; If not the last line, send backslash+return for multi-line
+        (when (< i (1- (length lines)))
+          (claude-code-ide--terminal-send-string "\\")
+          (sit-for 0.05)
+          (claude-code-ide--terminal-send-return)
+          (sit-for 0.05)))))
+  ;; Submit if requested
+  (when submit
+    (sit-for 0.1)
+    (claude-code-ide--terminal-send-return)))
+
+(defun claude-code-ide-prompt-edit-send ()
+  "Send the edited prompt to the terminal without pressing return.
+This allows reviewing the prompt in the terminal before submission."
+  (interactive)
+  (unless claude-code-ide-prompt-edit-mode
+    (user-error "Not in a Claude prompt edit buffer"))
+  (let ((text (string-trim (buffer-string)))
+        (target-buffer claude-code-ide-prompt-edit--target-buffer))
+    (unless (and target-buffer (buffer-live-p target-buffer))
+      (user-error "Target Claude buffer no longer exists"))
+    ;; Close the edit window and buffer
+    (let ((edit-window (get-buffer-window (current-buffer))))
+      (kill-buffer (current-buffer))
+      (when (window-live-p edit-window)
+        (delete-window edit-window)))
+    ;; Send to terminal
+    (with-current-buffer target-buffer
+      (claude-code-ide--send-prompt-text text nil))
+    (claude-code-ide-debug "Sent prompt to Claude (no submit): %s" text)))
+
+(defun claude-code-ide-prompt-edit-send-and-submit ()
+  "Send the edited prompt to the terminal and press return to submit."
+  (interactive)
+  (unless claude-code-ide-prompt-edit-mode
+    (user-error "Not in a Claude prompt edit buffer"))
+  (let ((text (string-trim (buffer-string)))
+        (target-buffer claude-code-ide-prompt-edit--target-buffer))
+    (unless (and target-buffer (buffer-live-p target-buffer))
+      (user-error "Target Claude buffer no longer exists"))
+    ;; Close the edit window and buffer
+    (let ((edit-window (get-buffer-window (current-buffer))))
+      (kill-buffer (current-buffer))
+      (when (window-live-p edit-window)
+        (delete-window edit-window)))
+    ;; Send to terminal and submit
+    (with-current-buffer target-buffer
+      (claude-code-ide--send-prompt-text text t))
+    (claude-code-ide-debug "Sent and submitted prompt to Claude: %s" text)))
+
+(defun claude-code-ide-prompt-edit-cancel ()
+  "Cancel editing and close the prompt edit buffer without sending."
+  (interactive)
+  (unless claude-code-ide-prompt-edit-mode
+    (user-error "Not in a Claude prompt edit buffer"))
+  (let ((edit-window (get-buffer-window (current-buffer))))
+    (kill-buffer (current-buffer))
+    (when (window-live-p edit-window)
+      (delete-window edit-window)))
+  (message "Prompt edit cancelled"))
+
+;;;###autoload
+(defun claude-code-ide-edit-prompt ()
+  "Open a buffer to compose a prompt for Claude Code.
+The prompt can be edited with full Emacs editing capabilities.
+
+Keybindings in the edit buffer:
+  C-c '     - Send prompt to terminal (for review, no submit)
+  C-c C-c   - Send prompt and submit (press Return)
+  C-c C-k   - Cancel and close without sending"
+  (interactive)
+  (let ((buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let ((terminal-buffer (get-buffer buffer-name)))
+        (let* ((edit-buffer-name (claude-code-ide--prompt-edit-buffer-name terminal-buffer))
+               (edit-buffer (get-buffer-create edit-buffer-name)))
+          (with-current-buffer edit-buffer
+            (erase-buffer)
+            (text-mode)
+            (claude-code-ide-prompt-edit-mode 1)
+            (setq-local claude-code-ide-prompt-edit--target-buffer terminal-buffer))
+          ;; Display in a window below current
+          (display-buffer edit-buffer
+                          '((display-buffer-below-selected)
+                            (window-height . 10)))
+          (select-window (get-buffer-window edit-buffer))
+          (message "Compose your prompt.  C-c ' to send, C-c C-c to send+submit, C-c C-k to cancel"))
+      (user-error "No Claude Code session for this project"))))
+
 (provide 'claude-code-ide)
 
 ;;; claude-code-ide.el ends here

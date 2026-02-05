@@ -2275,6 +2275,52 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (equal (plist-get file-path-arg :description)
                          "Path to the file to analyze for symbols")))))))
 
+;;; Prompt Edit Buffer Tests
+
+(ert-deftest claude-code-ide-test-prompt-edit-buffer-name ()
+  "Test prompt edit buffer naming."
+  (let ((mock-terminal-buffer (get-buffer-create "*claude-code[test-project]*")))
+    (unwind-protect
+        (let ((edit-buffer-name (claude-code-ide--prompt-edit-buffer-name mock-terminal-buffer)))
+          (should (equal edit-buffer-name "*claude-prompt-edit[test-project]*")))
+      (kill-buffer mock-terminal-buffer))))
+
+(ert-deftest claude-code-ide-test-prompt-edit-mode-keymap ()
+  "Test that prompt edit mode has correct keybindings."
+  (should (keymapp claude-code-ide-prompt-edit-mode-map))
+  (should (eq (lookup-key claude-code-ide-prompt-edit-mode-map (kbd "C-c '"))
+              'claude-code-ide-prompt-edit-send))
+  (should (eq (lookup-key claude-code-ide-prompt-edit-mode-map (kbd "C-c C-c"))
+              'claude-code-ide-prompt-edit-send-and-submit))
+  (should (eq (lookup-key claude-code-ide-prompt-edit-mode-map (kbd "C-c C-k"))
+              'claude-code-ide-prompt-edit-cancel)))
+
+(ert-deftest claude-code-ide-test-prompt-edit-mode-header-line ()
+  "Test that prompt edit mode sets up header line."
+  (with-temp-buffer
+    (claude-code-ide-prompt-edit-mode 1)
+    (should header-line-format)
+    (should (string-match "Edit prompt" header-line-format))))
+
+(ert-deftest claude-code-ide-test-prompt-edit-cancel ()
+  "Test cancelling prompt edit."
+  (let ((edit-buffer (get-buffer-create "*test-prompt-edit*")))
+    (with-current-buffer edit-buffer
+      (insert "test prompt")
+      (setq-local claude-code-ide-prompt-edit--target-buffer (current-buffer))
+      (claude-code-ide-prompt-edit-mode 1)
+      (claude-code-ide-prompt-edit-cancel))
+    ;; Buffer should be killed
+    (should-not (buffer-live-p edit-buffer))))
+
+(ert-deftest claude-code-ide-test-edit-prompt-no-session ()
+  "Test edit-prompt command when no session exists."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (should-error (claude-code-ide-edit-prompt)
+                    :type 'user-error)
+    (claude-code-ide-tests--clear-processes)))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
