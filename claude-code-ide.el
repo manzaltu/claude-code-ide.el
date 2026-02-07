@@ -73,6 +73,7 @@
 (defvar vterm-environment)
 (defvar eat-term-name)
 (defvar vterm--process)
+(defvar bookmark-make-record-function)
 
 ;; External function declarations for vterm
 (declare-function vterm "vterm" (&optional arg))
@@ -84,6 +85,9 @@
 ;; External function declarations for eat
 (declare-function eat-mode "eat" ())
 (declare-function eat-exec "eat" (buffer name command startfile &rest switches))
+
+;; External function declarations for bookmark
+(declare-function bookmark-prop-get "bookmark" (bookmark prop))
 (declare-function eat-term-send-string "eat" (terminal string))
 (declare-function eat-term-display-cursor "eat" (terminal))
 (declare-function eat--adjust-process-window-size "eat" (process windows))
@@ -988,6 +992,10 @@ This function handles:
                             nil t)
                   ;; Set up terminal keybindings
                   (claude-code-ide--setup-terminal-keybindings)
+                  ;; Enable bookmark support (used by activities.el)
+                  (when (featurep 'bookmark)
+                    (setq-local bookmark-make-record-function
+                                #'claude-code-ide-bookmark-make-record))
                   ;; Add terminal-specific exit hooks
                   (cond
                    ((eq claude-code-ide-terminal-backend 'vterm)
@@ -1218,6 +1226,26 @@ If no Claude windows are visible, show the most recently accessed one."
      ;; No recent session available
      (t
       (user-error "No recent Claude Code session to toggle")))))
+
+;;; Bookmark Support
+
+(defun claude-code-ide-bookmark-make-record ()
+  "Create a bookmark record for a claude-code-ide buffer."
+  `(,(buffer-name)
+    (handler . claude-code-ide-bookmark-handler)
+    (project-dir . ,default-directory)))
+
+(defun claude-code-ide-bookmark-handler (bookmark)
+  "Restore a claude-code-ide session from BOOKMARK."
+  (require 'bookmark)
+  (let* ((project-dir (bookmark-prop-get bookmark 'project-dir))
+         (default-directory project-dir)
+         (buffer-name (claude-code-ide--get-buffer-name project-dir))
+         (existing-buffer (get-buffer buffer-name)))
+    (if (and existing-buffer (buffer-live-p existing-buffer))
+        (set-buffer existing-buffer)
+      (claude-code-ide--start-session t)
+      (set-buffer (get-buffer (claude-code-ide--get-buffer-name project-dir))))))
 
 (provide 'claude-code-ide)
 
