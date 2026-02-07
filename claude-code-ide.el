@@ -1244,7 +1244,7 @@ If no Claude windows are visible, show the most recently accessed one."
          (existing-buffer (get-buffer buffer-name)))
     (if (and existing-buffer (buffer-live-p existing-buffer))
         (set-buffer existing-buffer)
-      (claude-code-ide--start-session t)
+      (claude-code-ide--start-session)
       (set-buffer (get-buffer (claude-code-ide--get-buffer-name project-dir))))))
 
 (provide 'claude-code-ide)
