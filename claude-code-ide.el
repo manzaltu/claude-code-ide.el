@@ -1055,23 +1055,19 @@ conversation in the current directory."
     (claude-code-ide-log "Claude Code is not installed.")))
 
 ;;;###autoload
-(defun claude-code-ide-stop (&optional stop-all)
-  "Stop the Claude Code session for the current project or directory.
-With prefix argument STOP-ALL, stop all active Claude Code sessions
-after confirmation."
-  (interactive "P")
-  (if stop-all
-      (claude-code-ide-stop-all)
-    (let* ((working-dir (claude-code-ide--get-working-directory))
-           (buffer-name (claude-code-ide--get-buffer-name)))
-      (if-let ((buffer (get-buffer buffer-name)))
-          (progn
-            ;; Kill the buffer (cleanup will be handled by hooks)
-            ;; The process sentinel will handle cleanup when the process dies
-            (kill-buffer buffer)
-            (claude-code-ide-log "Stopping Claude Code in %s..."
-                                 (file-name-nondirectory (directory-file-name working-dir))))
-        (claude-code-ide-log "No Claude Code session is running in this directory")))))
+(defun claude-code-ide-stop ()
+  "Stop the Claude Code session for the current project or directory."
+  (interactive)
+  (let* ((working-dir (claude-code-ide--get-working-directory))
+         (buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let ((buffer (get-buffer buffer-name)))
+        (progn
+          ;; Kill the buffer (cleanup will be handled by hooks)
+          ;; The process sentinel will handle cleanup when the process dies
+          (kill-buffer buffer)
+          (claude-code-ide-log "Stopping Claude Code in %s..."
+                               (file-name-nondirectory (directory-file-name working-dir))))
+      (claude-code-ide-log "No Claude Code session is running in this directory"))))
 
 ;;;###autoload
 (defun claude-code-ide-stop-all ()
