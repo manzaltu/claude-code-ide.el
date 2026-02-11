@@ -575,11 +575,14 @@ width has actually changed, working around the scrolling glitch."
   (format "*claude-code[%s]*"
           (file-name-nondirectory (directory-file-name directory))))
 
-(defun claude-code-ide--get-working-directory ()
-  "Get the current working directory (project root or current directory)."
-  (if-let ((project (project-current)))
-      (expand-file-name (project-root project))
-    (expand-file-name default-directory)))
+(defun claude-code-ide--get-working-directory (&optional force-default-directory)
+  "Get the current working directory (project root or current directory).
+When FORCE-DEFAULT-DIRECTORY is non-nil, use `default-directory' directly."
+  (if force-default-directory
+      (expand-file-name default-directory)
+    (if-let ((project (project-current)))
+        (expand-file-name (project-root project))
+      (expand-file-name default-directory))))
 
 (defun claude-code-ide--get-buffer-name (&optional directory)
   "Get the buffer name for the Claude Code session in DIRECTORY.
@@ -918,10 +921,11 @@ Signals an error if terminal fails to initialize."
      (t
       (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend)))))
 
-(defun claude-code-ide--start-session (&optional continue resume)
+(defun claude-code-ide--start-session (&optional continue resume force-dir)
   "Start a Claude Code session for the current project.
 If CONTINUE is non-nil, start Claude with the -c (continue) flag.
 If RESUME is non-nil, start Claude with the -r (resume) flag.
+If FORCE-DIR is non-nil, use `default-directory' instead of project root.
 
 This function handles:
 - CLI availability checking
@@ -935,7 +939,7 @@ This function handles:
   ;; Clean up any dead processes first
   (claude-code-ide--cleanup-dead-processes)
 
-  (let* ((working-dir (claude-code-ide--get-working-directory))
+  (let* ((working-dir (claude-code-ide--get-working-directory force-dir))
          (buffer-name (claude-code-ide--get-buffer-name))
          (existing-buffer (get-buffer buffer-name))
          (existing-process (claude-code-ide--get-process working-dir)))
@@ -1020,26 +1024,29 @@ This function handles:
            (signal (car err) (cdr err))))))))
 
 ;;;###autoload
-(defun claude-code-ide ()
-  "Run Claude Code in a terminal for the current project or directory."
-  (interactive)
-  (claude-code-ide--start-session))
+(defun claude-code-ide (&optional force-dir)
+  "Run Claude Code in a terminal for the current project or directory.
+With prefix argument FORCE-DIR, use `default-directory' instead of project root."
+  (interactive "P")
+  (claude-code-ide--start-session nil nil force-dir))
 
 ;;;###autoload
-(defun claude-code-ide-resume ()
+(defun claude-code-ide-resume (&optional force-dir)
   "Resume Claude Code in a terminal for the current project or directory.
 This starts Claude with the -r (resume) flag to continue the previous
-conversation."
-  (interactive)
-  (claude-code-ide--start-session nil t))
+conversation.  With prefix argument FORCE-DIR, use `default-directory'
+instead of project root."
+  (interactive "P")
+  (claude-code-ide--start-session nil t force-dir))
 
 ;;;###autoload
-(defun claude-code-ide-continue ()
+(defun claude-code-ide-continue (&optional force-dir)
   "Continue the most recent Claude Code conversation in the current directory.
 This starts Claude with the -c (continue) flag to continue the most recent
-conversation in the current directory."
-  (interactive)
-  (claude-code-ide--start-session t))
+conversation in the current directory.  With prefix argument FORCE-DIR, use
+`default-directory' instead of project root."
+  (interactive "P")
+  (claude-code-ide--start-session t nil force-dir))
 
 ;;;###autoload
 (defun claude-code-ide-check-status ()

@@ -31,9 +31,9 @@
 (require 'claude-code-ide-debug)
 
 ;; Declare functions from other files to avoid circular dependencies
-(declare-function claude-code-ide "claude-code-ide" ())
-(declare-function claude-code-ide-resume "claude-code-ide" ())
-(declare-function claude-code-ide-continue "claude-code-ide" ())
+(declare-function claude-code-ide "claude-code-ide" (&optional force-dir))
+(declare-function claude-code-ide-resume "claude-code-ide" (&optional force-dir))
+(declare-function claude-code-ide-continue "claude-code-ide" (&optional force-dir))
 (declare-function claude-code-ide-stop "claude-code-ide" ())
 (declare-function claude-code-ide-list-sessions "claude-code-ide" ())
 (declare-function claude-code-ide-switch-to-buffer "claude-code-ide" ())
@@ -51,7 +51,7 @@
 (declare-function claude-code-ide-mcp-session-buffer "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-last-buffer "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
-(declare-function claude-code-ide--get-working-directory "claude-code-ide" ())
+(declare-function claude-code-ide--get-working-directory "claude-code-ide" (&optional force-default-directory))
 
 ;; Declare variables
 (defvar claude-code-ide-cli-path)
@@ -78,50 +78,53 @@
 (defun claude-code-ide--start-description ()
   "Dynamic description for start command based on session status."
   (if (claude-code-ide--has-active-session-p)
-      (propertize "Start new Claude Code session (session already running)"
+      (propertize "Start session (already running)"
                   'face 'transient-inactive-value)
-    "Start new Claude Code session"))
+    "Start session (C-u: current dir)"))
 
 (defun claude-code-ide--start-if-no-session ()
-  "Start Claude Code only if no session is active for current buffer."
+  "Start Claude Code only if no session is active for current buffer.
+Passes through prefix argument to use current dir instead of project root."
   (interactive)
   (if (claude-code-ide--has-active-session-p)
       (let ((working-dir (claude-code-ide--get-working-directory)))
         (claude-code-ide-log "Claude Code session already running in %s"
                              (abbreviate-file-name working-dir)))
-    (claude-code-ide)))
+    (claude-code-ide current-prefix-arg)))
 
 (defun claude-code-ide--continue-description ()
   "Dynamic description for continue command based on session status."
   (if (claude-code-ide--has-active-session-p)
-      (propertize "Continue most recent conversation (session already running)"
+      (propertize "Continue conversation (already running)"
                   'face 'transient-inactive-value)
-    "Continue most recent conversation"))
+    "Continue conversation (C-u: current dir)"))
 
 (defun claude-code-ide--continue-if-no-session ()
-  "Continue Claude Code only if no session is active for current buffer."
+  "Continue Claude Code only if no session is active for current buffer.
+Passes through prefix argument to use current dir instead of project root."
   (interactive)
   (if (claude-code-ide--has-active-session-p)
       (let ((working-dir (claude-code-ide--get-working-directory)))
         (claude-code-ide-log "Claude Code session already running in %s"
                              (abbreviate-file-name working-dir)))
-    (claude-code-ide-continue)))
+    (claude-code-ide-continue current-prefix-arg)))
 
 (defun claude-code-ide--resume-description ()
   "Dynamic description for resume command based on session status."
   (if (claude-code-ide--has-active-session-p)
-      (propertize "Resume session (session already running)"
+      (propertize "Resume session (already running)"
                   'face 'transient-inactive-value)
-    "Resume session (from previous conversation)"))
+    "Resume session (C-u: current dir)"))
 
 (defun claude-code-ide--resume-if-no-session ()
-  "Resume Claude Code only if no session is active for current buffer."
+  "Resume Claude Code only if no session is active for current buffer.
+Passes through prefix argument to use current dir instead of project root."
   (interactive)
   (if (claude-code-ide--has-active-session-p)
       (let ((working-dir (claude-code-ide--get-working-directory)))
         (claude-code-ide-log "Claude Code session already running in %s"
                              (abbreviate-file-name working-dir)))
-    (claude-code-ide-resume)))
+    (claude-code-ide-resume current-prefix-arg)))
 
 (defun claude-code-ide--session-status ()
   "Return a string describing the current session status."
