@@ -641,7 +641,14 @@ session."
                                      (let ((session-diffs (claude-code-ide-mcp--get-active-diffs final-session)))
                                        (puthash tab-name
                                                 (cons '(responded . t) diff-info)
-                                                session-diffs)))))))))))
+                                                session-diffs))))
+
+                                 ;; Restore read-only state of buffer-A (the original file buffer)
+                                 ;; ediff sets buffers to read-only during the session, but our custom
+                                 ;; quit handling interferes with ediff's normal restoration process
+                                 (when (and buffer-A (buffer-live-p buffer-A))
+                                   (with-current-buffer buffer-A
+                                     (setq buffer-read-only nil))))))))))
 
 (defun claude-code-ide-mcp--cleanup-diff (tab-name &optional session)
   "Clean up diff session for TAB-NAME.
@@ -683,6 +690,10 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
         ;; Kill the temporary buffer (buffer B)
         (when (and buffer-B (buffer-live-p buffer-B))
           (kill-buffer buffer-B))
+        ;; For existing files, restore read-only state before cleanup
+        (when (and buffer-A (buffer-live-p buffer-A) file-exists)
+          (with-current-buffer buffer-A
+            (setq buffer-read-only nil)))
         ;; Kill buffer A only if it was created for a new file
         (when (and buffer-A (buffer-live-p buffer-A) (not file-exists))
           ;; This is a *New file: buffer that we created
