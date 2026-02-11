@@ -1677,6 +1677,67 @@ have completed before cleanup.  Waits up to 5 seconds."
            ;; Remove session from global hash table
            (remhash default-directory claude-code-ide-mcp--sessions)))))))
 
+(ert-deftest claude-code-ide-test-ediff-restores-buffer-read-only ()
+  "Test that buffers are not left in read-only mode after cleanup."
+  (claude-code-ide-tests--with-temp-directory
+   (lambda ()
+     (let* ((session (make-claude-code-ide-mcp-session
+                      :project-dir default-directory
+                      :active-diffs (make-hash-table :test 'equal)))
+            (test-file (expand-file-name "test-readonly.txt" default-directory))
+            (buffer-A nil)
+            (buffer-B nil))
+
+       ;; Register session in global hash table
+       (puthash default-directory session claude-code-ide-mcp--sessions)
+
+       ;; Create test file and open it
+       (with-temp-file test-file (insert "Original content"))
+       (setq buffer-A (find-file-noselect test-file))
+       (setq buffer-B (generate-new-buffer "*test-modified*"))
+       (with-current-buffer buffer-B
+         (insert "Modified content"))
+
+       ;; Create a .git directory to make this a project
+       (make-directory (expand-file-name ".git" default-directory) t)
+
+       (unwind-protect
+           (progn
+             ;; Simulate what ediff does - set buffer to read-only
+             (with-current-buffer buffer-A
+               (setq buffer-read-only t))
+
+             ;; Store diff info in session
+             (let ((active-diffs (claude-code-ide-mcp-session-active-diffs session)))
+               (puthash "test-diff"
+                        `((buffer-A . ,buffer-A)
+                          (buffer-B . ,buffer-B)
+                          (old-file-path . ,test-file)
+                          (new-file-path . ,test-file)
+                          (file-exists . t)
+                          (session . ,session))
+                        active-diffs))
+
+             ;; Verify buffer is read-only before cleanup
+             (should (buffer-local-value 'buffer-read-only buffer-A))
+
+             ;; Call cleanup which should restore read-only state
+             (claude-code-ide-mcp--cleanup-diff "test-diff" session)
+
+             ;; Verify buffer-A is no longer read-only after cleanup
+             (should (buffer-live-p buffer-A))
+             (should-not (buffer-local-value 'buffer-read-only buffer-A)))
+
+         ;; Final cleanup
+         (when (and buffer-A (buffer-live-p buffer-A))
+           (with-current-buffer buffer-A
+             (set-buffer-modified-p nil))
+           (kill-buffer buffer-A))
+         (when (and buffer-B (buffer-live-p buffer-B))
+           (kill-buffer buffer-B))
+         (when (file-exists-p test-file) (delete-file test-file))
+         (remhash default-directory claude-code-ide-mcp--sessions))))))
+
 (ert-deftest test-claude-code-ide-mcp-multi-session-deferred ()
   "Test that deferred responses work correctly with multiple sessions."
   (skip-unless (not (getenv "CI")))
