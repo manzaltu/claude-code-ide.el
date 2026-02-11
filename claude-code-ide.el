@@ -1069,6 +1069,31 @@ conversation in the current directory."
                                (file-name-nondirectory (directory-file-name working-dir))))
       (claude-code-ide-log "No Claude Code session is running in this directory"))))
 
+;;;###autoload
+(defun claude-code-ide-stop-all ()
+  "Stop all active Claude Code sessions after confirmation."
+  (interactive)
+  (claude-code-ide--cleanup-dead-processes)
+  (let ((session-count (hash-table-count claude-code-ide--processes)))
+    (if (zerop session-count)
+        (claude-code-ide-log "No active Claude Code sessions")
+      (when (yes-or-no-p (format "Stop all %d Claude Code session%s? "
+                                 session-count
+                                 (if (= session-count 1) "" "s")))
+        (let ((buffers-to-kill nil))
+          (maphash (lambda (directory _process)
+                     (let* ((buffer-name (funcall claude-code-ide-buffer-name-function directory))
+                            (buffer (get-buffer buffer-name)))
+                       (when (and buffer (buffer-live-p buffer))
+                         (push buffer buffers-to-kill))))
+                   claude-code-ide--processes)
+          (let ((stopped (length buffers-to-kill)))
+            (dolist (buffer buffers-to-kill)
+              (kill-buffer buffer))
+            (claude-code-ide-log "Stopped %d Claude Code session%s"
+                                 stopped
+                                 (if (= stopped 1) "" "s"))))))))
+
 
 ;;;###autoload
 (defun claude-code-ide-switch-to-buffer ()
