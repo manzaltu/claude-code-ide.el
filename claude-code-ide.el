@@ -1080,17 +1080,19 @@ conversation in the current directory."
       (when (yes-or-no-p (format "Stop all %d Claude Code session%s? "
                                  session-count
                                  (if (= session-count 1) "" "s")))
-        (let ((stopped 0))
+        (let ((buffers-to-kill nil))
           (maphash (lambda (directory _process)
                      (let* ((buffer-name (funcall claude-code-ide-buffer-name-function directory))
                             (buffer (get-buffer buffer-name)))
                        (when (and buffer (buffer-live-p buffer))
-                         (kill-buffer buffer)
-                         (cl-incf stopped))))
+                         (push buffer buffers-to-kill))))
                    claude-code-ide--processes)
-          (claude-code-ide-log "Stopped %d Claude Code session%s"
-                               stopped
-                               (if (= stopped 1) "" "s")))))))
+          (let ((stopped (length buffers-to-kill)))
+            (dolist (buffer buffers-to-kill)
+              (kill-buffer buffer))
+            (claude-code-ide-log "Stopped %d Claude Code session%s"
+                                 stopped
+                                 (if (= stopped 1) "" "s"))))))))
 
 
 ;;;###autoload
