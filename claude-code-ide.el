@@ -534,8 +534,14 @@ This function binds:
 
 (defun claude-code-ide--session-buffer-p (buffer)
   "Check if BUFFER belongs to a Claude Code session."
-  (when-let ((name (if (stringp buffer) buffer (buffer-name buffer))))
-    (string-prefix-p "*claude-code[" name)))
+  (when-let* ((buf (if (stringp buffer) (get-buffer buffer) buffer))
+              (proc (get-buffer-process buf)))
+    (catch 'found
+      (maphash (lambda (_dir session-proc)
+                 (when (eq proc session-proc)
+                   (throw 'found t)))
+               claude-code-ide--processes)
+      nil)))
 
 (defun claude-code-ide--terminal-reflow-filter (original-fn &rest args)
   "Filter terminal reflows to prevent height-only resize triggers.
