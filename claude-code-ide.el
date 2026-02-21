@@ -66,6 +66,8 @@
 (require 'claude-code-ide-mcp-server)
 (require 'claude-code-ide-emacs-tools)
 
+(eval-when-compile (require 'bookmark))
+
 ;; External variable declarations
 (defvar eat-terminal)
 (defvar eat--synchronize-scroll-function)
@@ -73,7 +75,6 @@
 (defvar vterm-environment)
 (defvar eat-term-name)
 (defvar vterm--process)
-
 ;; External function declarations for vterm
 (declare-function vterm "vterm" (&optional arg))
 (declare-function vterm-send-string "vterm" (string))
@@ -988,6 +989,9 @@ This function handles:
                             nil t)
                   ;; Set up terminal keybindings
                   (claude-code-ide--setup-terminal-keybindings)
+                  ;; Enable bookmark support
+                  (setq-local bookmark-make-record-function
+                              #'claude-code-ide-bookmark-make-record)
                   ;; Add terminal-specific exit hooks
                   (cond
                    ((eq claude-code-ide-terminal-backend 'vterm)
@@ -1218,6 +1222,27 @@ If no Claude windows are visible, show the most recently accessed one."
      ;; No recent session available
      (t
       (user-error "No recent Claude Code session to toggle")))))
+
+;;; Bookmark Support
+
+(defun claude-code-ide-bookmark-make-record ()
+  "Create a bookmark record for a claude-code-ide buffer."
+  `(,(buffer-name)
+    (handler . claude-code-ide-bookmark-jump)
+    (project-dir . ,(claude-code-ide--get-working-directory))))
+
+(defun claude-code-ide-bookmark-jump (bookmark)
+  "Restore a claude-code-ide session from BOOKMARK."
+  (let* ((project-dir (bookmark-prop-get bookmark 'project-dir))
+         (default-directory project-dir)
+         (buffer-name (claude-code-ide--get-buffer-name project-dir))
+         (existing-buffer (get-buffer buffer-name)))
+    (if (and existing-buffer (buffer-live-p existing-buffer))
+        (set-buffer existing-buffer)
+      (claude-code-ide--start-session)
+      (set-buffer (get-buffer (claude-code-ide--get-buffer-name project-dir))))))
+
+(put 'claude-code-ide-bookmark-jump 'bookmark-handler-type "ClaudIde")
 
 (provide 'claude-code-ide)
 
