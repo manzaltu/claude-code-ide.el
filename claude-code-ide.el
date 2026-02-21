@@ -66,6 +66,8 @@
 (require 'claude-code-ide-mcp-server)
 (require 'claude-code-ide-emacs-tools)
 
+(eval-when-compile (require 'bookmark))
+
 ;; External variable declarations
 (defvar eat-terminal)
 (defvar eat--synchronize-scroll-function)
@@ -73,8 +75,6 @@
 (defvar vterm-environment)
 (defvar eat-term-name)
 (defvar vterm--process)
-(defvar bookmark-make-record-function)
-
 ;; External function declarations for vterm
 (declare-function vterm "vterm" (&optional arg))
 (declare-function vterm-send-string "vterm" (string))
@@ -85,9 +85,6 @@
 ;; External function declarations for eat
 (declare-function eat-mode "eat" ())
 (declare-function eat-exec "eat" (buffer name command startfile &rest switches))
-
-;; External function declarations for bookmark
-(declare-function bookmark-prop-get "bookmark" (bookmark prop))
 (declare-function eat-term-send-string "eat" (terminal string))
 (declare-function eat-term-display-cursor "eat" (terminal))
 (declare-function eat--adjust-process-window-size "eat" (process windows))
@@ -992,10 +989,9 @@ This function handles:
                             nil t)
                   ;; Set up terminal keybindings
                   (claude-code-ide--setup-terminal-keybindings)
-                  ;; Enable bookmark support (used by activities.el)
-                  (when (featurep 'bookmark)
-                    (setq-local bookmark-make-record-function
-                                #'claude-code-ide-bookmark-make-record))
+                  ;; Enable bookmark support
+                  (setq-local bookmark-make-record-function
+                              #'claude-code-ide-bookmark-make-record)
                   ;; Add terminal-specific exit hooks
                   (cond
                    ((eq claude-code-ide-terminal-backend 'vterm)
@@ -1233,11 +1229,10 @@ If no Claude windows are visible, show the most recently accessed one."
   "Create a bookmark record for a claude-code-ide buffer."
   `(,(buffer-name)
     (handler . claude-code-ide-bookmark-handler)
-    (project-dir . ,default-directory)))
+    (project-dir . ,(claude-code-ide--get-working-directory))))
 
 (defun claude-code-ide-bookmark-handler (bookmark)
   "Restore a claude-code-ide session from BOOKMARK."
-  (require 'bookmark)
   (let* ((project-dir (bookmark-prop-get bookmark 'project-dir))
          (default-directory project-dir)
          (buffer-name (claude-code-ide--get-buffer-name project-dir))
