@@ -31,9 +31,7 @@
 (require 'claude-code-ide-debug)
 
 ;; Declare functions from other files to avoid circular dependencies
-(declare-function claude-code-ide "claude-code-ide" ())
-(declare-function claude-code-ide-resume "claude-code-ide" ())
-(declare-function claude-code-ide-continue "claude-code-ide" ())
+(declare-function claude-code-ide "claude-code-ide" (&optional force-dir))
 (declare-function claude-code-ide-stop "claude-code-ide" ())
 (declare-function claude-code-ide-list-sessions "claude-code-ide" ())
 (declare-function claude-code-ide-switch-to-buffer "claude-code-ide" ())
@@ -41,6 +39,10 @@
 (declare-function claude-code-ide-send-prompt "claude-code-ide" ())
 (declare-function claude-code-ide-send-escape "claude-code-ide" ())
 (declare-function claude-code-ide-insert-newline "claude-code-ide" ())
+(declare-function claude-code-ide-select-option-1 "claude-code-ide" ())
+(declare-function claude-code-ide-select-option-2 "claude-code-ide" ())
+(declare-function claude-code-ide-select-option-3 "claude-code-ide" ())
+(declare-function claude-code-ide-select-option-4 "claude-code-ide" ())
 (declare-function claude-code-ide-toggle "claude-code-ide" ())
 (declare-function claude-code-ide-check-status "claude-code-ide" ())
 (declare-function claude-code-ide--ensure-cli "claude-code-ide" ())
@@ -51,7 +53,7 @@
 (declare-function claude-code-ide-mcp-session-buffer "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-last-buffer "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
-(declare-function claude-code-ide--get-working-directory "claude-code-ide" ())
+(declare-function claude-code-ide--get-working-directory "claude-code-ide" (&optional force-default-directory))
 
 ;; Declare variables
 (defvar claude-code-ide-cli-path)
@@ -78,50 +80,19 @@
 (defun claude-code-ide--start-description ()
   "Dynamic description for start command based on session status."
   (if (claude-code-ide--has-active-session-p)
-      (propertize "Start new Claude Code session (session already running)"
+      (propertize "Start session (already running)"
                   'face 'transient-inactive-value)
-    "Start new Claude Code session"))
+    "Start session (C-u: current dir)"))
 
 (defun claude-code-ide--start-if-no-session ()
-  "Start Claude Code only if no session is active for current buffer."
+  "Start Claude Code only if no session is active for current buffer.
+Passes through prefix argument to use current dir instead of project root."
   (interactive)
   (if (claude-code-ide--has-active-session-p)
       (let ((working-dir (claude-code-ide--get-working-directory)))
         (claude-code-ide-log "Claude Code session already running in %s"
                              (abbreviate-file-name working-dir)))
-    (claude-code-ide)))
-
-(defun claude-code-ide--continue-description ()
-  "Dynamic description for continue command based on session status."
-  (if (claude-code-ide--has-active-session-p)
-      (propertize "Continue most recent conversation (session already running)"
-                  'face 'transient-inactive-value)
-    "Continue most recent conversation"))
-
-(defun claude-code-ide--continue-if-no-session ()
-  "Continue Claude Code only if no session is active for current buffer."
-  (interactive)
-  (if (claude-code-ide--has-active-session-p)
-      (let ((working-dir (claude-code-ide--get-working-directory)))
-        (claude-code-ide-log "Claude Code session already running in %s"
-                             (abbreviate-file-name working-dir)))
-    (claude-code-ide-continue)))
-
-(defun claude-code-ide--resume-description ()
-  "Dynamic description for resume command based on session status."
-  (if (claude-code-ide--has-active-session-p)
-      (propertize "Resume session (session already running)"
-                  'face 'transient-inactive-value)
-    "Resume session (from previous conversation)"))
-
-(defun claude-code-ide--resume-if-no-session ()
-  "Resume Claude Code only if no session is active for current buffer."
-  (interactive)
-  (if (claude-code-ide--has-active-session-p)
-      (let ((working-dir (claude-code-ide--get-working-directory)))
-        (claude-code-ide-log "Claude Code session already running in %s"
-                             (abbreviate-file-name working-dir)))
-    (claude-code-ide-resume)))
+    (claude-code-ide current-prefix-arg)))
 
 (defun claude-code-ide--session-status ()
   "Return a string describing the current session status."
@@ -316,22 +287,23 @@ Otherwise, if multiple sessions exist, prompt for selection."
 (transient-define-prefix claude-code-ide-menu ()
   "Claude Code IDE main menu."
   [:description claude-code-ide--session-status]
-  ["Claude Code IDE"
-   ["Session Management"
-    ("s" claude-code-ide--start-if-no-session :description claude-code-ide--start-description)
-    ("c" claude-code-ide--continue-if-no-session :description claude-code-ide--continue-description)
-    ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
-    ("q" "Stop current session" claude-code-ide-stop)
-    ("l" "List all sessions" claude-code-ide-list-sessions)]
-   ["Navigation"
+  ["Session"
+   ("s" claude-code-ide--start-if-no-session :description claude-code-ide--start-description)
+   ("q" "Stop current session" claude-code-ide-stop)
+   ("l" "List all sessions" claude-code-ide-list-sessions)]
+  [["Navigation"
     ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
     ("w" "Toggle window visibility" claude-code-ide-toggle-window)
     ("W" "Toggle recent window" claude-code-ide-toggle-recent)]
    ["Interaction"
-    ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
-    ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)
-    ("e" "Send escape key" claude-code-ide-send-escape)
-    ("n" "Insert newline" claude-code-ide-insert-newline)]
+    ("RET" "Send return" claude-code-ide-select-option-1)
+    ("i" "Send prompt" claude-code-ide-send-prompt)
+    ("e" "Send escape key" claude-code-ide-send-escape)]
+   ["Select Option"
+    ("1" "Option 1" claude-code-ide-select-option-1)
+    ("2" "Option 2" claude-code-ide-select-option-2)
+    ("3" "Option 3" claude-code-ide-select-option-3)
+    ("4" "Option 4" claude-code-ide-select-option-4)]
    ["Submenus"
     ("C" "Configuration" claude-code-ide-config-menu)
     ("d" "Debugging" claude-code-ide-debug-menu)]])

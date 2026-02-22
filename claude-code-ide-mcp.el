@@ -131,6 +131,10 @@ Uses buffer-local cache to avoid repeated project lookups."
     ;; Cache is invalid or doesn't exist, recalculate
     (let ((project-dir (when-let ((project (project-current)))
                          (expand-file-name (project-root project)))))
+      (setq project-dir
+            (claude-code-ide--maybe-resolve-parent
+             project-dir
+             (and project-dir (gethash project-dir claude-code-ide-mcp--sessions))))
       ;; Update cache
       (setq claude-code-ide-mcp--buffer-project-cache project-dir
             claude-code-ide-mcp--buffer-cache-valid t)

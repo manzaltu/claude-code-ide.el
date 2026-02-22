@@ -61,6 +61,25 @@
   "")
 (provide 'claude-code-ide-debug)
 
+;; === Mock claude-code-ide-transient module ===
+;; Provide mock transient menu functions to avoid loading the real transient module
+(defun claude-code-ide-menu ()
+  "Mock transient menu."
+  (interactive)
+  (message "Transient menu not available in batch mode"))
+
+(defun claude-code-ide-config-menu ()
+  "Mock config menu."
+  (interactive)
+  (message "Config menu not available in batch mode"))
+
+(defun claude-code-ide-debug-menu ()
+  "Mock debug menu."
+  (interactive)
+  (message "Debug menu not available in batch mode"))
+
+(provide 'claude-code-ide-transient)
+
 ;; === Mock websocket module ===
 ;; Try to load real websocket, otherwise provide comprehensive mocks
 (condition-case nil
@@ -238,6 +257,44 @@ have completed before cleanup.  Waits up to 5 seconds."
      ;; Without project, should return current directory
      (let ((expected (expand-file-name default-directory)))
        (should (equal (claude-code-ide--get-working-directory) expected))))))
+
+(ert-deftest claude-code-ide-test-maybe-resolve-parent-nil-predicate ()
+  "Test that nil predicate means no fallback."
+  (let ((claude-code-ide-parent-session-predicate nil))
+    (should (equal "/tmp/sub/"
+                   (claude-code-ide--maybe-resolve-parent "/tmp/sub/" nil)))))
+
+(ert-deftest claude-code-ide-test-maybe-resolve-parent-matching ()
+  "Test that matching predicate with no session resolves parent."
+  (let ((claude-code-ide-parent-session-predicate
+         (lambda (dir)
+           (string= ".le-playground"
+                    (file-name-nondirectory (directory-file-name dir))))))
+    (cl-letf (((symbol-function 'claude-code-ide--resolve-parent-project)
+               (lambda (_dir) "/tmp/parent/")))
+      (should (equal "/tmp/parent/"
+                     (claude-code-ide--maybe-resolve-parent
+                      "/tmp/parent/.le-playground/" nil))))))
+
+(ert-deftest claude-code-ide-test-maybe-resolve-parent-session-exists ()
+  "Test that matching predicate with existing session stays."
+  (let ((claude-code-ide-parent-session-predicate
+         (lambda (dir)
+           (string= ".le-playground"
+                    (file-name-nondirectory (directory-file-name dir))))))
+    (should (equal "/tmp/parent/.le-playground/"
+                   (claude-code-ide--maybe-resolve-parent
+                    "/tmp/parent/.le-playground/" t)))))
+
+(ert-deftest claude-code-ide-test-maybe-resolve-parent-no-match ()
+  "Test that non-matching predicate stays."
+  (let ((claude-code-ide-parent-session-predicate
+         (lambda (dir)
+           (string= ".le-playground"
+                    (file-name-nondirectory (directory-file-name dir))))))
+    (should (equal "/tmp/some-project/"
+                   (claude-code-ide--maybe-resolve-parent
+                    "/tmp/some-project/" nil)))))
 
 (ert-deftest claude-code-ide-test-get-buffer-name ()
   "Test buffer name generation using custom function."
@@ -494,7 +551,7 @@ have completed before cleanup.  Waits up to 5 seconds."
         (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
                    (lambda (&rest _) "claude")))
           (let ((result (claude-code-ide--create-terminal-session
-                         "*test-vterm*" "/tmp" 12345 nil nil "test-session")))
+                         "*test-vterm*" "/tmp" 12345 "test-session")))
             (should (consp result))
             (should (bufferp (car result)))
             (should (processp (cdr result)))
@@ -506,7 +563,7 @@ have completed before cleanup.  Waits up to 5 seconds."
         (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
                    (lambda (&rest _) "claude")))
           (let ((result (claude-code-ide--create-terminal-session
-                         "*test-eat*" "/tmp" 12345 nil nil "test-session")))
+                         "*test-eat*" "/tmp" 12345 "test-session")))
             (should (consp result))
             (should (bufferp (car result)))
             (should (processp (cdr result)))
@@ -721,12 +778,32 @@ have completed before cleanup.  Waits up to 5 seconds."
              (should (null (claude-code-ide--get-process)))))))
     (claude-code-ide-tests--clear-processes)))
 
+(ert-deftest claude-code-ide-test-stop-all-no-sessions ()
+  "Test `stop-all' command when no sessions are running."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (progn
+        ;; Should not error when no sessions exist
+        (claude-code-ide-stop-all))
+    (claude-code-ide-tests--clear-processes)))
+
 (ert-deftest claude-code-ide-test-switch-to-buffer-no-session ()
   "Test `switch-to-buffer' command when no session exists."
   (claude-code-ide-tests--clear-processes)
   (unwind-protect
       (should-error (claude-code-ide-switch-to-buffer)
                     :type 'user-error)
+    (claude-code-ide-tests--clear-processes)))
+
+(ert-deftest claude-code-ide-test-select-option-no-session ()
+  "Test select-option commands when no session exists."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (progn
+        (should-error (claude-code-ide-select-option-1) :type 'user-error)
+        (should-error (claude-code-ide-select-option-2) :type 'user-error)
+        (should-error (claude-code-ide-select-option-3) :type 'user-error)
+        (should-error (claude-code-ide-select-option-4) :type 'user-error))
     (claude-code-ide-tests--clear-processes)))
 
 (ert-deftest claude-code-ide-test-toggle-window-functionality ()
@@ -864,9 +941,20 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-debug-mode-flag ()
   "Test debug mode CLI flag."
   (let ((claude-code-ide-cli-debug t))
-    (should (string-match "-d" (claude-code-ide--build-claude-command)))
-    (should (string-match "-d.*-c" (claude-code-ide--build-claude-command t)))
-    (should (string-match "-d.*-r" (claude-code-ide--build-claude-command nil t)))))
+    (should (string-match "-d" (claude-code-ide--build-claude-command)))))
+
+(ert-deftest claude-code-ide-test-session-id-flag ()
+  "Test --session-id flag in built command."
+  (let ((claude-code-ide-cli-path "claude")
+        (claude-code-ide-cli-debug nil)
+        (claude-code-ide-cli-extra-flags "")
+        (claude-code-ide-system-prompt nil))
+    ;; Without session-id
+    (should-not (string-match-p "--session-id" (claude-code-ide--build-claude-command)))
+    ;; With session-id
+    (let ((cmd (claude-code-ide--build-claude-command "test-uuid-1234")))
+      (should (string-match-p "--session-id" cmd))
+      (should (string-match-p "test-uuid-1234" cmd)))))
 
 (ert-deftest claude-code-ide-test-build-command-with-system-prompt ()
   "Test building command with append-system-prompt flag."
@@ -1096,6 +1184,88 @@ have completed before cleanup.  Waits up to 5 seconds."
   ;; Test missing path parameter
   (should-error (claude-code-ide-mcp-handle-open-file '())
                 :type 'mcp-error))
+
+(ert-deftest claude-code-ide-test-mcp-goto-location ()
+  "Test the gotoLocation tool implementation."
+  ;; Test basic jump to line
+  (claude-code-ide-mcp-tests--with-temp-file test-file "Line 1\nLine 2\nLine 3\nLine 4\nLine 5"
+                                             (let ((result (claude-code-ide-mcp-handle-goto-location
+                                                            `((file_path . ,test-file)
+                                                              (line . 3)))))
+                                               ;; Handler returns success message
+                                               (should (listp result))
+                                               (let ((first-item (car result)))
+                                                 (should (equal (alist-get 'type first-item) "text"))
+                                                 (should (string-match-p "Jumped to.*:3" (alist-get 'text first-item))))
+                                               ;; Verify we're on line 3
+                                               (should (= (line-number-at-pos) 3))
+                                               (kill-buffer)))
+
+  ;; Test jump to line and column
+  (claude-code-ide-mcp-tests--with-temp-file test-file "abcdefgh\nijklmnop\nqrstuvwx"
+                                             (let ((result (claude-code-ide-mcp-handle-goto-location
+                                                            `((file_path . ,test-file)
+                                                              (line . 2)
+                                                              (column . 5)))))
+                                               (should (listp result))
+                                               ;; Verify position
+                                               (should (= (line-number-at-pos) 2))
+                                               (should (= (current-column) 5))
+                                               (kill-buffer)))
+
+  ;; Test with highlight option (just verify it doesn't error)
+  (claude-code-ide-mcp-tests--with-temp-file test-file "Line 1\nLine 2\nLine 3"
+                                             (let ((result (claude-code-ide-mcp-handle-goto-location
+                                                            `((file_path . ,test-file)
+                                                              (line . 2)
+                                                              (highlight . t)))))
+                                               (should (listp result))
+                                               (should (= (line-number-at-pos) 2))
+                                               (kill-buffer)))
+
+  ;; Test missing file_path parameter
+  (should-error (claude-code-ide-mcp-handle-goto-location '((line . 1)))
+                :type 'mcp-error)
+
+  ;; Test missing line parameter
+  (should-error (claude-code-ide-mcp-handle-goto-location '((file_path . "/tmp/test.txt")))
+                :type 'mcp-error))
+
+(ert-deftest claude-code-ide-test-mcp-reload-buffer ()
+  "Test the reloadBuffer tool implementation."
+  ;; Test reloading a buffer that has been modified externally
+  (claude-code-ide-mcp-tests--with-temp-file test-file "Original content"
+                                             ;; Open the file in a buffer
+                                             (find-file test-file)
+                                             (should (string= (buffer-string) "Original content"))
+                                             ;; Modify the file externally (simulating Edit/Write tool)
+                                             (with-temp-file test-file
+                                               (insert "Modified content"))
+                                             ;; Buffer still has old content
+                                             (should (string= (buffer-string) "Original content"))
+                                             ;; Reload the buffer
+                                             (let ((result (claude-code-ide-mcp-handle-reload-buffer
+                                                            `((file_path . ,test-file)))))
+                                               (should (listp result))
+                                               (let ((first-item (car result)))
+                                                 (should (equal (alist-get 'type first-item) "text"))
+                                                 (should (string-match-p "Buffer reloaded from disk" (alist-get 'text first-item))))
+                                               ;; Buffer should now have new content
+                                               (should (string= (buffer-string) "Modified content")))
+                                             (kill-buffer)))
+
+;; Test reloading a file that's not currently open
+(claude-code-ide-mcp-tests--with-temp-file test-file "Some content"
+                                           (let ((result (claude-code-ide-mcp-handle-reload-buffer
+                                                          `((file_path . ,test-file)))))
+                                             (should (listp result))
+                                             (let ((first-item (car result)))
+                                               (should (equal (alist-get 'type first-item) "text"))
+                                               (should (string-match-p "Buffer not open" (alist-get 'text first-item))))))
+
+;; Test missing file_path parameter
+(should-error (claude-code-ide-mcp-handle-reload-buffer '())
+              :type 'mcp-error)
 
 (ert-deftest claude-code-ide-test-mcp-get-current-selection ()
   "Test the getCurrentSelection tool implementation."
@@ -2274,6 +2444,220 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (not (plist-get file-path-arg :optional)))
           (should (equal (plist-get file-path-arg :description)
                          "Path to the file to analyze for symbols")))))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-read-buffer ()
+  "Test the read-buffer MCP tool."
+  (require 'claude-code-ide-emacs-tools)
+  (require 'claude-code-ide-tool-buffer-management)
+
+  (let ((session-id "test-session-read-buffer")
+        (project-dir (temporary-file-directory)))
+    (unwind-protect
+        (progn
+          ;; Register a mock session
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+
+          ;; Create a test buffer with known content
+          (with-temp-buffer
+            (insert "Line 1\n"
+                    "Line 2\n"
+                    "Line 3\n"
+                    "Line 4\n"
+                    "Line 5\n"
+                    "Line 6\n"
+                    "Line 7\n"
+                    "Line 8\n"
+                    "Line 9\n"
+                    "Line 10\n")
+            (let ((test-buffer (current-buffer))
+                  (buffer-name (buffer-name)))
+
+              ;; Test with session context
+              (let ((claude-code-ide-mcp-server--current-session-id session-id))
+
+                ;; Test reading entire buffer
+                (let ((result (claude-code-ide-mcp-read-buffer buffer-name)))
+                  (should (stringp result))
+                  (should (string-match "Line 1" result))
+                  (should (string-match "Line 10" result))
+                  (should (string-match "lines 1-10 of 10" result)))
+
+                ;; Test reading specific range (lines 3-5)
+                (let ((result (claude-code-ide-mcp-read-buffer buffer-name 3 5)))
+                  (should (stringp result))
+                  (should (string-match "Line 3" result))
+                  (should (string-match "Line 4" result))
+                  (should (string-match "Line 5" result))
+                  (should-not (string-match "Line 2" result))
+                  (should-not (string-match "Line 6" result))
+                  (should (string-match "lines 3-5 of 10" result)))
+
+                ;; Test reading last N lines with negative start-line
+                (let ((result (claude-code-ide-mcp-read-buffer buffer-name -3)))
+                  (should (stringp result))
+                  (should (string-match "Line 8" result))
+                  (should (string-match "Line 9" result))
+                  (should (string-match "Line 10" result))
+                  (should-not (string-match "Line 7" result))
+                  (should (string-match "lines 8-10 of 10" result)))
+
+                ;; Test reading with negative end-line (-9 = line 2)
+                (let ((result (claude-code-ide-mcp-read-buffer buffer-name 1 -9)))
+                  (should (stringp result))
+                  (should (string-match "Line 1" result))
+                  (should (string-match "Line 2" result))
+                  (should-not (string-match "Line 3" result))
+                  (should (string-match "lines 1-2 of 10" result)))
+
+                ;; Test error handling - buffer not found
+                (let ((result (claude-code-ide-mcp-read-buffer "*nonexistent-buffer*")))
+                  (should (stringp result))
+                  (should (string-match "Buffer not found" result)))
+
+                ;; Test error handling - invalid range (start > end)
+                (let ((result (condition-case err
+                                  (claude-code-ide-mcp-read-buffer buffer-name 5 3)
+                                (error (error-message-string err)))))
+                  (should (stringp result))
+                  (should (string-match "Error\\|Invalid range" result)))))))
+
+      ;; Cleanup
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-eval ()
+  "Test the eval MCP tool."
+  (require 'claude-code-ide-emacs-tools)
+  (require 'claude-code-ide-tool-eval)
+
+  (let ((session-id "test-session-eval")
+        (project-dir (temporary-file-directory))
+        (claude-code-ide-eval-enabled nil)
+        (claude-code-ide-eval-log nil))
+    (unwind-protect
+        (progn
+          ;; Register a mock session
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+
+          ;; Test with session context
+          (let ((claude-code-ide-mcp-server--current-session-id session-id))
+
+            ;; Test that eval is disabled by default
+            (let ((result (claude-code-ide-mcp-eval "(+ 1 2)")))
+              (should (stringp result))
+              (should (string-match "disabled" result)))
+
+            ;; Enable eval for testing
+            (setq claude-code-ide-eval-enabled t)
+
+            ;; Test simple arithmetic
+            (let ((result (claude-code-ide-mcp-eval "(+ 1 2)")))
+              (should (stringp result))
+              (should (string-match "Result: 3" result))
+              (should (string-match "Type: integer" result)))
+
+            ;; Test string evaluation
+            (let ((result (claude-code-ide-mcp-eval "(concat \"hello\" \" \" \"world\")")))
+              (should (stringp result))
+              (should (string-match "Result: \"hello world\"" result))
+              (should (string-match "Type: string" result)))
+
+            ;; Test list evaluation
+            (let ((result (claude-code-ide-mcp-eval "(list 1 2 3)")))
+              (should (stringp result))
+              (should (string-match "Result: (1 2 3)" result))
+              (should (string-match "Type: cons" result)))
+
+            ;; Test error handling - syntax error
+            (let ((result (claude-code-ide-mcp-eval "(+ 1")))
+              (should (stringp result))
+              (should (string-match "Error" result)))
+
+            ;; Test error handling - undefined variable
+            (let ((result (claude-code-ide-mcp-eval "undefined-variable-xyz")))
+              (should (stringp result))
+              (should (string-match "Error" result)))
+
+            ;; Test buffer-local variable
+            (let ((result (claude-code-ide-mcp-eval "(buffer-name)")))
+              (should (stringp result))
+              (should (string-match "Result:" result)))))
+
+      ;; Cleanup
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
+;;; Magit Refresh Tool Tests
+
+(ert-deftest claude-code-ide-emacs-tools-test-magit-refresh-success ()
+  "Test magit refresh schedules async refresh when buffer exists."
+  (require 'claude-code-ide-emacs-tools)
+  (require 'claude-code-ide-tool-magit)
+
+  (let ((session-id "test-session-magit")
+        (project-dir (temporary-file-directory))
+        (timer-scheduled nil))
+    (unwind-protect
+        (progn
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+
+          (let ((claude-code-ide-mcp-server--current-session-id session-id)
+                (mock-buffer (generate-new-buffer " *test-magit-status*")))
+            (unwind-protect
+                (cl-letf (((symbol-function 'magit-get-mode-buffer)
+                           (lambda (_mode) mock-buffer))
+                          ((symbol-function 'run-at-time)
+                           (lambda (_time _repeat fn) (setq timer-scheduled fn) nil)))
+                  (let ((result (claude-code-ide-mcp-magit-refresh)))
+                    (should (stringp result))
+                    (should (string-match "Scheduled magit-status refresh" result))
+                    (should timer-scheduled)))
+              (kill-buffer mock-buffer))))
+
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-magit-not-available ()
+  "Test magit refresh when magit is not installed."
+  (require 'claude-code-ide-emacs-tools)
+  (require 'claude-code-ide-tool-magit)
+
+  (let ((session-id "test-session-magit-na")
+        (project-dir (temporary-file-directory)))
+    (unwind-protect
+        (progn
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+
+          (let ((claude-code-ide-mcp-server--current-session-id session-id))
+            (cl-letf (((symbol-function 'magit-get-mode-buffer)
+                       nil))
+              ;; Unbind the function to simulate magit not being installed
+              (fmakunbound 'magit-get-mode-buffer)
+              (unwind-protect
+                  (let ((result (claude-code-ide-mcp-magit-refresh)))
+                    (should (stringp result))
+                    (should (string-match "not installed" result)))
+                ;; Restore mock for other tests
+                (fset 'magit-get-mode-buffer (lambda (_mode) nil))))))
+
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-magit-no-buffer ()
+  "Test magit refresh when no magit-status buffer is open."
+  (require 'claude-code-ide-emacs-tools)
+  (require 'claude-code-ide-tool-magit)
+
+  (let ((session-id "test-session-magit-nb")
+        (project-dir (temporary-file-directory)))
+    (unwind-protect
+        (progn
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+
+          (let ((claude-code-ide-mcp-server--current-session-id session-id))
+            (cl-letf (((symbol-function 'magit-get-mode-buffer)
+                       (lambda (_mode) nil)))
+              (let ((result (claude-code-ide-mcp-magit-refresh)))
+                (should (stringp result))
+                (should (string-match "No magit-status buffer open" result))))))
+
+      (claude-code-ide-mcp-server-unregister-session session-id))))
 
 (provide 'claude-code-ide-tests)
 
