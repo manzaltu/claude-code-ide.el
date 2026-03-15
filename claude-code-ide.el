@@ -88,6 +88,14 @@
 (declare-function eat-term-display-cursor "eat" (terminal))
 (declare-function eat--adjust-process-window-size "eat" (process windows))
 
+;; External function declarations for gterm
+(defvar gterm-shell)
+(defvar gterm--process)
+(declare-function gterm "gterm" ())
+(declare-function gterm-send-string "gterm" (string))
+(declare-function gterm-send-escape "gterm" ())
+(declare-function gterm-send-return "gterm" ())
+
 ;;; Customization
 
 (defgroup claude-code-ide nil
@@ -212,7 +220,8 @@ and provides a fully-featured terminal emulator.  The eat backend
 is an alternative terminal emulator that may work better in some
 environments."
   :type '(choice (const :tag "vterm" vterm)
-                 (const :tag "eat" eat))
+                 (const :tag "eat" eat)
+                 (const :tag "gterm" gterm))
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-prevent-reflow-glitch t
@@ -444,8 +453,13 @@ cursor management, and process buffering for superior user experience."
       (require 'eat nil t))
     (unless (featurep 'eat)
       (user-error "The package eat is not installed.  Please install the eat package or change `claude-code-ide-terminal-backend' to 'vterm")))
+   ((eq claude-code-ide-terminal-backend 'gterm)
+    (unless (featurep 'gterm)
+      (require 'gterm nil t))
+    (unless (featurep 'gterm)
+      (user-error "The package gterm is not installed.  Please install gterm or change `claude-code-ide-terminal-backend'")))
    (t
-    (user-error "Invalid terminal backend: %s.  Valid options are 'vterm or 'eat" claude-code-ide-terminal-backend))))
+    (user-error "Invalid terminal backend: %s.  Valid options are 'vterm, 'eat, or 'gterm" claude-code-ide-terminal-backend))))
 
 (defun claude-code-ide--terminal-send-string (string)
   "Send STRING to the terminal in the current buffer."
@@ -455,6 +469,8 @@ cursor management, and process buffering for superior user experience."
    ((eq claude-code-ide-terminal-backend 'eat)
     (when eat-terminal
       (eat-term-send-string eat-terminal string)))
+   ((eq claude-code-ide-terminal-backend 'gterm)
+    (gterm-send-string string))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
@@ -466,6 +482,8 @@ cursor management, and process buffering for superior user experience."
    ((eq claude-code-ide-terminal-backend 'eat)
     (when eat-terminal
       (eat-term-send-string eat-terminal "\e")))
+   ((eq claude-code-ide-terminal-backend 'gterm)
+    (gterm-send-string "\e"))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
@@ -477,6 +495,8 @@ cursor management, and process buffering for superior user experience."
    ((eq claude-code-ide-terminal-backend 'eat)
     (when eat-terminal
       (eat-term-send-string eat-terminal "\r")))
+   ((eq claude-code-ide-terminal-backend 'gterm)
+    (gterm-send-string "\r"))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
@@ -507,6 +527,9 @@ This function binds:
     ;; We use local-set-key to make it buffer-local
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
+   ((eq claude-code-ide-terminal-backend 'gterm)
+    (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
+    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
@@ -523,6 +546,7 @@ This function binds:
   (pcase claude-code-ide-terminal-backend
     ('vterm #'vterm--window-adjust-process-window-size)
     ('eat #'eat--adjust-process-window-size)
+    ('gterm #'gterm--maybe-resize)
     (_ (error "Unsupported terminal backend: %s" claude-code-ide-terminal-backend))))
 
 (defun claude-code-ide--terminal-scroll-mode-active-p ()
@@ -530,6 +554,7 @@ This function binds:
   (pcase claude-code-ide-terminal-backend
     ('vterm (bound-and-true-p vterm-copy-mode))
     ('eat (not (bound-and-true-p eat--semi-char-mode)))
+    ('gterm (bound-and-true-p gterm--copy-mode))
     (_ nil)))
 
 (defun claude-code-ide--session-buffer-p (buffer)
@@ -915,6 +940,44 @@ Signals an error if terminal fails to initialize."
               (error "Failed to create eat process.  Please ensure eat is properly installed"))
             (cons buffer process)))))
 
+     ;; gterm backend
+     ((eq claude-code-ide-terminal-backend 'gterm)
+      (let* ((buffer (get-buffer-create buffer-name)))
+        (with-current-buffer buffer
+          ;; Initialize gterm mode first (kills buffer-local vars)
+          (unless (eq major-mode 'gterm-mode)
+            (gterm-mode))
+          ;; Start the shell process with claude command
+          (let* ((size (gterm--calculate-size))
+                 (cols (car size))
+                 (rows (cdr size))
+                 ;; Set env vars AFTER gterm-mode (which kills local vars)
+                 (process-environment
+                  (append env-vars
+                          (list (format "TERM=%s" gterm-term-environment-variable)
+                                (format "COLUMNS=%d" cols)
+                                (format "LINES=%d" rows)
+                                (format "SHELL=%s" gterm-shell))
+                          process-environment)))
+            (setq gterm--width cols
+                  gterm--height rows
+                  gterm--term (gterm-new cols rows))
+            (setq gterm--process
+                  (make-process
+                   :name "gterm"
+                   :buffer buffer
+                   :command (split-string-shell-command claude-cmd)
+                   :connection-type 'pty
+                   :coding 'no-conversion
+                   :filter #'gterm--filter
+                   :sentinel #'gterm--sentinel
+                   :noquery t))
+            (set-process-window-size gterm--process rows cols)))
+        (let ((process (get-buffer-process buffer)))
+          (unless process
+            (error "Failed to create gterm process"))
+          (cons buffer process))))
+
      (t
       (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend)))))
 
@@ -1000,7 +1063,10 @@ This function handles:
                               nil t))
                    ((eq claude-code-ide-terminal-backend 'eat)
                     ;; eat uses kill-buffer-on-exit variable
-                    (setq-local eat-kill-buffer-on-exit t))))
+                    (setq-local eat-kill-buffer-on-exit t))
+                   ((eq claude-code-ide-terminal-backend 'gterm)
+                    ;; gterm cleans up via kill-buffer-hook already
+                    nil)))
                 ;; Stabilization period for terminal layout initialization
                 (sleep-for claude-code-ide-terminal-initialization-delay)
                 ;; Display the buffer in a side window
