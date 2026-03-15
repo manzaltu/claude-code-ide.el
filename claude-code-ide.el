@@ -963,6 +963,7 @@ Signals an error if terminal fails to initialize."
                    :name "gterm"
                    :buffer buffer
                    :command (split-string-shell-command claude-cmd)
+                   :connection-type 'pty
                    :coding 'no-conversion
                    :filter #'gterm--filter
                    :sentinel #'gterm--sentinel
