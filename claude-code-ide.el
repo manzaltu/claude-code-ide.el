@@ -956,7 +956,8 @@ Signals an error if terminal fails to initialize."
                   (append env-vars
                           (list (format "TERM=%s" gterm-term-environment-variable)
                                 (format "COLUMNS=%d" cols)
-                                (format "LINES=%d" rows))
+                                (format "LINES=%d" rows)
+                                (format "SHELL=%s" gterm-shell))
                           process-environment)))
             (setq gterm--width cols
                   gterm--height rows
