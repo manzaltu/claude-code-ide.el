@@ -942,19 +942,22 @@ Signals an error if terminal fails to initialize."
 
      ;; gterm backend
      ((eq claude-code-ide-terminal-backend 'gterm)
-      (let* ((gterm-shell claude-cmd)
-             (buffer (get-buffer-create buffer-name)))
+      (let* ((buffer (get-buffer-create buffer-name)))
         (with-current-buffer buffer
-          ;; Set up gterm with env vars
-          (setq-local process-environment
-                      (append env-vars process-environment))
-          ;; Initialize gterm mode and terminal
+          ;; Initialize gterm mode first (kills buffer-local vars)
           (unless (eq major-mode 'gterm-mode)
             (gterm-mode))
           ;; Start the shell process with claude command
           (let* ((size (gterm--calculate-size))
                  (cols (car size))
-                 (rows (cdr size)))
+                 (rows (cdr size))
+                 ;; Set env vars AFTER gterm-mode (which kills local vars)
+                 (process-environment
+                  (append env-vars
+                          (list (format "TERM=%s" gterm-term-environment-variable)
+                                (format "COLUMNS=%d" cols)
+                                (format "LINES=%d" rows))
+                          process-environment)))
             (setq gterm--width cols
                   gterm--height rows
                   gterm--term (gterm-new cols rows))
