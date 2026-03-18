@@ -35,10 +35,25 @@
 (require 'cl-lib)
 (require 'imenu)
 
+;; TRAMP helper declarations
+(declare-function claude-code-ide--tramp-remote-p "claude-code-ide" (path))
+(declare-function claude-code-ide--tramp-localname "claude-code-ide" (path))
+(declare-function claude-code-ide--tramp-add-prefix "claude-code-ide" (remote-prefix plain-path))
+
 ;; Tree-sitter declarations
 (declare-function treesit-node-at "treesit" (pos &optional parser-or-lang named))
 (declare-function treesit-node-text "treesit" (node &optional no-property))
 (declare-function treesit-node-field-name "treesit" (node))
+
+;;; TRAMP Helper
+
+(defun claude-code-ide--tools-resolve-file-path (file-path)
+  "Add TRAMP prefix to FILE-PATH if current session is remote.
+Relies on default-directory being set to the session's project-dir."
+  (let ((prefix (claude-code-ide--tramp-remote-p default-directory)))
+    (if prefix
+        (claude-code-ide--tramp-add-prefix prefix file-path)
+      file-path)))
 
 ;;; Tool Functions
 
@@ -49,9 +64,10 @@ This function uses the session context to operate in the correct project."
   (if (not file-path)
       (error "file_path parameter is required. Please specify the file where you want to search for %s" identifier)
     (claude-code-ide-mcp-server-with-session-context nil
-      (let ((target-buffer (or (find-buffer-visiting file-path)
-                               (find-file-noselect file-path)))
-            (identifier-str (format "%s" identifier)))
+      (let* ((resolved-path (claude-code-ide--tools-resolve-file-path file-path))
+             (target-buffer (or (find-buffer-visiting resolved-path)
+                                (find-file-noselect resolved-path)))
+             (identifier-str (format "%s" identifier)))
         (with-current-buffer target-buffer
           (condition-case err
               (let ((backend (xref-find-backend)))
@@ -61,7 +77,8 @@ This function uses the session context to operate in the correct project."
                     (if xref-items
                         (mapcar (lambda (item)
                                   (let* ((location (xref-item-location item))
-                                         (file (xref-location-group location))
+                                         (file (claude-code-ide--tramp-localname
+                                                (xref-location-group location)))
                                          (marker (xref-location-marker location))
                                          (line (with-current-buffer (marker-buffer marker)
                                                  (save-excursion
@@ -82,9 +99,10 @@ This function uses the session context to operate in the correct project."
   (if (not file-path)
       (error "file_path parameter is required. Please specify the file where you want to search for pattern %s" pattern)
     (claude-code-ide-mcp-server-with-session-context nil
-      (let ((target-buffer (or (find-buffer-visiting file-path)
-                               (find-file-noselect file-path)))
-            (pattern-str (format "%s" pattern)))
+      (let* ((resolved-path (claude-code-ide--tools-resolve-file-path file-path))
+             (target-buffer (or (find-buffer-visiting resolved-path)
+                                (find-file-noselect resolved-path)))
+             (pattern-str (format "%s" pattern)))
         (with-current-buffer target-buffer
           (condition-case err
               (let ((backend (xref-find-backend)))
@@ -103,7 +121,8 @@ This function uses the session context to operate in the correct project."
                     (if xref-items
                         (mapcar (lambda (item)
                                   (let* ((location (xref-item-location item))
-                                         (file (xref-location-group location))
+                                         (file (claude-code-ide--tramp-localname
+                                                (xref-location-group location)))
                                          (marker (xref-location-marker location))
                                          (line (with-current-buffer (marker-buffer marker)
                                                  (save-excursion
@@ -139,8 +158,9 @@ Returns a list of symbols with their types and positions."
       (error "file_path parameter is required")
     (claude-code-ide-mcp-server-with-session-context nil
       (condition-case err
-          (let ((target-buffer (or (find-buffer-visiting file-path)
-                                   (find-file-noselect file-path))))
+          (let* ((resolved-path (claude-code-ide--tools-resolve-file-path file-path))
+                 (target-buffer (or (find-buffer-visiting resolved-path)
+                                    (find-file-noselect resolved-path))))
             (with-current-buffer target-buffer
               ;; Generate or update imenu index
               (imenu--make-index-alist)
@@ -244,8 +264,9 @@ If INCLUDE_CHILDREN is non-nil, include child nodes."
       (condition-case err
           (if (not (treesit-available-p))
               "Tree-sitter is not available in this Emacs build"
-            (let ((target-buffer (or (find-buffer-visiting file-path)
-                                     (find-file-noselect file-path))))
+            (let* ((resolved-path (claude-code-ide--tools-resolve-file-path file-path))
+                   (target-buffer (or (find-buffer-visiting resolved-path)
+                                      (find-file-noselect resolved-path))))
               (with-current-buffer target-buffer
                 (let* ((parsers (treesit-parser-list))
                        (parser (car parsers)))

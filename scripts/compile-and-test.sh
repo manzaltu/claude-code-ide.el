@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Combined compile and test check for Claude Code IDE
 # This script is used by both GitHub Actions and Claude stop hooks

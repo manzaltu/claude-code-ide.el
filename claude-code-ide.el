@@ -118,6 +118,12 @@ This should be a string of space-separated flags, e.g. \"--model opus\"."
   :type 'string
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-tramp-ssh-extra-args ""
+  "Extra arguments passed to SSH for remote TRAMP sessions.
+Useful for jump hosts, custom keys, etc.  Example: \"-J bastion\"."
+  :type 'string
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-system-prompt nil
   "System prompt to append to Claude's default system prompt.
 When non-nil, the --append-system-prompt flag will be added with this value.
@@ -581,6 +587,26 @@ width has actually changed, working around the scrolling glitch."
       (expand-file-name (project-root project))
     (expand-file-name default-directory)))
 
+;;; TRAMP Helper Functions
+
+(defun claude-code-ide--tramp-remote-p (path)
+  "Return TRAMP prefix if PATH is a remote SSH/SCP/RSYNC path, else nil."
+  (when (and path (file-remote-p path))
+    (when (member (file-remote-p path 'method) '("ssh" "scp" "rsync"))
+      (file-remote-p path))))
+
+(defun claude-code-ide--tramp-localname (path)
+  "Return local-on-remote portion of TRAMP PATH, or PATH if local."
+  (or (file-remote-p path 'localname) path))
+
+(defun claude-code-ide--tramp-add-prefix (remote-prefix plain-path)
+  "Prepend REMOTE-PREFIX (e.g. \"/ssh:host:\") to PLAIN-PATH."
+  (concat remote-prefix plain-path))
+
+(defun claude-code-ide--tramp-remote-home (remote-prefix)
+  "Return home directory path on remote host (plain path, no TRAMP prefix)."
+  (file-remote-p (expand-file-name "~" remote-prefix) 'localname))
+
 (defun claude-code-ide--get-buffer-name (&optional directory)
   "Get the buffer name for the Claude Code session in DIRECTORY.
 If DIRECTORY is not provided, use the current working directory."
@@ -837,6 +863,50 @@ and args is a list of arguments."
     (cons (car parts) (cdr parts))))
 
 
+(defun claude-code-ide--write-remote-launcher-script (remote-prefix ws-port claude-cmd remote-working-dir)
+  "Write a launcher script to the remote machine and return its plain path.
+REMOTE-PREFIX is the TRAMP prefix (e.g. \"/ssh:host:\").
+WS-PORT is the WebSocket port for CLAUDE_CODE_SSE_PORT.
+CLAUDE-CMD is the full claude command string (with flags).
+REMOTE-WORKING-DIR is the plain (non-TRAMP) project directory on the remote."
+  (let* ((remote-home (claude-code-ide--tramp-remote-home remote-prefix))
+         (script-dir-plain (concat remote-home "/.claude/ide"))
+         (script-name (format "launch-%d.sh" (emacs-pid)))
+         (script-plain (concat script-dir-plain "/" script-name))
+         (script-tramp (claude-code-ide--tramp-add-prefix remote-prefix script-plain))
+         (script-content (format "#!/usr/bin/env bash\nexport CLAUDE_CODE_SSE_PORT=%d\nexport ENABLE_IDE_INTEGRATION=true\nexport TERM_PROGRAM=emacs\nexport FORCE_CODE_TERMINAL=true\ncd %s\nexec %s\n"
+                                 ws-port
+                                 (shell-quote-argument remote-working-dir)
+                                 claude-cmd)))
+    (make-directory (claude-code-ide--tramp-add-prefix remote-prefix script-dir-plain) t)
+    (with-temp-file script-tramp
+      (insert script-content))
+    script-plain))
+
+(defun claude-code-ide--build-remote-ssh-command (remote-prefix ws-port http-port remote-script-plain)
+  "Build an SSH command that forwards ports and runs REMOTE-SCRIPT-PLAIN.
+REMOTE-PREFIX is the TRAMP prefix (e.g. \"/ssh:host:\").
+WS-PORT is the WebSocket port to forward.
+HTTP-PORT is the HTTP MCP tools server port to forward (may be nil).
+REMOTE-SCRIPT-PLAIN is the plain path to the launcher script on the remote host."
+  (let* ((user (file-remote-p remote-prefix 'user))
+         (host (file-remote-p remote-prefix 'host))
+         (user-at-host (if user (format "%s@%s" user host) host))
+         (extra-args (if (and claude-code-ide-tramp-ssh-extra-args
+                              (not (string-empty-p claude-code-ide-tramp-ssh-extra-args)))
+                         (concat " " claude-code-ide-tramp-ssh-extra-args)
+                       ""))
+         (http-forward (if http-port
+                           (format " -R %d:localhost:%d" http-port http-port)
+                         "")))
+    (format "ssh -R %d:localhost:%d%s%s %s -t 'bash %s; rm -f %s'"
+            ws-port ws-port
+            http-forward
+            extra-args
+            user-at-host
+            remote-script-plain
+            remote-script-plain)))
+
 (defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
   "Create a new terminal session for Claude Code.
 BUFFER-NAME is the name for the terminal buffer.
@@ -851,24 +921,45 @@ Signals an error if terminal fails to initialize."
   ;; Ensure terminal backend is available before proceeding
   (claude-code-ide--terminal-ensure-backend)
   (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
-         (default-directory working-dir)
-         (env-vars (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
-                         "ENABLE_IDE_INTEGRATION=true"
-                         "TERM_PROGRAM=emacs"
-                         "FORCE_CODE_TERMINAL=true")))
+         ;; Determine if this is a remote TRAMP session
+         (remote-prefix (claude-code-ide--tramp-remote-p working-dir))
+         ;; For remote: run SSH locally; for local: run claude directly
+         (effective-cmd (if remote-prefix
+                            (let* ((remote-working-dir (claude-code-ide--tramp-localname working-dir))
+                                   (http-port (claude-code-ide-mcp-server-get-port))
+                                   (remote-script-plain
+                                    (claude-code-ide--write-remote-launcher-script
+                                     remote-prefix port claude-cmd remote-working-dir)))
+                              (claude-code-ide--build-remote-ssh-command
+                               remote-prefix port http-port remote-script-plain))
+                          claude-cmd))
+         ;; Remote: run terminal locally in home dir; local: use project dir
+         (default-directory (if remote-prefix
+                                (expand-file-name "~/")
+                              working-dir))
+         ;; Remote: env vars are set in the launcher script; local: pass them here
+         (env-vars (if remote-prefix
+                       nil
+                     (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
+                           "ENABLE_IDE_INTEGRATION=true"
+                           "TERM_PROGRAM=emacs"
+                           "FORCE_CODE_TERMINAL=true"))))
     ;; Log the command for debugging
-    (claude-code-ide-debug "Starting Claude with command: %s" claude-cmd)
-    (claude-code-ide-debug "Working directory: %s" working-dir)
-    (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%d" port)
+    (claude-code-ide-debug "Starting Claude with command: %s" effective-cmd)
+    (claude-code-ide-debug "Working directory: %s" default-directory)
+    (when (not remote-prefix)
+      (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%d" port))
     (claude-code-ide-debug "Session ID: %s" session-id)
     (claude-code-ide-debug "Terminal backend: %s" claude-code-ide-terminal-backend)
+    (when remote-prefix
+      (claude-code-ide-debug "Remote TRAMP prefix: %s" remote-prefix))
 
     (cond
      ;; vterm backend
      ((eq claude-code-ide-terminal-backend 'vterm)
       (let* ((vterm-buffer-name buffer-name)
-             ;; Set vterm-shell to run Claude directly
-             (vterm-shell claude-cmd)
+             ;; Set vterm-shell to run effective command (SSH or claude)
+             (vterm-shell effective-cmd)
              ;; vterm uses vterm-environment for passing env vars
              (vterm-environment (append env-vars vterm-environment)))
         ;; Create vterm buffer without switching to it
@@ -894,7 +985,7 @@ Signals an error if terminal fails to initialize."
       (let* ((buffer (get-buffer-create buffer-name))
              (eat-term-name "xterm-256color")
              ;; Parse command string into program and args
-             (cmd-parts (claude-code-ide--parse-command-string claude-cmd))
+             (cmd-parts (claude-code-ide--parse-command-string effective-cmd))
              (program (car cmd-parts))
              (args (cdr cmd-parts)))
         (with-current-buffer buffer
@@ -929,9 +1020,6 @@ This function handles:
 - Existing session detection and window toggling
 - New session creation with MCP server setup
 - Process and buffer lifecycle management"
-  (unless (claude-code-ide--ensure-cli)
-    (user-error "Claude Code CLI not available.  Please install it and ensure it's in PATH"))
-
   ;; Clean up any dead processes first
   (claude-code-ide--cleanup-dead-processes)
 
@@ -945,6 +1033,10 @@ This function handles:
              (buffer-live-p existing-buffer)
              existing-process)
         (claude-code-ide--toggle-existing-window existing-buffer working-dir)
+      ;; Only verify local CLI for local sessions
+      (unless (claude-code-ide--tramp-remote-p working-dir)
+        (unless (claude-code-ide--ensure-cli)
+          (user-error "Claude Code CLI not available.  Please install it and ensure it's in PATH")))
       ;; Ensure the selected terminal backend is available before starting MCP
       (claude-code-ide--terminal-ensure-backend)
       ;; Start MCP server with project directory

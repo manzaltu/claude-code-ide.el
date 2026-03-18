@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Script to record WebSocket messages between VS Code and Claude Code
 # Uses websocat to create a proxy and log all messages

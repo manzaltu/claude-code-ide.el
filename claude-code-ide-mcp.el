@@ -29,6 +29,10 @@
 ;;; Code:
 
 ;; Declare external functions for byte-compilation
+(declare-function claude-code-ide--tramp-remote-p "claude-code-ide" (path))
+(declare-function claude-code-ide--tramp-localname "claude-code-ide" (path))
+(declare-function claude-code-ide--tramp-add-prefix "claude-code-ide" (remote-prefix plain-path))
+(declare-function claude-code-ide--tramp-remote-home "claude-code-ide" (remote-prefix))
 (declare-function websocket-server "websocket" (port &rest plist))
 (declare-function websocket-server-close "websocket" (server))
 (declare-function websocket-server-filter "websocket" (proc string))
@@ -117,7 +121,8 @@ Set to nil when cache needs to be invalidated.")
   last-selection   ; Last selection state
   last-buffer      ; Last active buffer
   active-diffs     ; Hash table of active diffs
-  original-tab)    ; Original tab-bar tab where Claude was opened
+  original-tab     ; Original tab-bar tab where Claude was opened
+  remote-prefix)   ; TRAMP prefix string if remote (e.g. "/ssh:host:"), nil for local
 
 (defun claude-code-ide-mcp--get-buffer-project ()
   "Get the project directory for the current buffer.
@@ -173,19 +178,28 @@ Returns the session if found, nil otherwise."
 
 ;;; Lockfile Management
 
-(defun claude-code-ide-mcp--lockfile-directory ()
-  "Return the directory for MCP lockfiles."
-  (expand-file-name "~/.claude/ide/"))
+(defun claude-code-ide-mcp--lockfile-directory (&optional remote-prefix)
+  "Return the directory for MCP lockfiles.
+If REMOTE-PREFIX is provided, returns the TRAMP path on the remote host."
+  (let ((plain-dir "~/.claude/ide/"))
+    (if remote-prefix
+        (claude-code-ide--tramp-add-prefix remote-prefix
+                                           (expand-file-name plain-dir))
+      (expand-file-name plain-dir))))
 
-(defun claude-code-ide-mcp--lockfile-path (port)
-  "Return the lockfile path for PORT."
-  (format "%s%d.lock" (claude-code-ide-mcp--lockfile-directory) port))
+(defun claude-code-ide-mcp--lockfile-path (port &optional remote-prefix)
+  "Return the lockfile path for PORT.
+If REMOTE-PREFIX is provided, returns the TRAMP path on the remote host."
+  (let ((dir (claude-code-ide-mcp--lockfile-directory remote-prefix)))
+    (format "%s%d.lock" dir port)))
 
 (defun claude-code-ide-mcp--create-lockfile (port project-dir)
   "Create a lockfile for PORT with server information for PROJECT-DIR."
-  (let* ((lockfile-dir (claude-code-ide-mcp--lockfile-directory))
-         (lockfile-path (claude-code-ide-mcp--lockfile-path port))
-         (workspace-folders (vector project-dir))
+  (let* ((remote-prefix (claude-code-ide--tramp-remote-p project-dir))
+         (lockfile-dir (claude-code-ide-mcp--lockfile-directory remote-prefix))
+         (lockfile-path (claude-code-ide-mcp--lockfile-path port remote-prefix))
+         ;; workspaceFolders uses plain remote path (strip TRAMP prefix)
+         (workspace-folders (vector (claude-code-ide--tramp-localname project-dir)))
          (lockfile-content `((pid . ,(emacs-pid))
                              (workspaceFolders . ,workspace-folders)
                              (ideName . "Emacs")
@@ -200,10 +214,14 @@ Returns the session if found, nil otherwise."
        (claude-code-ide-debug "Failed to create lockfile: %s" err)
        (signal 'mcp-error (list (format "Failed to create lockfile: %s" (error-message-string err))))))))
 
-(defun claude-code-ide-mcp--remove-lockfile (port)
-  "Remove the lockfile for PORT."
+(defun claude-code-ide-mcp--remove-lockfile (port &optional project-dir)
+  "Remove the lockfile for PORT.
+If PROJECT-DIR is provided, use it to determine the lockfile location
+(needed for remote TRAMP sessions)."
   (when port
-    (let ((lockfile-path (claude-code-ide-mcp--lockfile-path port)))
+    (let* ((remote-prefix (when project-dir
+                            (claude-code-ide--tramp-remote-p project-dir)))
+           (lockfile-path (claude-code-ide-mcp--lockfile-path port remote-prefix)))
       (claude-code-ide-debug "Attempting to remove lockfile: %s" lockfile-path)
       (if (file-exists-p lockfile-path)
           (progn
@@ -346,7 +364,13 @@ Optional SESSION contains the MCP session context."
         (condition-case err
             (progn
               (claude-code-ide-debug "Found handler for tool: %s" tool-name)
-              (let ((result (if (member tool-name '("getDiagnostics"))
+              (let ((result (if (member tool-name '("getDiagnostics"
+                                                   "openFile"
+                                                   "saveDocument"
+                                                   "checkDocumentDirty"
+                                                   "getOpenEditors"
+                                                   "getWorkspaceFolders"
+                                                   "getCurrentSelection"))
                                 ;; Pass session to handlers that need it
                                 (funcall handler arguments session)
                               (funcall handler arguments))))
@@ -824,7 +848,8 @@ This should be called when the buffer's context might have changed."
                        :deferred (make-hash-table :test 'equal)
                        :active-diffs (make-hash-table :test 'equal)
                        :original-tab (when (fboundp 'tab-bar--current-tab)
-                                       (tab-bar--current-tab))))
+                                       (tab-bar--current-tab))
+                       :remote-prefix (claude-code-ide--tramp-remote-p project-dir)))
              (server-and-port (claude-code-ide-mcp--find-free-port))
              (server (car server-and-port))
              (port (cdr server-and-port)))
@@ -867,7 +892,7 @@ This should be called when the buffer's context might have changed."
     ;; Remove lockfile
     (when-let ((port (claude-code-ide-mcp-session-port session)))
       (claude-code-ide-debug "Removing lockfile for port %d" port)
-      (claude-code-ide-mcp--remove-lockfile port))
+      (claude-code-ide-mcp--remove-lockfile port project-dir))
 
     ;; Remove session from registry
     (remhash project-dir claude-code-ide-mcp--sessions)
