@@ -38,6 +38,10 @@
 
 ;; Forward declarations
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-remote-prefix "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide--tramp-remote-p "claude-code-ide" (path))
+(declare-function claude-code-ide--tramp-localname "claude-code-ide" (path))
+(declare-function claude-code-ide--tramp-add-prefix "claude-code-ide" (remote-prefix plain-path))
 
 ;; Flycheck declarations
 (defvar flycheck-current-errors)
@@ -193,15 +197,22 @@ Optional SESSION contains the MCP session context."
   (let* ((uri (alist-get 'uri params))
          (diagnostics-by-file '())
          (project-dir (when session
-                        (claude-code-ide-mcp-session-project-dir session))))
+                        (claude-code-ide-mcp-session-project-dir session)))
+         (remote-prefix (when session
+                          (claude-code-ide-mcp-session-remote-prefix session))))
     (claude-code-ide-debug "Diagnostics handler called with URI: %s, project-dir: %s" uri project-dir)
     (if (and uri (not (string-empty-p uri)))
         ;; Get diagnostics for specific file
-        (let* ((file-path (claude-code-ide-uri-to-file-path uri))
-               (buffer (get-file-buffer (expand-file-name file-path))))
+        (let* ((plain-path (claude-code-ide-uri-to-file-path uri))
+               ;; For remote sessions, add TRAMP prefix to find the buffer
+               (resolved-path (if remote-prefix
+                                  (claude-code-ide--tramp-add-prefix remote-prefix plain-path)
+                                plain-path))
+               (buffer (get-file-buffer (expand-file-name resolved-path))))
           (when buffer
             (let ((diags (claude-code-ide-diagnostics-get-all buffer)))
               (when (> (length diags) 0)
+                ;; Return uri with the original plain path
                 (push `((uri . ,uri)
                         (diagnostics . ,diags))
                       diagnostics-by-file)))))
@@ -212,17 +223,22 @@ Optional SESSION contains the MCP session context."
           (when-let ((file (buffer-file-name buffer)))
             (setq buffer-count (1+ buffer-count))
             ;; Filter by project directory if session is available
-            (when (or (not project-dir)
-                      (string-prefix-p (expand-file-name project-dir)
-                                       (expand-file-name file)))
-              (setq checked-count (1+ checked-count))
-              (claude-code-ide-debug "Checking buffer: %s" file)
-              (let ((diags (claude-code-ide-diagnostics-get-all buffer)))
-                (claude-code-ide-debug "Found %d diagnostics for %s" (length diags) file)
-                (when (> (length diags) 0)
-                  (push `((uri . ,(claude-code-ide-file-path-to-uri file))
-                          (diagnostics . ,diags))
-                        diagnostics-by-file))))))
+            ;; Compare using plain paths to handle TRAMP paths correctly
+            (let ((plain-file (claude-code-ide--tramp-localname file))
+                  (plain-project-dir (when project-dir
+                                       (claude-code-ide--tramp-localname project-dir))))
+              (when (or (not plain-project-dir)
+                        (string-prefix-p (expand-file-name plain-project-dir)
+                                         (expand-file-name plain-file)))
+                (setq checked-count (1+ checked-count))
+                (claude-code-ide-debug "Checking buffer: %s" file)
+                (let ((diags (claude-code-ide-diagnostics-get-all buffer)))
+                  (claude-code-ide-debug "Found %d diagnostics for %s" (length diags) file)
+                  (when (> (length diags) 0)
+                    ;; Return plain path in URI so Claude can understand it
+                    (push `((uri . ,(claude-code-ide-file-path-to-uri plain-file))
+                            (diagnostics . ,diags))
+                          diagnostics-by-file)))))))
         (claude-code-ide-debug "Checked %d/%d buffers with files" checked-count buffer-count)))
     ;; Return JSON-encoded string in content array format
     (let ((json-str (if diagnostics-by-file

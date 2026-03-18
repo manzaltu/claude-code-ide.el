@@ -2275,6 +2275,217 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (equal (plist-get file-path-arg :description)
                          "Path to the file to analyze for symbols")))))))
 
+;;; TRAMP Support Tests
+
+(ert-deftest claude-code-ide-test-tramp-remote-p-local ()
+  "Test that local paths return nil for remote check."
+  ;; Local paths should return nil
+  (should (null (claude-code-ide--tramp-remote-p "/home/user/project/")))
+  (should (null (claude-code-ide--tramp-remote-p "/tmp/file.el")))
+  (should (null (claude-code-ide--tramp-remote-p nil))))
+
+(ert-deftest claude-code-ide-test-tramp-remote-p-ssh ()
+  "Test that SSH TRAMP paths return the prefix."
+  ;; Mock file-remote-p for our fake TRAMP path
+  (cl-letf (((symbol-function 'file-remote-p)
+             (lambda (path &optional id connected)
+               (cond
+                ((string-prefix-p "/mock-ssh:host:" path)
+                 (cond
+                  ((eq id 'method) "ssh")
+                  ((eq id 'localname) (substring path (length "/mock-ssh:host:")))
+                  (t "/mock-ssh:host:")))
+                (t nil)))))
+    ;; SSH paths should return the TRAMP prefix
+    (should (equal (claude-code-ide--tramp-remote-p "/mock-ssh:host:/home/user/project/")
+                   "/mock-ssh:host:"))))
+
+(ert-deftest claude-code-ide-test-tramp-localname ()
+  "Test TRAMP localname extraction."
+  ;; Local paths return unchanged
+  (should (equal (claude-code-ide--tramp-localname "/home/user/project/") "/home/user/project/"))
+  ;; TRAMP paths return just the local part
+  (cl-letf (((symbol-function 'file-remote-p)
+             (lambda (path &optional id connected)
+               (when (string-prefix-p "/mock-ssh:host:" path)
+                 (when (eq id 'localname)
+                   (substring path (length "/mock-ssh:host:")))))))
+    (should (equal (claude-code-ide--tramp-localname "/mock-ssh:host:/home/user/project/")
+                   "/home/user/project/"))))
+
+(ert-deftest claude-code-ide-test-tramp-add-prefix ()
+  "Test prepending TRAMP prefix to plain path."
+  (should (equal (claude-code-ide--tramp-add-prefix "/ssh:host:" "/home/user/file.py")
+                 "/ssh:host:/home/user/file.py"))
+  (should (equal (claude-code-ide--tramp-add-prefix "/ssh:user@host:" "/tmp/script.sh")
+                 "/ssh:user@host:/tmp/script.sh")))
+
+(ert-deftest claude-code-ide-test-mcp-resolve-path-local ()
+  "Test that path resolution is a no-op for local sessions."
+  (let ((local-session (make-claude-code-ide-mcp-session
+                        :project-dir "/home/user/project/"
+                        :remote-prefix nil)))
+    (should (equal (claude-code-ide-mcp--resolve-path local-session "/home/user/project/file.py")
+                   "/home/user/project/file.py"))
+    ;; nil session also passes through
+    (should (equal (claude-code-ide-mcp--resolve-path nil "/home/user/file.py")
+                   "/home/user/file.py"))))
+
+(ert-deftest claude-code-ide-test-mcp-resolve-path-remote ()
+  "Test that path resolution adds TRAMP prefix for remote sessions."
+  (let ((remote-session (make-claude-code-ide-mcp-session
+                         :project-dir "/mock-ssh:host:/home/user/project/"
+                         :remote-prefix "/mock-ssh:host:")))
+    (should (equal (claude-code-ide-mcp--resolve-path remote-session "/home/user/project/file.py")
+                   "/mock-ssh:host:/home/user/project/file.py"))))
+
+(ert-deftest claude-code-ide-test-mcp-strip-remote-prefix-local ()
+  "Test that prefix stripping is a no-op for local sessions."
+  (let ((local-session (make-claude-code-ide-mcp-session
+                        :project-dir "/home/user/project/"
+                        :remote-prefix nil)))
+    (should (equal (claude-code-ide-mcp--strip-remote-prefix local-session "/home/user/project/file.py")
+                   "/home/user/project/file.py"))))
+
+(ert-deftest claude-code-ide-test-mcp-strip-remote-prefix-remote ()
+  "Test that prefix stripping removes TRAMP prefix for remote sessions."
+  (let ((remote-session (make-claude-code-ide-mcp-session
+                         :project-dir "/mock-ssh:host:/home/user/project/"
+                         :remote-prefix "/mock-ssh:host:")))
+    (cl-letf (((symbol-function 'file-remote-p)
+               (lambda (path &optional id connected)
+                 (when (string-prefix-p "/mock-ssh:host:" path)
+                   (when (eq id 'localname)
+                     (substring path (length "/mock-ssh:host:")))))))
+      (should (equal (claude-code-ide-mcp--strip-remote-prefix
+                      remote-session "/mock-ssh:host:/home/user/project/file.py")
+                     "/home/user/project/file.py")))))
+
+(ert-deftest claude-code-ide-test-mcp-find-session-for-file-local ()
+  "Test find-session-for-file with local paths."
+  (let ((claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+        (temp-dir (make-temp-file "claude-tramp-test-" t)))
+    (unwind-protect
+        (progn
+          (let ((session (make-claude-code-ide-mcp-session
+                          :project-dir temp-dir
+                          :remote-prefix nil)))
+            (puthash temp-dir session claude-code-ide-mcp--sessions)
+            ;; A file in the project directory should be found
+            (let ((test-file (expand-file-name "file.py" temp-dir)))
+              (should (eq (claude-code-ide-mcp--find-session-for-file test-file) session)))
+            ;; A file outside should not be found
+            (should (null (claude-code-ide-mcp--find-session-for-file "/tmp/other/file.py")))))
+      (delete-directory temp-dir t))))
+
+(ert-deftest claude-code-ide-test-mcp-find-session-for-file-remote ()
+  "Test find-session-for-file with remote TRAMP paths.
+Claude sends plain remote paths; sessions are keyed by TRAMP paths."
+  (let ((claude-code-ide-mcp--sessions (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'file-remote-p)
+               (lambda (path &optional id connected)
+                 (when (string-prefix-p "/mock-ssh:host:" path)
+                   (cond
+                    ((eq id 'localname) (substring path (length "/mock-ssh:host:")))
+                    ((eq id 'method) "ssh")
+                    (t "/mock-ssh:host:"))))))
+      (let* ((tramp-project-dir "/mock-ssh:host:/home/user/project/")
+             (session (make-claude-code-ide-mcp-session
+                       :project-dir tramp-project-dir
+                       :remote-prefix "/mock-ssh:host:")))
+        (puthash tramp-project-dir session claude-code-ide-mcp--sessions)
+        ;; Claude sends a plain remote path (no TRAMP prefix)
+        (should (eq (claude-code-ide-mcp--find-session-for-file
+                     "/home/user/project/src/file.py")
+                    session))
+        ;; File outside project should not be found
+        (should (null (claude-code-ide-mcp--find-session-for-file
+                       "/home/otheruser/file.py")))))))
+
+(ert-deftest claude-code-ide-test-build-remote-ssh-command ()
+  "Test SSH command construction for remote sessions."
+  (cl-letf (((symbol-function 'file-remote-p)
+             (lambda (path &optional id connected)
+               (when (string-prefix-p "/mock-ssh:host:" path)
+                 (cond
+                  ((eq id 'user) nil)
+                  ((eq id 'host) "myhost")
+                  (t "/mock-ssh:host:"))))))
+    (let ((claude-code-ide-tramp-ssh-extra-args ""))
+      (let ((cmd (claude-code-ide--build-remote-ssh-command
+                  "/mock-ssh:host:" 8800 12345 "/home/user/.claude/ide/launch-123.sh")))
+        ;; Should contain -R port forwarding for WebSocket port
+        (should (string-match-p "-R 8800:localhost:8800" cmd))
+        ;; Should contain -R port forwarding for HTTP port
+        (should (string-match-p "-R 12345:localhost:12345" cmd))
+        ;; Should contain the host
+        (should (string-match-p "myhost" cmd))
+        ;; Should contain the script path
+        (should (string-match-p "/home/user/.claude/ide/launch-123.sh" cmd))))))
+
+(ert-deftest claude-code-ide-test-build-remote-ssh-command-with-user ()
+  "Test SSH command includes user@host when user is specified."
+  (cl-letf (((symbol-function 'file-remote-p)
+             (lambda (path &optional id connected)
+               (when (string-prefix-p "/mock-ssh:myuser@host:" path)
+                 (cond
+                  ((eq id 'user) "myuser")
+                  ((eq id 'host) "myhost")
+                  (t "/mock-ssh:myuser@host:"))))))
+    (let ((claude-code-ide-tramp-ssh-extra-args ""))
+      (let ((cmd (claude-code-ide--build-remote-ssh-command
+                  "/mock-ssh:myuser@host:" 8800 12345 "/home/user/script.sh")))
+        (should (string-match-p "myuser@myhost" cmd))))))
+
+(ert-deftest claude-code-ide-test-build-remote-ssh-command-extra-args ()
+  "Test SSH command includes extra args when configured."
+  (cl-letf (((symbol-function 'file-remote-p)
+             (lambda (path &optional id connected)
+               (when (string-prefix-p "/mock-ssh:host:" path)
+                 (cond
+                  ((eq id 'user) nil)
+                  ((eq id 'host) "myhost")
+                  (t "/mock-ssh:host:"))))))
+    (let ((claude-code-ide-tramp-ssh-extra-args "-J bastion"))
+      (let ((cmd (claude-code-ide--build-remote-ssh-command
+                  "/mock-ssh:host:" 8800 12345 "/home/user/script.sh")))
+        (should (string-match-p "-J bastion" cmd))))))
+
+(ert-deftest claude-code-ide-test-get-workspace-folders-strips-tramp ()
+  "Test that getWorkspaceFolders strips TRAMP prefix."
+  (cl-letf (((symbol-function 'file-remote-p)
+             (lambda (path &optional id connected)
+               (when (string-prefix-p "/mock-ssh:host:" path)
+                 (when (eq id 'localname)
+                   (substring path (length "/mock-ssh:host:")))))))
+    (cl-letf (((symbol-function 'claude-code-ide-mcp--get-buffer-project)
+               (lambda () "/mock-ssh:host:/home/user/project/"))
+              ((symbol-function 'expand-file-name)
+               (lambda (path &optional dir)
+                 (if (string-prefix-p "/mock-ssh:host:" path) path
+                   (if dir (concat (directory-file-name dir) "/" path) path)))))
+      (let ((result (claude-code-ide-mcp-handle-get-workspace-folders nil)))
+        (let ((folders (alist-get 'folders result)))
+          (should (vectorp folders))
+          ;; Should contain plain remote path, not TRAMP path
+          (should (member "/home/user/project/" (append folders nil)))
+          ;; Should NOT contain TRAMP path
+          (should (not (member "/mock-ssh:host:/home/user/project/" (append folders nil)))))))))
+
+(ert-deftest claude-code-ide-test-mcp-session-has-remote-prefix-slot ()
+  "Test that MCP session struct has remote-prefix slot."
+  ;; Test local session
+  (let ((local-session (make-claude-code-ide-mcp-session
+                        :project-dir "/home/user/project/"
+                        :remote-prefix nil)))
+    (should (null (claude-code-ide-mcp-session-remote-prefix local-session))))
+  ;; Test remote session
+  (let ((remote-session (make-claude-code-ide-mcp-session
+                         :project-dir "/ssh:host:/home/user/project/"
+                         :remote-prefix "/ssh:host:")))
+    (should (equal (claude-code-ide-mcp-session-remote-prefix remote-session)
+                   "/ssh:host:"))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

@@ -41,9 +41,13 @@
 (declare-function claude-code-ide-mcp-session-active-diffs "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-original-tab "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-remote-prefix "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp--setup-buffer-cache-hooks "claude-code-ide-mcp" ())
 (declare-function claude-code-ide--get-buffer-name "claude-code-ide" (&optional directory))
 (declare-function claude-code-ide--display-buffer-in-side-window "claude-code-ide" (buffer))
+(declare-function claude-code-ide--tramp-remote-p "claude-code-ide" (path))
+(declare-function claude-code-ide--tramp-localname "claude-code-ide" (path))
+(declare-function claude-code-ide--tramp-add-prefix "claude-code-ide" (remote-prefix plain-path))
 (defvar ediff-control-buffer)
 (defvar ediff-window-setup-function)
 (defvar ediff-split-window-function)
@@ -72,17 +76,35 @@
 
 ;;; Helper Functions
 
+(defun claude-code-ide-mcp--resolve-path (session path)
+  "Convert plain remote PATH to TRAMP path using SESSION's remote-prefix.
+Returns PATH unchanged for local sessions."
+  (if-let ((prefix (when session (claude-code-ide-mcp-session-remote-prefix session))))
+      (claude-code-ide--tramp-add-prefix prefix path)
+    path))
+
+(defun claude-code-ide-mcp--strip-remote-prefix (session path)
+  "Strip TRAMP prefix from PATH for SESSION, returning a plain remote path.
+Returns PATH unchanged for local sessions."
+  (if (when session (claude-code-ide-mcp-session-remote-prefix session))
+      (claude-code-ide--tramp-localname path)
+    path))
+
 (defun claude-code-ide-mcp--find-session-for-file (file-path)
   "Find the MCP session that owns FILE-PATH.
+FILE-PATH may be a plain remote path (no TRAMP prefix) or a local path.
 Returns the session if found, nil otherwise."
   (let ((expanded-file (expand-file-name file-path))
         (found-session nil))
     (catch 'found
       (maphash (lambda (project-dir session)
-                 (when (string-prefix-p (expand-file-name project-dir)
-                                        expanded-file)
-                   (setq found-session session)
-                   (throw 'found t)))
+                 ;; Use plain path for comparison to handle remote TRAMP sessions
+                 ;; where file-path from Claude lacks the TRAMP prefix
+                 (let ((plain-project-dir
+                        (expand-file-name (claude-code-ide--tramp-localname project-dir))))
+                   (when (string-prefix-p plain-project-dir expanded-file)
+                     (setq found-session session)
+                     (throw 'found t))))
                claude-code-ide-mcp--sessions))
     found-session))
 
@@ -107,12 +129,15 @@ If SESSION is provided, use it instead of looking up the current session."
       ;; No session found - return nil
       nil)))
 
-(defun claude-code-ide-mcp--create-diff-buffers (old-file-path new-file-contents tab-name)
+(defun claude-code-ide-mcp--create-diff-buffers (old-file-path new-file-contents tab-name &optional session)
   "Create buffers for diff comparison.
 OLD-FILE-PATH is the path to the original file.
 NEW-FILE-CONTENTS is the new content to diff against.
 TAB-NAME is used for naming the new buffer.
+Optional SESSION provides TRAMP context for resolving remote paths.
 Returns a cons cell (buffer-A . buffer-B)."
+  ;; Resolve path: add TRAMP prefix for remote sessions
+  (setq old-file-path (claude-code-ide-mcp--resolve-path session old-file-path))
   (let ((file-exists (file-exists-p old-file-path))
         buffer-A buffer-B)
     ;; Create or find buffer A (original file)
@@ -225,14 +250,15 @@ STARTUP-HOOK-FN is the hook function to remove after use."
 
 ;;; Tool Handler Functions
 
-(defun claude-code-ide-mcp-handle-open-file (arguments)
+(defun claude-code-ide-mcp-handle-open-file (arguments &optional session)
   "Open a file with optional text selection.
 ARGUMENTS should contain:
 - `path': File path to open
 - `startLine' (optional): Start line for selection
 - `endLine' (optional): End line for selection
 - `startText' (optional): Start text pattern for selection
-- `endText' (optional): End text pattern for selection"
+- `endText' (optional): End text pattern for selection
+Optional SESSION provides TRAMP context for remote paths."
   (let ((path (alist-get 'path arguments))
         (start-line (alist-get 'startLine arguments))
         (end-line (alist-get 'endLine arguments))
@@ -240,6 +266,8 @@ ARGUMENTS should contain:
         (end-text (alist-get 'endText arguments)))
     (unless path
       (signal 'mcp-error '("Missing required parameter: path")))
+    ;; Resolve path: add TRAMP prefix for remote sessions
+    (setq path (claude-code-ide-mcp--resolve-path session path))
     (condition-case err
         (progn
           (find-file path)
@@ -290,11 +318,17 @@ ARGUMENTS should contain:
        (signal 'mcp-error (list (format "Failed to open file: %s"
                                         (error-message-string err))))))))
 
-(defun claude-code-ide-mcp-handle-get-current-selection (_arguments)
-  "Get the currently selected text and its context."
-  (let ((file-path (or (buffer-file-name) ""))
-        (file-url (when (buffer-file-name)
-                    (concat "file://" (buffer-file-name)))))
+(defun claude-code-ide-mcp-handle-get-current-selection (_arguments &optional session)
+  "Get the currently selected text and its context.
+Optional SESSION provides TRAMP context for stripping remote prefixes."
+  (let* ((raw-file-path (buffer-file-name))
+         ;; Strip TRAMP prefix so Claude sees plain remote paths
+         (file-path (if raw-file-path
+                        (claude-code-ide--tramp-localname raw-file-path)
+                      ""))
+         (file-url (when raw-file-path
+                     (concat "file://" file-path))))
+    (ignore session)
     (if (use-region-p)
         (let* ((start (region-beginning))
                (end (region-end))
@@ -327,30 +361,39 @@ ARGUMENTS should contain:
                                 (character . ,cursor-col)))
                         (isEmpty . t))))))))
 
-(defun claude-code-ide-mcp-handle-get-open-editors (_arguments)
-  "Get list of all open editors/buffers with file paths."
+(defun claude-code-ide-mcp-handle-get-open-editors (_arguments &optional session)
+  "Get list of all open editors/buffers with file paths.
+Optional SESSION provides TRAMP context for stripping remote prefixes."
   (let ((editors '())
         (project-dir (claude-code-ide-mcp--get-buffer-project)))
+    (ignore session)
     (dolist (buffer (buffer-list))
       (when-let ((file (buffer-file-name buffer)))
         ;; Only include files within the project directory
+        ;; Compare using plain paths to handle TRAMP paths correctly
         (when (or (not project-dir)
-                  (string-prefix-p (expand-file-name project-dir)
-                                   (expand-file-name file)))
-          (push `((path . ,file)
-                  (name . ,(buffer-name buffer))
-                  (active . ,(eq buffer (current-buffer)))
-                  (isDirty . ,(if (buffer-modified-p buffer) t :json-false))
-                  (fileUrl . ,(concat "file://" file)))
-                editors))))
+                  (string-prefix-p (expand-file-name (claude-code-ide--tramp-localname project-dir))
+                                   (expand-file-name (claude-code-ide--tramp-localname file))))
+          ;; Strip TRAMP prefix so Claude sees plain remote paths
+          (let ((plain-path (claude-code-ide--tramp-localname file)))
+            (push `((path . ,plain-path)
+                    (name . ,(buffer-name buffer))
+                    (active . ,(eq buffer (current-buffer)))
+                    (isDirty . ,(if (buffer-modified-p buffer) t :json-false))
+                    (fileUrl . ,(concat "file://" plain-path)))
+                  editors)))))
     `((editors . ,(vconcat (nreverse editors))))))
 
-(defun claude-code-ide-mcp-handle-get-workspace-folders (_arguments)
-  "Get the current workspace folders (project roots)."
+(defun claude-code-ide-mcp-handle-get-workspace-folders (_arguments &optional session)
+  "Get the current workspace folders (project roots).
+Optional SESSION provides TRAMP context for stripping remote prefixes."
   ;; Return the specific project directory for this MCP instance
-  (let ((project-dir (or (claude-code-ide-mcp--get-buffer-project)
-                         default-directory)))
-    `((folders . ,(vconcat (list (expand-file-name project-dir)))))))
+  (let* ((project-dir (or (claude-code-ide-mcp--get-buffer-project)
+                          default-directory))
+         ;; Strip TRAMP prefix so Claude sees plain remote paths
+         (plain-dir (claude-code-ide--tramp-localname (expand-file-name project-dir))))
+    (ignore session)
+    `((folders . ,(vconcat (list plain-dir))))))
 
 (defun claude-code-ide-mcp-handle-get-diagnostics (arguments &optional session)
   "Get diagnostics (errors/warnings) for the current workspace.
@@ -358,12 +401,15 @@ ARGUMENTS may contain an optional `uri' parameter.
 Optional SESSION contains the MCP session context."
   (claude-code-ide-diagnostics-handler arguments session))
 
-(defun claude-code-ide-mcp-handle-save-document (arguments)
+(defun claude-code-ide-mcp-handle-save-document (arguments &optional session)
   "Save a document.
-ARGUMENTS should contain `path' of the file to save."
+ARGUMENTS should contain `path' of the file to save.
+Optional SESSION provides TRAMP context for remote paths."
   (let ((path (alist-get 'path arguments)))
     (unless path
       (signal 'mcp-error '("Missing required parameter: path")))
+    ;; Resolve path: add TRAMP prefix for remote sessions
+    (setq path (claude-code-ide-mcp--resolve-path session path))
     (condition-case err
         (let ((buffer (find-buffer-visiting path)))
           (if buffer
@@ -511,7 +557,7 @@ ARGUMENTS should contain:
     ;; Save current window configuration
     (let* ((saved-winconf (current-window-configuration))
            (buffers (claude-code-ide-mcp--create-diff-buffers
-                     old-file-path new-file-contents tab-name))
+                     old-file-path new-file-contents tab-name session))
            (buffer-A (car buffers))
            (buffer-B (cdr buffers))
            (file-exists (file-exists-p old-file-path)))
@@ -714,12 +760,15 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
     (list `((type . "text")
             (text . ,(format "CLOSED_%d_DIFF_TABS" closed-count))))))
 
-(defun claude-code-ide-mcp-handle-check-document-dirty (arguments)
+(defun claude-code-ide-mcp-handle-check-document-dirty (arguments &optional session)
   "Check if document is dirty.
-ARGUMENTS should contain `filePath`."
+ARGUMENTS should contain `filePath`.
+Optional SESSION provides TRAMP context for remote paths."
   (let ((path (alist-get 'filePath arguments)))
     (unless path
       (signal 'mcp-error '("Missing required parameter: filePath")))
+    ;; Resolve path: add TRAMP prefix for remote sessions
+    (setq path (claude-code-ide-mcp--resolve-path session path))
     (let ((buffer (find-buffer-visiting path)))
       (if buffer
           `((isDirty . ,(if (buffer-modified-p buffer) t :json-false)))
