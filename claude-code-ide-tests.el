@@ -1929,13 +1929,16 @@ have completed before cleanup.  Waits up to 5 seconds."
               ((symbol-function 'ws-send-404)
                #'claude-code-ide-mcp-server-tests--mock-ws-send-404))
       ;; Test send-json-response
-      (claude-code-ide-mcp-http-server--send-json-response
-       mock-request 200 '((test . "data")))
+      ;; The function throws 'close-connection as part of web-server protocol
+      (catch 'close-connection
+        (claude-code-ide-mcp-http-server--send-json-response
+         mock-request 200 '((test . "data"))))
       (should (equal claude-code-ide-mcp-server-tests--last-response-status 200))
       (should (string-match "test.*:.*data" claude-code-ide-mcp-server-tests--last-response))
 
       ;; Test handle-get (404 response)
-      (claude-code-ide-mcp-http-server--handle-get mock-request)
+      (catch 'close-connection
+        (claude-code-ide-mcp-http-server--handle-get mock-request))
       (should (equal claude-code-ide-mcp-server-tests--last-response-status 404)))))
 
 ;;; MCP Server Session Context Tests
