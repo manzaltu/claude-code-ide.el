@@ -874,7 +874,7 @@ REMOTE-WORKING-DIR is the plain (non-TRAMP) project directory on the remote."
          (script-name (format "launch-%d.sh" (emacs-pid)))
          (script-plain (concat script-dir-plain "/" script-name))
          (script-tramp (claude-code-ide--tramp-add-prefix remote-prefix script-plain))
-         (script-content (format "#!/bin/bash\nexport CLAUDE_CODE_SSE_PORT=%d\nexport ENABLE_IDE_INTEGRATION=true\nexport TERM_PROGRAM=emacs\nexport FORCE_CODE_TERMINAL=true\ncd %s\nexec %s\n"
+         (script-content (format "#!/usr/bin/env bash\nexport CLAUDE_CODE_SSE_PORT=%d\nexport ENABLE_IDE_INTEGRATION=true\nexport TERM_PROGRAM=emacs\nexport FORCE_CODE_TERMINAL=true\ncd %s\nexec %s\n"
                                  ws-port
                                  (shell-quote-argument remote-working-dir)
                                  claude-cmd)))

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Combined format and whitespace cleaning for Claude Code IDE
 # This avoids file conflicts when both hooks run simultaneously
