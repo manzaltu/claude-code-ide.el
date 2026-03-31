@@ -1069,8 +1069,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test the openFile tool implementation."
   ;; Test successful file open
   (claude-code-ide-mcp-tests--with-temp-file test-file "Line 1\nLine 2\nLine 3\nLine 4"
-                                             (let ((result (claude-code-ide-mcp-handle-open-file `((path . ,test-file)))))
-                                               ;; Handler returns VS Code format
+                                             (let ((result (claude-code-ide-mcp-handle-open-file `((filePath . ,test-file)))))
                                                (should (listp result))
                                                (let ((first-item (car result)))
                                                  (should (equal (alist-get 'type first-item) "text"))
@@ -1081,10 +1080,9 @@ have completed before cleanup.  Waits up to 5 seconds."
   ;; Test with selection
   (claude-code-ide-mcp-tests--with-temp-file test-file "Line 1\nLine 2\nLine 3\nLine 4"
                                              (let ((result (claude-code-ide-mcp-handle-open-file
-                                                            `((path . ,test-file)
+                                                            `((filePath . ,test-file)
                                                               (startLine . 2)
                                                               (endLine . 3)))))
-                                               ;; Handler returns VS Code format
                                                (should (listp result))
                                                (let ((first-item (car result)))
                                                  (should (equal (alist-get 'type first-item) "text"))
@@ -1093,7 +1091,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                                                (should (= (line-number-at-pos (region-beginning)) 2))
                                                (kill-buffer)))
 
-  ;; Test missing path parameter
+  ;; Test missing filePath parameter
   (should-error (claude-code-ide-mcp-handle-open-file '())
                 :type 'mcp-error))
 

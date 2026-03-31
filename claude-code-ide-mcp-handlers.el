@@ -228,18 +228,18 @@ STARTUP-HOOK-FN is the hook function to remove after use."
 (defun claude-code-ide-mcp-handle-open-file (arguments)
   "Open a file with optional text selection.
 ARGUMENTS should contain:
-- `path': File path to open
+- `filePath': File path to open
 - `startLine' (optional): Start line for selection
 - `endLine' (optional): End line for selection
 - `startText' (optional): Start text pattern for selection
 - `endText' (optional): End text pattern for selection"
-  (let ((path (alist-get 'path arguments))
+  (let ((path (alist-get 'filePath arguments))
         (start-line (alist-get 'startLine arguments))
         (end-line (alist-get 'endLine arguments))
         (start-text (alist-get 'startText arguments))
         (end-text (alist-get 'endText arguments)))
     (unless path
-      (signal 'mcp-error '("Missing required parameter: path")))
+      (signal 'mcp-error '("Missing required parameter: filePath")))
     (condition-case err
         (progn
           (find-file path)
@@ -746,8 +746,8 @@ ARGUMENTS should contain `filePath`."
 (defun claude-code-ide-mcp--build-tool-schemas ()
   "Build the tool schemas, conditionally including ediff tools."
   `(("openFile" . ((type . "object")
-                   (properties . ((path . ((type . "string")
-                                           (description . "Path to the file to open")))
+                   (properties . ((filePath . ((type . "string")
+                                               (description . "Path to the file to open")))
                                   (startLine . ((type . "integer")
                                                 (description . "Start line for selection")))
                                   (endLine . ((type . "integer")
@@ -756,7 +756,7 @@ ARGUMENTS should contain `filePath`."
                                                 (description . "Start text pattern for selection (takes precedence over line numbers)")))
                                   (endText . ((type . "string")
                                               (description . "End text pattern for selection")))))
-                   (required . ["path"])))
+                   (required . ["filePath"])))
     ("getCurrentSelection" . ((type . "object")
                               (properties . :json-empty)))
     ("getOpenEditors" . ((type . "object")
