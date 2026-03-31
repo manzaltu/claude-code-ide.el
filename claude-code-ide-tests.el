@@ -1107,9 +1107,10 @@ have completed before cleanup.  Waits up to 5 seconds."
                                                  (activate-mark)
                                                  (let ((result (claude-code-ide-mcp-handle-get-current-selection nil)))
                                                    (should (equal (alist-get 'text result) "Line 1\nLine 2\n"))
-                                                   ;; Check the selection structure
+                                                   (should-not (assq 'fileUrl result))
                                                    (let ((selection (alist-get 'selection result)))
                                                      (should selection)
+                                                     (should-not (assq 'isEmpty selection))
                                                      (let ((start (alist-get 'start selection))
                                                            (end (alist-get 'end selection)))
                                                        (should (= (alist-get 'line start) 1))  ; 1-based
@@ -1119,10 +1120,13 @@ have completed before cleanup.  Waits up to 5 seconds."
   (claude-code-ide-mcp-tests--with-temp-buffer "Test"
                                                (let ((result (claude-code-ide-mcp-handle-get-current-selection nil)))
                                                  (should (equal (alist-get 'text result) ""))
-                                                 ;; When no selection, we should get the selection structure
                                                  (let ((selection (alist-get 'selection result)))
                                                    (should selection)
-                                                   (should (alist-get 'isEmpty selection))))))
+                                                   ;; No selection: start and end should be equal (cursor position)
+                                                   (should (equal (alist-get 'start selection) (alist-get 'end selection)))
+                                                   ;; Should not contain isEmpty or fileUrl
+                                                   (should-not (assq 'isEmpty selection))
+                                                   (should-not (assq 'fileUrl result))))))
 
 (ert-deftest claude-code-ide-test-mcp-get-open-editors ()
   "Test the getOpenEditors tool implementation."

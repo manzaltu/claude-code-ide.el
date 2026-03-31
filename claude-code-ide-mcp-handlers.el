@@ -292,9 +292,7 @@ ARGUMENTS should contain:
 
 (defun claude-code-ide-mcp-handle-get-current-selection (_arguments)
   "Get the currently selected text and its context."
-  (let ((file-path (or (buffer-file-name) ""))
-        (file-url (when (buffer-file-name)
-                    (concat "file://" (buffer-file-name)))))
+  (let ((file-path (or (buffer-file-name) "")))
     (if (use-region-p)
         (let* ((start (region-beginning))
                (end (region-end))
@@ -309,23 +307,19 @@ ARGUMENTS should contain:
                           (1+ (current-column)))))
           `((text . ,text)
             (filePath . ,file-path)
-            ,@(when file-url `((fileUrl . ,file-url)))
             (selection . ((start . ((line . ,start-line)
                                     (character . ,start-col)))
                           (end . ((line . ,end-line)
-                                  (character . ,end-col)))
-                          (isEmpty . :json-false)))))
+                                  (character . ,end-col)))))))
       ;; No selection - return cursor position
       (let* ((cursor-line (line-number-at-pos))
              (cursor-col (1+ (current-column))))
         `((text . "")
           (filePath . ,file-path)
-          ,@(when file-url `((fileUrl . ,file-url)))
           (selection . ((start . ((line . ,cursor-line)
                                   (character . ,cursor-col)))
                         (end . ((line . ,cursor-line)
-                                (character . ,cursor-col)))
-                        (isEmpty . t))))))))
+                                (character . ,cursor-col))))))))))
 
 (defun claude-code-ide-mcp-handle-get-open-editors (_arguments)
   "Get list of all open editors/buffers with file paths."
