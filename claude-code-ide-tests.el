@@ -1310,6 +1310,21 @@ have completed before cleanup.  Waits up to 5 seconds."
     ;; Ensure cleanup
     (claude-code-ide-mcp-stop)))
 
+(ert-deftest claude-code-ide-test-ide-connected-notification ()
+  "Test that ide_connected notification stores the CLI PID."
+  (require 'claude-code-ide-mcp)
+  (let* ((session (make-claude-code-ide-mcp-session
+                   :server nil :client nil :port 12345
+                   :project-dir "/tmp/test"
+                   :deferred (make-hash-table :test 'equal)
+                   :ping-timer nil :selection-timer nil
+                   :last-selection nil :cli-pid nil))
+         (message '((method . "ide_connected")
+                    (params . ((pid . 42))))))
+    ;; Simulate the dispatch
+    (claude-code-ide-mcp--handle-message message session)
+    (should (= (claude-code-ide-mcp-session-cli-pid session) 42))))
+
 ;; Test for side window handling in openDiff
 (defvar claude-code-ide-debug-buffer)
 (ert-deftest claude-code-ide-test-opendiff-side-window ()

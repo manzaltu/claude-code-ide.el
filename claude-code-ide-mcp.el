@@ -117,7 +117,8 @@ Set to nil when cache needs to be invalidated.")
   last-selection   ; Last selection state
   last-buffer      ; Last active buffer
   active-diffs     ; Hash table of active diffs
-  original-tab)    ; Original tab-bar tab where Claude was opened
+  original-tab     ; Original tab-bar tab where Claude was opened
+  cli-pid)         ; PID of the connected CLI process
 
 (defun claude-code-ide-mcp--get-buffer-project ()
   "Get the project directory for the current buffer.
@@ -418,7 +419,13 @@ Optional SESSION contains the MCP session context."
               (claude-code-ide-debug "Unknown method: %s (sending error response)" method)
               (claude-code-ide-mcp--make-error-response
                id -32601 (format "Method not found: %s" method)))
-             ;; Notification (no id) - ignore
+             ;; Notifications (no id)
+             ((string= method "ide_connected")
+              (when-let ((pid (alist-get 'pid params)))
+                (claude-code-ide-debug "CLI connected with PID: %s" pid)
+                (when session
+                  (setf (claude-code-ide-mcp-session-cli-pid session) pid)))
+              nil)
              (t
               (claude-code-ide-debug "Received notification (no response needed): %s" method)
               nil))))
