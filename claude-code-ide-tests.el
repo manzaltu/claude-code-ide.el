@@ -1096,7 +1096,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                 :type 'mcp-error))
 
 (ert-deftest claude-code-ide-test-mcp-get-current-selection ()
-  "Test the getCurrentSelection tool implementation."
+  "Test the selection payload builder."
   ;; Test with active selection
   (claude-code-ide-mcp-tests--with-temp-buffer "Line 1\nLine 2\nLine 3"
                                                (goto-char (point-min))
@@ -1105,7 +1105,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                                                ;; Ensure transient-mark-mode is on and region is active
                                                (let ((transient-mark-mode t))
                                                  (activate-mark)
-                                                 (let ((result (claude-code-ide-mcp-handle-get-current-selection nil)))
+                                                 (let ((result (claude-code-ide-mcp--get-current-selection)))
                                                    (should (equal (alist-get 'text result) "Line 1\nLine 2\n"))
                                                    (should-not (assq 'fileUrl result))
                                                    (let ((selection (alist-get 'selection result)))
@@ -1118,7 +1118,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 
   ;; Test without selection
   (claude-code-ide-mcp-tests--with-temp-buffer "Test"
-                                               (let ((result (claude-code-ide-mcp-handle-get-current-selection nil)))
+                                               (let ((result (claude-code-ide-mcp--get-current-selection)))
                                                  (should (equal (alist-get 'text result) ""))
                                                  (let ((selection (alist-get 'selection result)))
                                                    (should selection)
@@ -1127,64 +1127,6 @@ have completed before cleanup.  Waits up to 5 seconds."
                                                    ;; Should not contain isEmpty or fileUrl
                                                    (should-not (assq 'isEmpty selection))
                                                    (should-not (assq 'fileUrl result))))))
-
-(ert-deftest claude-code-ide-test-mcp-get-open-editors ()
-  "Test the getOpenEditors tool implementation."
-  ;; Create some file buffers
-  (let ((test-files '())
-        (test-buffers '())
-        ;; Mock the function to ensure we're not in a project
-        (claude-code-ide-mcp--get-buffer-project-fn
-         (symbol-function 'claude-code-ide-mcp--get-buffer-project)))
-    (unwind-protect
-        (progn
-          ;; Mock to return nil (no project)
-          (fset 'claude-code-ide-mcp--get-buffer-project (lambda () nil))
-
-          ;; Create test files
-          (dotimes (i 2)
-            (let ((file (make-temp-file (format "claude-mcp-test-%d-" i))))
-              (push file test-files)
-              (push (find-file-noselect file) test-buffers)))
-
-          ;; Test listing
-          (let* ((result (claude-code-ide-mcp-handle-get-open-editors nil))
-                 (editors (alist-get 'editors result)))
-            ;; Should return an array
-            (should (vectorp editors))
-            ;; Should include our test files
-            (let ((paths (mapcar (lambda (e) (alist-get 'path e))
-                                 (append editors nil))))
-              (dolist (file test-files)
-                (should (member file paths))))))
-
-      ;; Cleanup
-      (fset 'claude-code-ide-mcp--get-buffer-project claude-code-ide-mcp--get-buffer-project-fn)
-      (dolist (buffer test-buffers)
-        (kill-buffer buffer))
-      (dolist (file test-files)
-        (delete-file file)))))
-
-(ert-deftest claude-code-ide-test-mcp-save-document ()
-  "Test the saveDocument tool implementation."
-  (claude-code-ide-mcp-tests--with-temp-file test-file "Initial content"
-                                             (with-current-buffer (find-file-noselect test-file)
-                                               ;; Modify buffer
-                                               (goto-char (point-max))
-                                               (insert "\nNew line")
-                                               ;; Save using tool
-                                               (let ((result (claude-code-ide-mcp-handle-save-document `((path . ,test-file)))))
-                                                 ;; Handler returns VS Code format
-                                                 (should (listp result))
-                                                 (let ((first-item (car result)))
-                                                   (should (equal (alist-get 'type first-item) "text"))
-                                                   (should (equal (alist-get 'text first-item) "DOCUMENT_SAVED")))
-                                                 (should-not (buffer-modified-p)))
-                                               (kill-buffer)))
-
-  ;; Test missing path
-  (should-error (claude-code-ide-mcp-handle-save-document '())
-                :type 'mcp-error))
 
 (ert-deftest claude-code-ide-test-mcp-close-tab ()
   "Test the close_tab tool implementation."
@@ -1206,9 +1148,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-mcp-tool-registry ()
   "Test that all tools are properly registered."
   ;; Build expected tools list dynamically based on configuration
-  (let* ((base-tools '("openFile" "getCurrentSelection" "getOpenEditors"
-                       "getWorkspaceFolders" "getDiagnostics" "saveDocument"
-                       "close_tab" "checkDocumentDirty"))
+  (let* ((base-tools '("openFile" "getDiagnostics" "close_tab"))
          (diff-tools (when (bound-and-true-p claude-code-ide-use-ide-diff)
                        '("openDiff" "closeAllDiffTabs")))
          (exec-tools (when (bound-and-true-p claude-code-ide-enable-execute-code)
@@ -1244,7 +1184,7 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should-not (alist-get "closeAllDiffTabs" claude-code-ide-mcp-tool-descriptions nil nil #'string=))
     ;; Verify other tools are still present
     (should (alist-get "openFile" claude-code-ide-mcp-tools nil nil #'string=))
-    (should (alist-get "getCurrentSelection" claude-code-ide-mcp-tools nil nil #'string=)))
+    (should (alist-get "getDiagnostics" claude-code-ide-mcp-tools nil nil #'string=)))
   ;; Test with ediff enabled
   (let ((claude-code-ide-use-ide-diff t))
     ;; Rebuild tool lists with ediff enabled
@@ -1471,33 +1411,6 @@ have completed before cleanup.  Waits up to 5 seconds."
       (let ((diags (claude-code-ide-diagnostics-get-all (current-buffer))))
         ;; Should use flycheck when flycheck-mode is active
         (should (vectorp diags))))))
-
-(ert-deftest claude-code-ide-test-check-document-dirty ()
-  "Test checkDocumentDirty handler."
-  (require 'claude-code-ide-mcp-handlers)
-  ;; Test with a modified buffer
-  (with-temp-buffer
-    (setq buffer-file-name "/tmp/test-file.el")
-    (insert "test content")
-    (set-buffer-modified-p t)
-    (let ((result (claude-code-ide-mcp-handle-check-document-dirty
-                   '((filePath . "/tmp/test-file.el")))))
-      (should (eq (alist-get 'isDirty result) t))))
-  ;; Test with an unmodified buffer
-  (with-temp-buffer
-    (setq buffer-file-name "/tmp/test-file2.el")
-    (insert "test content")
-    (set-buffer-modified-p nil)
-    (let ((result (claude-code-ide-mcp-handle-check-document-dirty
-                   '((filePath . "/tmp/test-file2.el")))))
-      (should (eq (alist-get 'isDirty result) :json-false))))
-  ;; Test with a non-existent file
-  (let ((result (claude-code-ide-mcp-handle-check-document-dirty
-                 '((filePath . "/tmp/non-existent-file.el")))))
-    (should (eq (alist-get 'isDirty result) :json-false)))
-  ;; Test with missing filePath parameter
-  (should-error (claude-code-ide-mcp-handle-check-document-dirty '())
-                :type 'mcp-error))
 
 ;; Disabled due to ERT macro interaction with transient-mark-mode in batch mode
 ;; The handler works correctly (verified with direct testing) but the test fails

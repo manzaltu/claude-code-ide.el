@@ -557,7 +557,7 @@ Optional SESSION contains the MCP session context."
                                  (file-name-nondirectory
                                   (directory-file-name (claude-code-ide-mcp-session-project-dir session))))
 
-          ;; Send initial active editor notification if we have one in the project
+          ;; Track initial active editor if we have one in the project
           (let ((file-path (buffer-file-name))
                 (project-dir (claude-code-ide-mcp-session-project-dir session)))
             (when (and file-path
@@ -567,16 +567,7 @@ Optional SESSION contains the MCP session context."
               (setf (claude-code-ide-mcp-session-last-buffer session) (current-buffer))
               ;; Update MCP tools server's last active buffer
               (when-let ((session-id (gethash project-dir claude-code-ide--session-ids)))
-                (claude-code-ide-mcp-server-update-last-active-buffer session-id (current-buffer)))
-              (run-at-time claude-code-ide-mcp-initial-notification-delay nil
-                           (lambda ()
-                             (when-let ((s (gethash project-dir claude-code-ide-mcp--sessions)))
-                               (let ((file-path (buffer-file-name)))
-                                 (claude-code-ide-mcp--send-notification
-                                  "workspace/didChangeActiveEditor"
-                                  `((uri . ,(concat "file://" file-path))
-                                    (path . ,file-path)
-                                    (name . ,(buffer-name))))))))))
+                (claude-code-ide-mcp-server-update-last-active-buffer session-id (current-buffer)))))
           (claude-code-ide-debug "Warning: Could not find session for WebSocket connection")))))
 
 (defun claude-code-ide-mcp--on-message (ws frame)
@@ -723,6 +714,39 @@ This should be called when the buffer's context might have changed."
                                     (with-current-buffer current-buffer
                                       (claude-code-ide-mcp--send-selection-for-project project-dir)))))))))))
 
+(defun claude-code-ide-mcp--get-current-selection ()
+  "Build the current selection payload for the selection_changed notification.
+Returns an alist with `text', `filePath', and `selection' keys matching
+the CLI's SelectionChangedSchema."
+  (let ((file-path (or (buffer-file-name) "")))
+    (if (use-region-p)
+        (let* ((start (region-beginning))
+               (end (region-end))
+               (text (buffer-substring-no-properties start end))
+               (start-line (line-number-at-pos start))
+               (end-line (line-number-at-pos end))
+               (start-col (save-excursion
+                            (goto-char start)
+                            (1+ (current-column))))
+               (end-col (save-excursion
+                          (goto-char end)
+                          (1+ (current-column)))))
+          `((text . ,text)
+            (filePath . ,file-path)
+            (selection . ((start . ((line . ,start-line)
+                                    (character . ,start-col)))
+                          (end . ((line . ,end-line)
+                                  (character . ,end-col)))))))
+      ;; No selection - return cursor position
+      (let* ((cursor-line (line-number-at-pos))
+             (cursor-col (1+ (current-column))))
+        `((text . "")
+          (filePath . ,file-path)
+          (selection . ((start . ((line . ,cursor-line)
+                                  (character . ,cursor-col)))
+                        (end . ((line . ,cursor-line)
+                                (character . ,cursor-col))))))))))
+
 (defun claude-code-ide-mcp--send-selection-for-project (project-dir)
   "Send current selection to Claude for PROJECT-DIR."
   (when-let ((session (claude-code-ide-mcp--get-session-for-project project-dir)))
@@ -747,7 +771,7 @@ This should be called when the buffer's context might have changed."
                 ;; Send notification if cursor or selection changed
                 (when state-changed
                   (setf (claude-code-ide-mcp-session-last-selection session) current-state)
-                  (let ((selection (claude-code-ide-mcp-handle-get-current-selection nil)))
+                  (let ((selection (claude-code-ide-mcp--get-current-selection)))
                     (claude-code-ide-mcp--send-notification "selection_changed" selection))))
             ;; File outside project - reset selection state
             (setf (claude-code-ide-mcp-session-last-selection session) nil))))
@@ -802,13 +826,7 @@ This should be called when the buffer's context might have changed."
               (setf (claude-code-ide-mcp-session-last-buffer session) current-buffer)
               ;; Update MCP tools server's last active buffer
               (when-let ((session-id (gethash project-dir claude-code-ide--session-ids)))
-                (claude-code-ide-mcp-server-update-last-active-buffer session-id current-buffer))
-              ;; Send notification
-              (claude-code-ide-mcp--send-notification
-               "workspace/didChangeActiveEditor"
-               `((uri . ,(concat "file://" file-path))
-                 (path . ,file-path)
-                 (name . ,(buffer-name current-buffer)))))))))))
+                (claude-code-ide-mcp-server-update-last-active-buffer session-id current-buffer)))))))))
 
 ;;; Public API
 

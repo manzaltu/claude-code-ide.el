@@ -290,86 +290,11 @@ ARGUMENTS should contain:
        (signal 'mcp-error (list (format "Failed to open file: %s"
                                         (error-message-string err))))))))
 
-(defun claude-code-ide-mcp-handle-get-current-selection (_arguments)
-  "Get the currently selected text and its context."
-  (let ((file-path (or (buffer-file-name) "")))
-    (if (use-region-p)
-        (let* ((start (region-beginning))
-               (end (region-end))
-               (text (buffer-substring-no-properties start end))
-               (start-line (line-number-at-pos start))
-               (end-line (line-number-at-pos end))
-               (start-col (save-excursion
-                            (goto-char start)
-                            (1+ (current-column))))
-               (end-col (save-excursion
-                          (goto-char end)
-                          (1+ (current-column)))))
-          `((text . ,text)
-            (filePath . ,file-path)
-            (selection . ((start . ((line . ,start-line)
-                                    (character . ,start-col)))
-                          (end . ((line . ,end-line)
-                                  (character . ,end-col)))))))
-      ;; No selection - return cursor position
-      (let* ((cursor-line (line-number-at-pos))
-             (cursor-col (1+ (current-column))))
-        `((text . "")
-          (filePath . ,file-path)
-          (selection . ((start . ((line . ,cursor-line)
-                                  (character . ,cursor-col)))
-                        (end . ((line . ,cursor-line)
-                                (character . ,cursor-col))))))))))
-
-(defun claude-code-ide-mcp-handle-get-open-editors (_arguments)
-  "Get list of all open editors/buffers with file paths."
-  (let ((editors '())
-        (project-dir (claude-code-ide-mcp--get-buffer-project)))
-    (dolist (buffer (buffer-list))
-      (when-let ((file (buffer-file-name buffer)))
-        ;; Only include files within the project directory
-        (when (or (not project-dir)
-                  (string-prefix-p (expand-file-name project-dir)
-                                   (expand-file-name file)))
-          (push `((path . ,file)
-                  (name . ,(buffer-name buffer))
-                  (active . ,(eq buffer (current-buffer)))
-                  (isDirty . ,(if (buffer-modified-p buffer) t :json-false))
-                  (fileUrl . ,(concat "file://" file)))
-                editors))))
-    `((editors . ,(vconcat (nreverse editors))))))
-
-(defun claude-code-ide-mcp-handle-get-workspace-folders (_arguments)
-  "Get the current workspace folders (project roots)."
-  ;; Return the specific project directory for this MCP instance
-  (let ((project-dir (or (claude-code-ide-mcp--get-buffer-project)
-                         default-directory)))
-    `((folders . ,(vconcat (list (expand-file-name project-dir)))))))
-
 (defun claude-code-ide-mcp-handle-get-diagnostics (arguments &optional session)
   "Get diagnostics (errors/warnings) for the current workspace.
 ARGUMENTS may contain an optional `uri' parameter.
 Optional SESSION contains the MCP session context."
   (claude-code-ide-diagnostics-handler arguments session))
-
-(defun claude-code-ide-mcp-handle-save-document (arguments)
-  "Save a document.
-ARGUMENTS should contain `path' of the file to save."
-  (let ((path (alist-get 'path arguments)))
-    (unless path
-      (signal 'mcp-error '("Missing required parameter: path")))
-    (condition-case err
-        (let ((buffer (find-buffer-visiting path)))
-          (if buffer
-              (with-current-buffer buffer
-                (save-buffer)
-                ;; Return in VS Code format
-                (list `((type . "text")
-                        (text . "DOCUMENT_SAVED"))))
-            (signal 'mcp-error (list (format "No buffer visiting %s" path)))))
-      (error
-       (signal 'mcp-error (list (format "Failed to save: %s"
-                                        (error-message-string err))))))))
 
 (defun claude-code-ide-mcp-handle-close-tab (arguments)
   "Close a tab/buffer.
@@ -708,17 +633,6 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
     (list `((type . "text")
             (text . ,(format "CLOSED_%d_DIFF_TABS" closed-count))))))
 
-(defun claude-code-ide-mcp-handle-check-document-dirty (arguments)
-  "Check if document is dirty.
-ARGUMENTS should contain `filePath`."
-  (let ((path (alist-get 'filePath arguments)))
-    (unless path
-      (signal 'mcp-error '("Missing required parameter: filePath")))
-    (let ((buffer (find-buffer-visiting path)))
-      (if buffer
-          `((isDirty . ,(if (buffer-modified-p buffer) t :json-false)))
-        `((isDirty . :json-false))))))
-
 (defun claude-code-ide-mcp-handle-execute-code (arguments)
   "Execute code in Emacs.
 ARGUMENTS should contain:
@@ -738,16 +652,11 @@ ARGUMENTS should contain:
 (defun claude-code-ide-mcp--build-tool-list ()
   "Build the tool list, conditionally including ediff tools."
   `(("openFile" . claude-code-ide-mcp-handle-open-file)
-    ("getCurrentSelection" . claude-code-ide-mcp-handle-get-current-selection)
-    ("getOpenEditors" . claude-code-ide-mcp-handle-get-open-editors)
-    ("getWorkspaceFolders" . claude-code-ide-mcp-handle-get-workspace-folders)
     ("getDiagnostics" . claude-code-ide-mcp-handle-get-diagnostics)
-    ("saveDocument" . claude-code-ide-mcp-handle-save-document)
     ("close_tab" . claude-code-ide-mcp-handle-close-tab)
     ,@(when (bound-and-true-p claude-code-ide-use-ide-diff)
         '(("openDiff" . claude-code-ide-mcp-handle-open-diff)
           ("closeAllDiffTabs" . claude-code-ide-mcp-handle-close-all-diff-tabs)))
-    ("checkDocumentDirty" . claude-code-ide-mcp-handle-check-document-dirty)
     ,@(when (bound-and-true-p claude-code-ide-enable-execute-code)
         '(("executeCode" . claude-code-ide-mcp-handle-execute-code)))))
 
@@ -767,20 +676,10 @@ ARGUMENTS should contain:
                                   (endText . ((type . "string")
                                               (description . "End text pattern for selection")))))
                    (required . ["filePath"])))
-    ("getCurrentSelection" . ((type . "object")
-                              (properties . :json-empty)))
-    ("getOpenEditors" . ((type . "object")
-                         (properties . :json-empty)))
-    ("getWorkspaceFolders" . ((type . "object")
-                              (properties . :json-empty)))
     ("getDiagnostics" . ((type . "object")
                          (properties . ((uri . ((type . "string")
                                                 (description . "Optional file URI to get diagnostics for. If not provided, gets diagnostics for all files.")))))
                          (required . [])))
-    ("saveDocument" . ((type . "object")
-                       (properties . ((path . ((type . "string")
-                                               (description . "Path to the file to save")))))
-                       (required . ["path"])))
     ("close_tab" . ((type . "object")
                     (properties . ((path . ((type . "string")
                                             (description . "Path to the file to close")))
@@ -800,10 +699,6 @@ ARGUMENTS should contain:
                          (required . ["old_file_path" "new_file_path" "new_file_contents" "tab_name"])))
           ("closeAllDiffTabs" . ((type . "object")
                                  (properties . :json-empty)))))
-    ("checkDocumentDirty" . ((type . "object")
-                             (properties . ((filePath . ((type . "string")
-                                                         (description . "Path to the file to check")))))
-                             (required . ["filePath"])))
     ,@(when (bound-and-true-p claude-code-ide-enable-execute-code)
         '(("executeCode" . ((type . "object")
                             (properties . ((code . ((type . "string")
@@ -815,16 +710,11 @@ ARGUMENTS should contain:
 (defun claude-code-ide-mcp--build-tool-descriptions ()
   "Build the tool descriptions, conditionally including ediff tools."
   `(("openFile" . "Open a file in the editor and optionally select a range of text")
-    ("getCurrentSelection" . "Get the currently selected text and its location")
-    ("getOpenEditors" . "Get the list of currently open editors/buffers")
-    ("getWorkspaceFolders" . "Get the current workspace/project folders")
     ("getDiagnostics" . "Get language diagnostics from Emacs")
-    ("saveDocument" . "Save a document to disk")
     ("close_tab" . "Close a tab/buffer")
     ,@(when (bound-and-true-p claude-code-ide-use-ide-diff)
         '(("openDiff" . "Open a diff view comparing old and new file contents")
           ("closeAllDiffTabs" . "Close all open diff tabs in the current session")))
-    ("checkDocumentDirty" . "Check if a document has unsaved changes")
     ,@(when (bound-and-true-p claude-code-ide-enable-execute-code)
         '(("executeCode" . "Evaluate an Elisp expression in Emacs and return the result")))))
 
