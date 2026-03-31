@@ -211,6 +211,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-mcp-server-tools~              | Alist of exposed Emacs functions            | ~nil~                                  |
 | ~claude-code-ide-diagnostics-backend~           | Diagnostics backend (auto/flycheck/flymake) | ~'auto~                                |
 | ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
+| ~claude-code-ide-enable-execute-code~           | Allow model to evaluate Elisp in Emacs      | ~t~                                    |
 
 *** Side Window Configuration
 
@@ -323,6 +324,16 @@ Claude Code IDE supports both Flycheck and Flymake for code diagnostics. By defa
 ;; Or force a specific backend
 (setq claude-code-ide-diagnostics-backend 'flycheck)
 (setq claude-code-ide-diagnostics-backend 'flymake)
+#+end_src
+
+*** Elisp Code Execution
+
+Claude Code can evaluate Elisp expressions directly in your running Emacs session via the =executeCode= MCP tool. This is enabled by default.
+
+To disable it:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-enable-execute-code nil)
 #+end_src
 
 *** Custom Buffer Naming

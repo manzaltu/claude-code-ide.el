@@ -719,6 +719,20 @@ ARGUMENTS should contain `filePath`."
           `((isDirty . ,(if (buffer-modified-p buffer) t :json-false)))
         `((isDirty . :json-false))))))
 
+(defun claude-code-ide-mcp-handle-execute-code (arguments)
+  "Execute code in Emacs.
+ARGUMENTS should contain:
+- `code': The Elisp expression to evaluate."
+  (let ((code (alist-get 'code arguments)))
+    (unless code
+      (signal 'mcp-error '("Missing required parameter: code")))
+    (condition-case err
+        (let* ((result (eval (car (read-from-string code)) t))
+               (output (format "%S" result)))
+          (list `((type . "text") (text . ,output))))
+      (error
+       (signal 'mcp-error (list (format "Evaluation error: %s" (error-message-string err))))))))
+
 ;;; Tool Registry - Set the values
 
 (defun claude-code-ide-mcp--build-tool-list ()
@@ -733,7 +747,9 @@ ARGUMENTS should contain `filePath`."
     ,@(when (bound-and-true-p claude-code-ide-use-ide-diff)
         '(("openDiff" . claude-code-ide-mcp-handle-open-diff)
           ("closeAllDiffTabs" . claude-code-ide-mcp-handle-close-all-diff-tabs)))
-    ("checkDocumentDirty" . claude-code-ide-mcp-handle-check-document-dirty)))
+    ("checkDocumentDirty" . claude-code-ide-mcp-handle-check-document-dirty)
+    ,@(when (bound-and-true-p claude-code-ide-enable-execute-code)
+        '(("executeCode" . claude-code-ide-mcp-handle-execute-code)))))
 
 (setq claude-code-ide-mcp-tools (claude-code-ide-mcp--build-tool-list))
 
@@ -787,7 +803,12 @@ ARGUMENTS should contain `filePath`."
     ("checkDocumentDirty" . ((type . "object")
                              (properties . ((filePath . ((type . "string")
                                                          (description . "Path to the file to check")))))
-                             (required . ["filePath"])))))
+                             (required . ["filePath"])))
+    ,@(when (bound-and-true-p claude-code-ide-enable-execute-code)
+        '(("executeCode" . ((type . "object")
+                            (properties . ((code . ((type . "string")
+                                                    (description . "Elisp expression to evaluate")))))
+                            (required . ["code"])))))))
 
 (setq claude-code-ide-mcp-tool-schemas (claude-code-ide-mcp--build-tool-schemas))
 
@@ -803,7 +824,9 @@ ARGUMENTS should contain `filePath`."
     ,@(when (bound-and-true-p claude-code-ide-use-ide-diff)
         '(("openDiff" . "Open a diff view comparing old and new file contents")
           ("closeAllDiffTabs" . "Close all open diff tabs in the current session")))
-    ("checkDocumentDirty" . "Check if a document has unsaved changes")))
+    ("checkDocumentDirty" . "Check if a document has unsaved changes")
+    ,@(when (bound-and-true-p claude-code-ide-enable-execute-code)
+        '(("executeCode" . "Evaluate an Elisp expression in Emacs and return the result")))))
 
 (setq claude-code-ide-mcp-tool-descriptions (claude-code-ide-mcp--build-tool-descriptions))
 

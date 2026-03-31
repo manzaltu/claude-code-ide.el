@@ -180,6 +180,13 @@ diff comparison."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-enable-execute-code t
+  "Whether to expose the executeCode tool to the model.
+When non-nil, Claude Code can evaluate Elisp expressions in Emacs
+via the executeCode MCP tool.  Set to nil to hide the tool entirely."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-use-ide-diff t
   "Whether to use IDE diff viewer for file differences.
 When non-nil (default), Claude Code will open an IDE diff viewer

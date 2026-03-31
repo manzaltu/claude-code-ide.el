@@ -1211,7 +1211,9 @@ have completed before cleanup.  Waits up to 5 seconds."
                        "close_tab" "checkDocumentDirty"))
          (diff-tools (when (bound-and-true-p claude-code-ide-use-ide-diff)
                        '("openDiff" "closeAllDiffTabs")))
-         (expected-tools (append base-tools diff-tools)))
+         (exec-tools (when (bound-and-true-p claude-code-ide-enable-execute-code)
+                       '("executeCode")))
+         (expected-tools (append base-tools diff-tools exec-tools)))
     ;; Rebuild tool lists to match current configuration
     (setq claude-code-ide-mcp-tools (claude-code-ide-mcp--build-tool-list))
     (setq claude-code-ide-mcp-tool-schemas (claude-code-ide-mcp--build-tool-schemas))
@@ -1256,6 +1258,38 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (alist-get "closeAllDiffTabs" claude-code-ide-mcp-tool-schemas nil nil #'string=))
     (should (alist-get "openDiff" claude-code-ide-mcp-tool-descriptions nil nil #'string=))
     (should (alist-get "closeAllDiffTabs" claude-code-ide-mcp-tool-descriptions nil nil #'string=))))
+
+(ert-deftest claude-code-ide-test-execute-code-flag ()
+  "Test that executeCode tool is excluded when flag is nil and included when t."
+  (let ((claude-code-ide-enable-execute-code nil))
+    (setq claude-code-ide-mcp-tools (claude-code-ide-mcp--build-tool-list))
+    (setq claude-code-ide-mcp-tool-schemas (claude-code-ide-mcp--build-tool-schemas))
+    (setq claude-code-ide-mcp-tool-descriptions (claude-code-ide-mcp--build-tool-descriptions))
+    (should-not (alist-get "executeCode" claude-code-ide-mcp-tools nil nil #'string=))
+    (should-not (alist-get "executeCode" claude-code-ide-mcp-tool-schemas nil nil #'string=))
+    (should-not (alist-get "executeCode" claude-code-ide-mcp-tool-descriptions nil nil #'string=)))
+  (let ((claude-code-ide-enable-execute-code t))
+    (setq claude-code-ide-mcp-tools (claude-code-ide-mcp--build-tool-list))
+    (setq claude-code-ide-mcp-tool-schemas (claude-code-ide-mcp--build-tool-schemas))
+    (setq claude-code-ide-mcp-tool-descriptions (claude-code-ide-mcp--build-tool-descriptions))
+    (should (alist-get "executeCode" claude-code-ide-mcp-tools nil nil #'string=))
+    (should (alist-get "executeCode" claude-code-ide-mcp-tool-schemas nil nil #'string=))
+    (should (alist-get "executeCode" claude-code-ide-mcp-tool-descriptions nil nil #'string=))))
+
+(ert-deftest claude-code-ide-test-execute-code-handler ()
+  "Test the executeCode handler."
+  ;; Simple expression
+  (let ((result (claude-code-ide-mcp-handle-execute-code '((code . "(+ 1 2)")))))
+    (should (equal (alist-get 'text (car result)) "3")))
+  ;; String result
+  (let ((result (claude-code-ide-mcp-handle-execute-code '((code . "(concat \"hello\" \" world\")")))))
+    (should (equal (alist-get 'text (car result)) "\"hello world\"")))
+  ;; Missing code parameter
+  (should-error (claude-code-ide-mcp-handle-execute-code '())
+                :type 'mcp-error)
+  ;; Evaluation error
+  (should-error (claude-code-ide-mcp-handle-execute-code '((code . "(error \"boom\")")))
+                :type 'mcp-error))
 
 (ert-deftest claude-code-ide-test-mcp-server-lifecycle ()
   "Test MCP server start and stop."
