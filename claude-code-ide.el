@@ -148,7 +148,7 @@ Can be `'left', `'right', `'top', or `'bottom'."
                  (const :tag "Bottom" bottom))
   :group 'claude-code-ide)
 
-(defcustom claude-code-ide-window-width 90
+(defcustom claude-code-ide-window-width 100
   "Width of the Claude Code side window when opened on left or right."
   :type 'integer
   :group 'claude-code-ide)
