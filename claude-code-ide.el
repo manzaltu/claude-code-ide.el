@@ -149,7 +149,8 @@ Can be `'left', `'right', `'top', or `'bottom'."
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-window-width 100
-  "Width of the Claude Code side window when opened on left or right."
+  "Body width of the Claude Code side window when opened on left or right.
+This sets the usable text area width, excluding fringes and margins."
   :type 'integer
   :group 'claude-code-ide)
 
@@ -646,7 +647,12 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
                         (side . ,side)
                         (slot . ,slot)
                         ,@(when (memq side '(left right))
-                            `((window-width . ,claude-code-ide-window-width)))
+                            `((window-width
+                               . ,(lambda (win)
+                                    (let ((delta (- claude-code-ide-window-width
+                                                    (window-body-width win))))
+                                      (unless (zerop delta)
+                                        (window-resize win delta t)))))))
                         ,@(when (memq side '(top bottom))
                             `((window-height . ,claude-code-ide-window-height)))
                         (window-parameters . ,window-parameters)))))
