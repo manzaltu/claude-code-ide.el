@@ -860,7 +860,6 @@ Signals an error if terminal fails to initialize."
   (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
          (default-directory working-dir)
          (env-vars (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
-                         "ENABLE_IDE_INTEGRATION=true"
                          "TERM_PROGRAM=emacs"
                          "FORCE_CODE_TERMINAL=true")))
     ;; Log the command for debugging

@@ -25,7 +25,6 @@
 ;; CRITICAL DISCOVERY: Claude Code tools only work when launched from VS Code/editor terminals
 ;; because the extensions set these environment variables:
 ;; - CLAUDE_CODE_SSE_PORT: The WebSocket server port created by the extension
-;; - ENABLE_IDE_INTEGRATION: Set to "true" to enable MCP tools
 ;; - FORCE_CODE_TERMINAL: Set to "true" to enable terminal features
 ;;
 ;; Workflow:
