@@ -210,6 +210,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-mcp-server-port~               | Port for MCP tools server                   | ~nil~ (auto-select)                    |
 | ~claude-code-ide-mcp-server-tools~              | Alist of exposed Emacs functions            | ~nil~                                  |
 | ~claude-code-ide-diagnostics-backend~           | Diagnostics backend (auto/flycheck/flymake) | ~'auto~                                |
+| ~claude-code-ide-no-flicker~                    | Enable flicker-free terminal renderer       | ~nil~                                  |
 | ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
 | ~claude-code-ide-enable-execute-code~           | Allow model to evaluate Elisp in Emacs      | ~t~                                    |
 
@@ -262,6 +263,19 @@ Claude Code IDE supports both =vterm= and =eat= as terminal backends. By default
 #+end_src
 
 The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. Both backends provide full terminal functionality including color support and special key handling.
+
+**** Flicker-Free Renderer (Experimental)
+
+Claude Code includes an experimental alternative terminal renderer that eliminates flickering. To enable it:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-no-flicker t)
+#+end_src
+
+Note that with this renderer, normal Emacs buffer scrolling and search (=C-s=, =C-r=) will not work in the terminal buffer. Instead, use Claude Code's built-in keybindings:
+
+- =C-o j= / =C-o k= - Scroll up/down through the transcript
+- =C-o /= - Search the transcript
 
 **** vterm Rendering Optimization
 

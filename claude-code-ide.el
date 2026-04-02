@@ -223,6 +223,13 @@ environments."
                  (const :tag "eat" eat))
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-no-flicker nil
+  "Enable Claude Code's flicker-free terminal renderer.
+When non-nil, sets CLAUDE_CODE_NO_FLICKER=1 which activates an
+alternative rendering mode that eliminates terminal flicker."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-prevent-reflow-glitch t
   "Workaround for Claude Code terminal scrolling bug #1422.
 When non-nil (default), prevents the terminal from reflowing on height-only
@@ -865,9 +872,11 @@ Signals an error if terminal fails to initialize."
   (claude-code-ide--terminal-ensure-backend)
   (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
          (default-directory working-dir)
-         (env-vars (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
-                         "TERM_PROGRAM=emacs"
-                         "FORCE_CODE_TERMINAL=true")))
+         (env-vars (append (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
+                                 "TERM_PROGRAM=emacs"
+                                 "FORCE_CODE_TERMINAL=true")
+                           (when claude-code-ide-no-flicker
+                             (list "CLAUDE_CODE_NO_FLICKER=1")))))
     ;; Log the command for debugging
     (claude-code-ide-debug "Starting Claude with command: %s" claude-cmd)
     (claude-code-ide-debug "Working directory: %s" working-dir)
