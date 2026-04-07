@@ -1091,9 +1091,10 @@ hook signals wrong-type-argument that way)."
     (setq claude-code-ide--cli-available available)))
 
 (defun claude-code-ide--ensure-cli ()
-  "Ensure Claude Code CLI is available, detect if needed."
-  (unless claude-code-ide--cli-available
-    (claude-code-ide--detect-cli))
+  "Ensure Claude Code CLI is available.
+Always re-detects to handle PATH changes during the Emacs session
+\(e.g. after `exec-path-from-shell-initialize')."
+  (claude-code-ide--detect-cli)
   claude-code-ide--cli-available)
 
 ;;; Commands
@@ -1438,17 +1439,26 @@ This function handles:
             ;; The ghostel backend stashes its native sentinel on the
             ;; process so we can chain it here — otherwise ghostel's
             ;; buffer-local timers and focus-change hook never tear down.
-            (let ((prev-sentinel (process-get process 'claude-code-ide--ghostel-sentinel)))
+            (let ((prev-sentinel (process-get process 'claude-code-ide--ghostel-sentinel))
+                  (cli-path claude-code-ide-cli-path))
               (set-process-sentinel process
                                     (lambda (proc event)
                                       (when prev-sentinel
                                         (ignore-errors (funcall prev-sentinel proc event)))
                                       ;; Check for abnormal exit with error code
                                       (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
-                                        (let ((exit-code (match-string 1 event)))
-                                          (claude-code-ide-debug "Claude process exited with code %s, event: %s"
+                                        (let ((exit-code (string-to-number (match-string 1 event))))
+                                          (claude-code-ide-debug "Claude process exited with code %d, event: %s"
                                                                  exit-code event)
-                                          (message "Claude exited with error code %s" exit-code)))
+                                          (cond
+                                           ((= exit-code 127)
+                                            (message "Claude Code CLI not found (exit 127).  Ensure '%s' is in your PATH.  In Emacs, try: M-x exec-path-from-shell-initialize"
+                                                     cli-path))
+                                           ((= exit-code 126)
+                                            (message "Claude Code CLI '%s' was found but is not executable (exit 126).  Check file permissions"
+                                                     cli-path))
+                                           (t
+                                            (message "Claude exited with error code %d" exit-code)))))
                                       (when (or (string-match "finished" event)
                                                 (string-match "exited" event)
                                                 (string-match "killed" event)
