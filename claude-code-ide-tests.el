@@ -467,6 +467,258 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (null sent-string))
           (should (null sent-return)))))))
 
+(ert-deftest claude-code-ide-test-edit-prompt-command ()
+  "Test the `claude-code-ide-edit-prompt' command."
+  (let* ((working-dir (expand-file-name "/tmp/test-project"))
+         (buffer-name "*Claude Code [test-project]*")
+         (test-buffer (get-buffer-create buffer-name))
+         (sent-string nil)
+         (sent-no-return nil)
+         (sent-clear-line nil))
+    (unwind-protect
+        (cl-letf* (((symbol-function 'claude-code-ide--get-working-directory)
+                    (lambda () working-dir))
+                   ((symbol-function 'claude-code-ide--get-buffer-name)
+                    (lambda () buffer-name))
+                   ((symbol-function 'claude-code-ide--get-terminal-input)
+                    (lambda (_) "existing input"))
+                   ((symbol-function 'claude-code-ide-send-prompt)
+                    (lambda (prompt &optional no-return clear-line)
+                      (setq sent-string prompt
+                            sent-no-return no-return
+                            sent-clear-line clear-line)))
+                   ((symbol-function 'pop-to-buffer) #'ignore)
+                   ((symbol-function 'display-buffer) #'ignore))
+          ;; Call the command
+          (claude-code-ide-edit-prompt)
+
+          ;; Verify prompt buffer was created and initialized
+          (let ((prompt-buf (get-buffer "*Claude Prompt [test-project]*")))
+            (should prompt-buf)
+            (with-current-buffer prompt-buf
+              (should (eq major-mode 'text-mode))
+              (should (equal (buffer-string) "existing input"))
+              (should (equal claude-code-ide--session-buffer test-buffer))
+
+              ;; Simulate editing the prompt
+              (erase-buffer)
+              (insert "updated input")
+
+              ;; Simulate finishing
+              (claude-code-ide--apply-prompt-buffer))
+
+            ;; Verify prompt was sent correctly (overwrite, no return)
+            (should (equal sent-string "updated input"))
+            (should sent-no-return)
+            (should sent-clear-line)
+            ;; Verify prompt buffer was killed
+            (should-not (buffer-live-p prompt-buf)))
+
+            ;; Test with active region
+            (with-temp-buffer
+            (insert "region content")
+            (set-mark (point-min))
+            (goto-char (point-max))
+            (activate-mark)
+            (should (use-region-p))
+            (claude-code-ide-edit-prompt)
+            (let ((prompt-buf (get-buffer (format "*Claude Prompt [%s]*"
+                                                  (file-name-nondirectory (directory-file-name working-dir))))))
+              (should prompt-buf)
+              (with-current-buffer prompt-buf
+                (should (equal (buffer-string) "region content"))
+                (kill-buffer))))
+
+            ;; Test cancellation
+            (claude-code-ide-edit-prompt)
+
+          (let ((prompt-buf (get-buffer "*Claude Prompt [test-project]*")))
+            (should prompt-buf)
+            (with-current-buffer prompt-buf
+              (claude-code-ide--cancel-prompt-buffer))
+            (should-not (buffer-live-p prompt-buf))))
+      ;; Cleanup
+      (when (buffer-live-p test-buffer)
+        (kill-buffer test-buffer)))))
+
+(ert-deftest claude-code-ide-test-get-terminal-input ()
+  "Test grabbing and stripping the Claude Code terminal prompt."
+  (with-temp-buffer
+    ;; Test standard prompt
+    (erase-buffer)
+    (insert "claude > my input")
+    (should (equal (claude-code-ide--get-terminal-input (current-buffer)) "my input"))
+    
+    ;; Test prompt with trailing spaces/newlines
+    (erase-buffer)
+    (insert "claude > my input  \n\n")
+    (should (equal (claude-code-ide--get-terminal-input (current-buffer)) "my input"))
+    
+    ;; Test prompt with complex prefix
+    (erase-buffer)
+    (insert "╭─...─╮\n│ claude > my input")
+    (should (equal (claude-code-ide--get-terminal-input (current-buffer)) "my input"))
+    
+    ;; Test finding last prompt in buffer
+    (erase-buffer)
+    (insert "previous output\nclaude > current input")
+    (should (equal (claude-code-ide--get-terminal-input (current-buffer)) "current input"))
+    
+    ;; Test simple prompt
+    (erase-buffer)
+    (insert "> simple input")
+    (should (equal (claude-code-ide--get-terminal-input (current-buffer)) "simple input"))))
+
+(ert-deftest claude-code-ide-test-get-terminal-input-vterm-metadata ()
+  "Test grabbing terminal input from vterm prompt and cursor positions."
+  (with-temp-buffer
+    (insert "old output\n> live input")
+    (let ((prompt-end (save-excursion
+                        (goto-char (point-min))
+                        (search-forward "> ")))
+          (cursor (point-max)))
+      (cl-letf (((symbol-function 'derived-mode-p)
+                 (lambda (&rest modes) (memq 'vterm-mode modes)))
+                ((symbol-function 'vterm-reset-cursor-point) #'ignore)
+                ((symbol-function 'vterm--get-prompt-point)
+                 (lambda () prompt-end))
+                ((symbol-function 'vterm--get-cursor-point)
+                 (lambda () cursor)))
+      (should (equal (claude-code-ide--get-terminal-input (current-buffer))
+                     "live input"))))))
+
+(ert-deftest claude-code-ide-test-get-terminal-input-eat-metadata ()
+  "Test grabbing terminal input from Eat's active input region."
+  (with-temp-buffer
+    (insert "previous output\n> pending input")
+    (let ((eat-terminal 'mock-terminal)
+          (input-start (save-excursion
+                         (goto-char (point-min))
+                         (search-forward "\n"))))
+      (cl-letf (((symbol-function 'derived-mode-p)
+                 (lambda (&rest modes) (memq 'eat-mode modes)))
+                ((symbol-function 'eat-term-end)
+                 (lambda (_terminal) input-start)))
+        (should (equal (claude-code-ide--get-terminal-input (current-buffer))
+                       "pending input"))))))
+
+(ert-deftest claude-code-ide-test-strip-terminal-prompt-prefix-decorative-glyph ()
+  "Test stripping decorative shell prompt glyphs from captured input."
+  (should (equal (claude-code-ide--strip-terminal-prompt-prefix "❯\u00a0ihe some thing it ")
+                 "ihe some thing it "))
+  (should (equal (claude-code-ide--strip-terminal-prompt-prefix "$ test")
+                 "test")))
+
+(ert-deftest claude-code-ide-test-apply-prompt-buffer-restores-window-configuration ()
+  "Test finishing the prompt buffer restores the saved window configuration."
+  (let ((saved-config (current-window-configuration))
+        (restored-config nil)
+        (sent-string nil))
+    (with-temp-buffer
+      (setq-local claude-code-ide--session-buffer (get-buffer-create "*Claude Prompt Session*"))
+      (setq-local claude-code-ide--saved-window-configuration saved-config)
+      (insert "updated input")
+      (cl-letf (((symbol-function 'set-window-configuration)
+                 (lambda (config) (setq restored-config config)))
+                ((symbol-function 'claude-code-ide-send-prompt)
+                 (lambda (prompt &optional _no-return _clear-line)
+                   (setq sent-string prompt))))
+        (claude-code-ide--apply-prompt-buffer)))
+    (should (eq restored-config saved-config))
+    (should (equal sent-string "updated input"))))
+
+(ert-deftest claude-code-ide-test-cancel-prompt-buffer-restores-window-configuration ()
+  "Test cancelling the prompt buffer restores the saved window configuration."
+  (let ((saved-config (current-window-configuration))
+        (restored-config nil))
+    (with-temp-buffer
+      (setq-local claude-code-ide--saved-window-configuration saved-config)
+      (cl-letf (((symbol-function 'set-window-configuration)
+                 (lambda (config) (setq restored-config config))))
+        (claude-code-ide--cancel-prompt-buffer)))
+    (should (eq restored-config saved-config))))
+
+(ert-deftest claude-code-ide-test-at-mentioned-completion ()
+  "Test @ completion in the prompt buffer."
+  (let* ((working-dir (expand-file-name "/tmp/test-project"))
+         (mock-project (list 'project working-dir))
+         (mock-files (list (expand-file-name "file1.txt" working-dir)
+                           (expand-file-name "dir/file2.py" working-dir))))
+    (with-temp-buffer
+      (setq-local default-directory working-dir)
+      (cl-letf* (((symbol-function 'project-current) (lambda (&rest _) mock-project))
+                 ((symbol-function 'project-files) (lambda (&rest _) mock-files)))
+        
+        ;; Test completion at @
+        (erase-buffer)
+        (insert "@")
+        (let ((result (claude-code-ide--at-mentioned-completion-at-point)))
+          (should result)
+          (should (equal (nth 0 result) 2)) ; One after @
+          (should (equal (nth 1 result) 2))
+          (should (equal (try-completion "" (nth 2 result)) ""))
+          (should (equal (test-completion "file1.txt" (nth 2 result)) t))
+          (should (equal (test-completion "dir/file2.py" (nth 2 result)) t)))
+        
+        ;; Test completion with prefix
+        (erase-buffer)
+        (insert "Some text @f")
+        (let ((result (claude-code-ide--at-mentioned-completion-at-point)))
+          (should result)
+          (should (equal (nth 0 result) 12)) ; One after @
+          (should (equal (nth 1 result) 13))
+          (should (equal (test-completion "file1.txt" (nth 2 result)) t)))
+        
+        ;; Test no completion without @
+        (erase-buffer)
+        (insert "Just some text")
+        (should-not (claude-code-ide--at-mentioned-completion-at-point))))))
+
+(ert-deftest claude-code-ide-test-at-mentioned-completion-home-path ()
+  "Test @ completion switches to filesystem completion for ~/ paths."
+  (with-temp-buffer
+    (insert "@~/Do")
+    (let ((result (claude-code-ide--at-mentioned-completion-at-point))
+          (called-with nil))
+      (should result)
+      (cl-letf (((symbol-function 'completion-file-name-table)
+                 (lambda (string pred action)
+                   (setq called-with (list string pred action))
+                   (complete-with-action action '("~/Documents/" "~/Downloads/") string pred))))
+        (should (equal (try-completion "~/Do" (nth 2 result)) "~/Do"))
+        (should (equal (all-completions "~/Do" (nth 2 result))
+                       '("~/Documents/" "~/Downloads/"))))
+      (should (equal (car called-with) "~/Do")))))
+
+(ert-deftest claude-code-ide-test-filesystem-path-mention-p ()
+  "Test filesystem path mention detection."
+  (should (claude-code-ide--filesystem-path-mention-p "~/src"))
+  (should (claude-code-ide--filesystem-path-mention-p "/tmp"))
+  (should (claude-code-ide--filesystem-path-mention-p "./foo"))
+  (should (claude-code-ide--filesystem-path-mention-p "../foo"))
+  (should-not (claude-code-ide--filesystem-path-mention-p "foo/bar")))
+
+(ert-deftest claude-code-ide-test-at-mentioned-bounds ()
+  "Test @ mention bounds detection."
+  (with-temp-buffer
+    (insert "before @dir/file after")
+    (goto-char 17)
+    (should (equal (claude-code-ide--at-mentioned-bounds) '(9 . 17)))
+    (goto-char (point-max))
+    (should-not (claude-code-ide--at-mentioned-bounds))))
+
+(ert-deftest claude-code-ide-test-prompt-buffer-post-self-insert-triggers-completion ()
+  "Test @ mention typing triggers completion."
+  (with-temp-buffer
+    (insert "@f")
+    (let ((this-command 'self-insert-command)
+          (last-command-event ?f)
+          (called nil))
+      (cl-letf (((symbol-function 'completion-at-point)
+                 (lambda () (setq called t))))
+        (claude-code-ide--prompt-buffer-post-self-insert))
+      (should called))))
+
 (ert-deftest claude-code-ide-test-terminal-session-creation ()
   "Test terminal session creation with both backends."
   (let ((mock-vterm-buffer nil)
@@ -510,6 +762,23 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should (bufferp (car result)))
             (should (processp (cdr result)))
             (should (bufferp mock-eat-buffer))))))))
+
+(ert-deftest claude-code-ide-test-setup-terminal-keybindings ()
+  "Test terminal keybindings include prompt buffer binding."
+  (with-temp-buffer
+    (let ((claude-code-ide-terminal-backend 'vterm))
+      (claude-code-ide--setup-terminal-keybindings)
+      (should (eq (local-key-binding (kbd "C-'"))
+                  #'claude-code-ide-edit-prompt))
+      (should (eq (local-key-binding (kbd "C-<escape>"))
+                  #'claude-code-ide-send-escape))))
+  (with-temp-buffer
+    (let ((claude-code-ide-terminal-backend 'eat))
+      (claude-code-ide--setup-terminal-keybindings)
+      (should (eq (local-key-binding (kbd "C-'"))
+                  #'claude-code-ide-edit-prompt))
+      (should (eq (local-key-binding (kbd "C-<escape>"))
+                  #'claude-code-ide-send-escape)))))
 
 (ert-deftest claude-code-ide-test-vterm-smart-renderer-passthrough ()
   "Test that vterm smart renderer passes through normal text immediately."
