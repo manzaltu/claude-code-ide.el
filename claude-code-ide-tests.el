@@ -499,6 +499,10 @@ have completed before cleanup.  Waits up to 5 seconds."
               (should (eq major-mode 'text-mode))
               (should (equal (buffer-string) "existing input"))
               (should (equal claude-code-ide--session-buffer test-buffer))
+              (should (eq (local-key-binding (kbd "C-c C-c"))
+                          #'claude-code-ide--apply-prompt-buffer))
+              (should (eq (local-key-binding (kbd "C-c C-k"))
+                          #'claude-code-ide--cancel-prompt-buffer))
 
               ;; Simulate editing the prompt
               (erase-buffer)
@@ -626,6 +630,23 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide--apply-prompt-buffer)))
     (should (eq restored-config saved-config))
     (should (equal sent-string "updated input"))))
+
+(ert-deftest claude-code-ide-test-apply-empty-prompt-buffer-clears-terminal ()
+  "Test applying an empty prompt buffer still clears the terminal prompt."
+  (let ((sent-prompt :unset)
+        (sent-no-return nil)
+        (sent-clear-line nil))
+    (with-temp-buffer
+      (setq-local claude-code-ide--session-buffer (get-buffer-create "*Claude Prompt Session*"))
+      (cl-letf (((symbol-function 'claude-code-ide-send-prompt)
+                 (lambda (prompt &optional no-return clear-line)
+                   (setq sent-prompt prompt
+                         sent-no-return no-return
+                         sent-clear-line clear-line))))
+        (claude-code-ide--apply-prompt-buffer)))
+    (should (equal sent-prompt ""))
+    (should sent-no-return)
+    (should sent-clear-line)))
 
 (ert-deftest claude-code-ide-test-cancel-prompt-buffer-restores-window-configuration ()
   "Test cancelling the prompt buffer restores the saved window configuration."
@@ -768,14 +789,14 @@ have completed before cleanup.  Waits up to 5 seconds."
   (with-temp-buffer
     (let ((claude-code-ide-terminal-backend 'vterm))
       (claude-code-ide--setup-terminal-keybindings)
-      (should (eq (local-key-binding (kbd "C-'"))
+      (should (eq (local-key-binding (kbd "C-c '"))
                   #'claude-code-ide-edit-prompt))
       (should (eq (local-key-binding (kbd "C-<escape>"))
                   #'claude-code-ide-send-escape))))
   (with-temp-buffer
     (let ((claude-code-ide-terminal-backend 'eat))
       (claude-code-ide--setup-terminal-keybindings)
-      (should (eq (local-key-binding (kbd "C-'"))
+      (should (eq (local-key-binding (kbd "C-c '"))
                   #'claude-code-ide-edit-prompt))
       (should (eq (local-key-binding (kbd "C-<escape>"))
                   #'claude-code-ide-send-escape)))))

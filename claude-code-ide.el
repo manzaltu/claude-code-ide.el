@@ -534,19 +534,19 @@ from the window where it was initially created."
 This function binds:
 - M-RET (Alt-Return) to insert a newline
 - C-<escape> to send escape
-- C-' to open the prompt buffer"
+- C-c ' to open the prompt buffer"
   (cond
    ((eq claude-code-ide-terminal-backend 'vterm)
     ;; For vterm, we set up local keybindings in vterm-mode-map
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape)
-    (local-set-key (kbd "C-'") #'claude-code-ide-edit-prompt))
+    (local-set-key (kbd "C-c '") #'claude-code-ide-edit-prompt))
    ((eq claude-code-ide-terminal-backend 'eat)
     ;; For eat, we need to modify the semi-char mode map which is the default
     ;; We use local-set-key to make it buffer-local
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape)
-    (local-set-key (kbd "C-'") #'claude-code-ide-edit-prompt))
+    (local-set-key (kbd "C-c '") #'claude-code-ide-edit-prompt))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
@@ -1213,7 +1213,7 @@ If CLEAR-LINE is non-nil, send C-u to clear the current line first."
   (let ((buffer-name (claude-code-ide--get-buffer-name)))
     (if-let ((buffer (get-buffer buffer-name)))
         (let ((prompt-to-send (or prompt (read-string "Claude prompt: "))))
-          (when (not (string-empty-p prompt-to-send))
+          (when (or clear-line (not (string-empty-p prompt-to-send)))
             (with-current-buffer buffer
               (when clear-line
                 (if (eq claude-code-ide-terminal-backend 'vterm)
@@ -1221,7 +1221,8 @@ If CLEAR-LINE is non-nil, send C-u to clear the current line first."
                   (claude-code-ide--terminal-send-string "\C-u"))
                 ;; Give the terminal a moment to process the clear command
                 (sit-for 0.1))
-              (claude-code-ide--terminal-send-string prompt-to-send)
+              (unless (string-empty-p prompt-to-send)
+                (claude-code-ide--terminal-send-string prompt-to-send))
               (unless no-return
                 ;; Small delay to ensure prompt text is processed before sending return
                 (sit-for 0.1)
@@ -1262,17 +1263,11 @@ Press C-c C-c to update the terminal prompt (without sending) or C-c C-k to canc
         (erase-buffer)
         (when (and initial-input (not (string-empty-p initial-input)))
           (insert (string-trim initial-input)))
-        (if (fboundp 'with-editor-mode)
-            (progn
-              (with-editor-mode 1)
-              (setq-local with-editor-show-usage nil)
-              (setq-local with-editor-finish-query-functions nil)
-              (add-hook 'with-editor-finish-hook 'claude-code-ide--apply-prompt-buffer nil t)
-              (add-hook 'with-editor-cancel-hook 'claude-code-ide--cancel-prompt-buffer nil t))
-          ;; Fallback if with-editor is not installed
-          (use-local-map (copy-keymap text-mode-map))
-          (local-set-key (kbd "C-c C-c") 'claude-code-ide--apply-prompt-buffer)
-          (local-set-key (kbd "C-c C-k") 'claude-code-ide--cancel-prompt-buffer))
+        ;; Use an explicit local keymap so C-c C-c always applies the prompt
+        ;; instead of invoking editor/file-saving workflows.
+        (use-local-map (copy-keymap text-mode-map))
+        (local-set-key (kbd "C-c C-c") #'claude-code-ide--apply-prompt-buffer)
+        (local-set-key (kbd "C-c C-k") #'claude-code-ide--cancel-prompt-buffer)
         (message "Type your prompt and press C-c C-c to update, or C-c C-k to cancel."))
       (pop-to-buffer prompt-buffer))))
 
@@ -1288,7 +1283,7 @@ Press C-c C-c to update the terminal prompt (without sending) or C-c C-k to canc
       (set-window-configuration window-config))
     (when (buffer-live-p prompt-buffer)
       (kill-buffer prompt-buffer))
-    (when (and target-buffer (buffer-live-p target-buffer) (not (string-empty-p (string-trim prompt))))
+    (when (and target-buffer (buffer-live-p target-buffer))
       ;; Send with no-return=t and clear-line=t to overwrite the existing prompt
       (claude-code-ide-send-prompt (string-trim prompt) t t))))
 
