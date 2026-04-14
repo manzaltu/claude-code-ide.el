@@ -1246,7 +1246,7 @@ Press C-c C-c to update the terminal prompt (without sending) or C-c C-k to canc
     (unless target-buffer
       (user-error "No Claude Code session for this project"))
     (let ((prompt-buffer (get-buffer-create (format "*Claude Prompt [%s]*"
-                                                     (file-name-nondirectory (directory-file-name working-dir)))))
+                                                    (file-name-nondirectory (directory-file-name working-dir)))))
           (initial-input (or region-text
                              (claude-code-ide--get-terminal-input target-buffer))))
       (with-current-buffer prompt-buffer
@@ -1295,7 +1295,16 @@ Press C-c C-c to update the terminal prompt (without sending) or C-c C-k to canc
                   (or (claude-code-ide--get-terminal-input-from-vterm)
                       (claude-code-ide--get-terminal-input-from-eat)
                       (claude-code-ide--get-terminal-input-from-text))))
-        (claude-code-ide--strip-terminal-prompt-prefix input)))))
+        (claude-code-ide--strip-terminal-prompt-prefix
+         (claude-code-ide--strip-terminal-footer input))))))
+
+(defun claude-code-ide--strip-terminal-footer (input)
+  "Strip Claude Code terminal footer/status text from INPUT.
+The Claude Code CLI renders status hints like
+\"{accept edits on (shift+tab to cycle)}\" below the prompt area.
+These appear on their own line enclosed in curly braces."
+  (replace-regexp-in-string
+   "[\n\r][[:space:]]*{[^}\n]*}[[:space:]]*\\'" "" input))
 
 (defun claude-code-ide--strip-terminal-prompt-prefix (input)
   "Strip a visible Claude prompt prefix from INPUT."
