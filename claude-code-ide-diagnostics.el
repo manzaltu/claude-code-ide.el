@@ -102,7 +102,6 @@ Returns: 1 (Error), 2 (Warning), 3 (Information), 4 (Hint)."
     ('eglot-error "Error")
     ('eglot-warning "Warning")
     ('eglot-note "Information")
-    ('eglot-information "Information")
     ;; Default
     (_ "Information")))
 
