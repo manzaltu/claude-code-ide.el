@@ -1249,6 +1249,164 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should-error (claude-code-ide-mcp-handle-close-tab '((path . "/nonexistent/file")))
                 :type 'mcp-error))
 
+;;; Tests for IDE State Tools (Phase 1 port)
+
+(ert-deftest claude-code-ide-test-mcp-get-current-selection-tool ()
+  "Test the getCurrentSelection tool handler."
+  ;; With an active selection
+  (claude-code-ide-mcp-tests--with-temp-buffer "Line 1\nLine 2\nLine 3"
+                                               (goto-char (point-min))
+                                               (set-mark (point))
+                                               (forward-line 2)
+                                               (let ((transient-mark-mode t))
+                                                 (activate-mark)
+                                                 (let* ((result (claude-code-ide-mcp-handle-get-current-selection nil))
+                                                        (text (alist-get 'text (car result)))
+                                                        (data (json-read-from-string text)))
+                                                   (should (equal (alist-get 'type (car result)) "text"))
+                                                   (should (equal (alist-get 'text data) "Line 1\nLine 2\n"))
+                                                   (should (eq (alist-get 'isEmpty (alist-get 'selection data)) :json-false)))))
+  ;; Without a selection - isEmpty should be true
+  (claude-code-ide-mcp-tests--with-temp-buffer "Test"
+                                               (let* ((result (claude-code-ide-mcp-handle-get-current-selection nil))
+                                                      (data (json-read-from-string (alist-get 'text (car result)))))
+                                                 (should (equal (alist-get 'text data) ""))
+                                                 (should (eq (alist-get 'isEmpty (alist-get 'selection data)) t)))))
+
+(ert-deftest claude-code-ide-test-mcp-get-latest-selection-tool ()
+  "Test the getLatestSelection tool handler."
+  (claude-code-ide-mcp-tests--with-temp-file test-file "Alpha\nBeta\nGamma"
+                                             (let ((buf (find-file-noselect test-file)))
+                                               (unwind-protect
+                                                   (let ((transient-mark-mode t))
+                                                     (with-current-buffer buf
+                                                       (goto-char (point-min))
+                                                       (set-mark (point))
+                                                       (forward-line 1)
+                                                       (activate-mark))
+                                                     (let* ((result (claude-code-ide-mcp-handle-get-latest-selection nil))
+                                                            (data (json-read-from-string (alist-get 'text (car result)))))
+                                                       (should (equal (alist-get 'text data) "Alpha\n"))))
+                                                 (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest claude-code-ide-test-mcp-get-open-editors ()
+  "Test the getOpenEditors tool handler."
+  (claude-code-ide-mcp-tests--with-temp-file test-file "content"
+                                             (let ((buf (find-file-noselect test-file)))
+                                               (unwind-protect
+                                                   (let* ((result (claude-code-ide-mcp-handle-get-open-editors nil))
+                                                          (data (json-read-from-string (alist-get 'text (car result))))
+                                                          (editors (alist-get 'editors data)))
+                                                     (should (vectorp editors))
+                                                     (should (seq-find (lambda (e) (equal (alist-get 'path e) test-file))
+                                                                       editors)))
+                                                 (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest claude-code-ide-test-mcp-get-workspace-folders ()
+  "Test the getWorkspaceFolders tool handler."
+  (let* ((session (make-claude-code-ide-mcp-session :project-dir "/tmp/claude-proj-xyz/"))
+         (result (claude-code-ide-mcp-handle-get-workspace-folders nil session))
+         (data (json-read-from-string (alist-get 'text (car result))))
+         (folders (alist-get 'folders data)))
+    (should (vectorp folders))
+    (should (seq-find (lambda (f) (string-match-p "claude-proj-xyz" (alist-get 'uri f)))
+                      folders))))
+
+(ert-deftest claude-code-ide-test-mcp-check-document-dirty ()
+  "Test the checkDocumentDirty tool handler."
+  (claude-code-ide-mcp-tests--with-temp-file test-file "content"
+                                             (let ((buf (find-file-noselect test-file)))
+                                               (unwind-protect
+                                                   (progn
+                                                     ;; Clean buffer
+                                                     (let ((data (json-read-from-string
+                                                                  (alist-get 'text (car (claude-code-ide-mcp-handle-check-document-dirty
+                                                                                         `((filePath . ,test-file))))))))
+                                                       (should (eq (alist-get 'isDirty data) :json-false)))
+                                                     ;; Modify, then check via file:// URI
+                                                     (with-current-buffer buf
+                                                       (goto-char (point-max))
+                                                       (insert "more"))
+                                                     (let ((data (json-read-from-string
+                                                                  (alist-get 'text (car (claude-code-ide-mcp-handle-check-document-dirty
+                                                                                         `((uri . ,(concat "file://" test-file)))))))))
+                                                       (should (eq (alist-get 'isDirty data) t))))
+                                                 (when (buffer-live-p buf)
+                                                   (with-current-buffer buf (set-buffer-modified-p nil))
+                                                   (kill-buffer buf)))))
+  ;; Missing parameter
+  (should-error (claude-code-ide-mcp-handle-check-document-dirty '())
+                :type 'mcp-error))
+
+(ert-deftest claude-code-ide-test-mcp-save-document ()
+  "Test the saveDocument tool handler."
+  (claude-code-ide-mcp-tests--with-temp-file test-file "content"
+                                             (let ((buf (find-file-noselect test-file)))
+                                               (unwind-protect
+                                                   (progn
+                                                     (with-current-buffer buf
+                                                       (goto-char (point-max))
+                                                       (insert "appended"))
+                                                     (let ((data (json-read-from-string
+                                                                  (alist-get 'text (car (claude-code-ide-mcp-handle-save-document
+                                                                                         `((filePath . ,test-file))))))))
+                                                       (should (eq (alist-get 'saved data) t))
+                                                       (should-not (buffer-modified-p buf))))
+                                                 (when (buffer-live-p buf) (kill-buffer buf)))))
+  ;; File not open returns saved:false
+  (let ((data (json-read-from-string
+               (alist-get 'text (car (claude-code-ide-mcp-handle-save-document
+                                      '((filePath . "/nonexistent/file-xyz"))))))))
+    (should (eq (alist-get 'saved data) :json-false)))
+  ;; Missing parameter
+  (should-error (claude-code-ide-mcp-handle-save-document '())
+                :type 'mcp-error))
+
+(ert-deftest claude-code-ide-test-mcp-arg-file-path ()
+  "Test file path extraction from tool arguments."
+  (should (equal (claude-code-ide-mcp--arg-file-path '((filePath . "/a/b.el"))) "/a/b.el"))
+  (should (equal (claude-code-ide-mcp--arg-file-path '((uri . "file:///a/b.el"))) "/a/b.el"))
+  (should (equal (claude-code-ide-mcp--arg-file-path '((path . "/a/b.el"))) "/a/b.el"))
+  (should-not (claude-code-ide-mcp--arg-file-path '())))
+
+;;; Tests for MCP Resources (Phase 1 port)
+
+(ert-deftest claude-code-ide-test-mcp-mime-type ()
+  "Test MIME type resolution by extension."
+  (should (equal (claude-code-ide-mcp--get-mime-type "foo.el") "text/x-elisp"))
+  (should (equal (claude-code-ide-mcp--get-mime-type "foo.py") "text/x-python"))
+  (should (equal (claude-code-ide-mcp--get-mime-type "foo.json") "application/json"))
+  (should (equal (claude-code-ide-mcp--get-mime-type "foo.unknownext") "text/plain"))
+  (should (equal (claude-code-ide-mcp--get-mime-type "noextension") "text/plain")))
+
+(ert-deftest claude-code-ide-test-mcp-resources-list ()
+  "Test that resources/list includes open file buffers."
+  (claude-code-ide-mcp-tests--with-temp-file test-file "data"
+                                             (let ((buf (find-file-noselect test-file)))
+                                               (unwind-protect
+                                                   (let* ((response (claude-code-ide-mcp--handle-resources-list 1 nil))
+                                                          (resources (alist-get 'resources (alist-get 'result response))))
+                                                     (should (vectorp resources))
+                                                     (should (seq-find (lambda (r)
+                                                                         (equal (alist-get 'uri r)
+                                                                                (concat "file://" test-file)))
+                                                                       resources)))
+                                                 (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest claude-code-ide-test-mcp-resources-read ()
+  "Test reading a resource by file:// URI."
+  (claude-code-ide-mcp-tests--with-temp-file test-file "hello resources"
+                                             (let* ((uri (concat "file://" test-file))
+                                                    (response (claude-code-ide-mcp--handle-resources-read 1 `((uri . ,uri))))
+                                                    (contents (alist-get 'contents (alist-get 'result response)))
+                                                    (entry (aref contents 0)))
+                                               (should (equal (alist-get 'uri entry) uri))
+                                               (should (equal (alist-get 'text entry) "hello resources"))
+                                               (should (equal (alist-get 'mimeType entry) "text/plain"))))
+  ;; Non-existent resource returns an error response
+  (let ((response (claude-code-ide-mcp--handle-resources-read 1 '((uri . "file:///nonexistent/xyz")))))
+    (should (alist-get 'error response))))
+
 (ert-deftest claude-code-ide-test-mcp-tool-registry ()
   "Test that all tools are properly registered."
   ;; Build expected tools list dynamically based on configuration

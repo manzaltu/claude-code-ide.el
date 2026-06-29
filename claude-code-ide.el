@@ -204,6 +204,14 @@ display diffs in the terminal instead."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-enable-resources t
+  "Whether to expose Emacs files to Claude Code as MCP resources.
+When non-nil (default), Claude Code can list and read open buffers,
+recent files, and project files via the resources/list and
+resources/read MCP methods.  Set to nil to disable resource sharing."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-switch-tab-on-ediff t
   "Whether to switch back to Claude's original tab when opening ediff.
 When non-nil (default), Claude Code will switch back to the tab

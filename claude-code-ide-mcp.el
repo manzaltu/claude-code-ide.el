@@ -270,16 +270,17 @@ Returns the session if found, nil otherwise."
                      "notifications/tools/list_changed"
                      (make-hash-table :test 'equal))))
 
-  (let ((response `((protocolVersion . ,claude-code-ide-mcp-version)
-                    (capabilities . ((tools . ((listChanged . t)))
-                                     (resources . ((subscribe . :json-false)
-                                                   (listChanged . :json-false)))
-                                     (prompts . ((listChanged . t)))
-                                     (logging . ,(make-hash-table :test 'equal))))
-                    (serverInfo . ((name . "claude-code-ide-mcp")
-                                   (version . "0.1.0"))))))
+  (let* ((resources-enabled (bound-and-true-p claude-code-ide-enable-resources))
+         (response `((protocolVersion . ,claude-code-ide-mcp-version)
+                     (capabilities . ((tools . ((listChanged . t)))
+                                      (resources . ((subscribe . :json-false)
+                                                    (listChanged . ,(if resources-enabled t :json-false))))
+                                      (prompts . ((listChanged . t)))
+                                      (logging . ,(make-hash-table :test 'equal))))
+                     (serverInfo . ((name . "claude-code-ide-mcp")
+                                    (version . "0.1.0"))))))
     (claude-code-ide-debug "Initialize response capabilities: tools.listChanged=%s, resources.subscribe=%s, resources.listChanged=%s, prompts.listChanged=%s"
-                           t :json-false :json-false t)
+                           t :json-false (if resources-enabled t :json-false) t)
     (claude-code-ide-mcp--make-response id response)))
 
 (defun claude-code-ide-mcp--prepare-schema-for-json (schema)
@@ -334,6 +335,89 @@ turn into {}. Recursively processes nested structures."
   ;; Return empty prompts list for now - Claude Code doesn't require any prompts
   (claude-code-ide-mcp--make-response id '((prompts . []))))
 
+;;; Resources
+
+(defconst claude-code-ide-mcp--mime-types
+  '(("txt" . "text/plain") ("md" . "text/markdown") ("org" . "text/org")
+    ("rst" . "text/x-rst") ("el" . "text/x-elisp") ("lisp" . "text/x-lisp")
+    ("scm" . "text/x-scheme") ("clj" . "text/x-clojure") ("py" . "text/x-python")
+    ("js" . "text/javascript") ("jsx" . "text/jsx") ("ts" . "text/typescript")
+    ("tsx" . "text/tsx") ("java" . "text/x-java") ("c" . "text/x-c")
+    ("cpp" . "text/x-c++") ("cc" . "text/x-c++") ("cxx" . "text/x-c++")
+    ("h" . "text/x-c") ("hpp" . "text/x-c++") ("cs" . "text/x-csharp")
+    ("go" . "text/x-go") ("rs" . "text/x-rust") ("rb" . "text/x-ruby")
+    ("php" . "text/x-php") ("swift" . "text/x-swift") ("kt" . "text/x-kotlin")
+    ("scala" . "text/x-scala") ("r" . "text/x-r") ("lua" . "text/x-lua")
+    ("pl" . "text/x-perl") ("html" . "text/html") ("htm" . "text/html")
+    ("xml" . "text/xml") ("css" . "text/css") ("scss" . "text/x-scss")
+    ("sass" . "text/x-sass") ("less" . "text/x-less") ("json" . "application/json")
+    ("yaml" . "text/yaml") ("yml" . "text/yaml") ("toml" . "text/x-toml")
+    ("ini" . "text/x-ini") ("sh" . "text/x-sh") ("bash" . "text/x-bash")
+    ("zsh" . "text/x-zsh") ("fish" . "text/x-fish") ("cmake" . "text/x-cmake")
+    ("tex" . "text/x-latex"))
+  "Alist mapping file extensions to MIME types for MCP resources.")
+
+(defun claude-code-ide-mcp--get-mime-type (file-path)
+  "Return the MIME type for FILE-PATH based on its extension."
+  (or (cdr (assoc (file-name-extension file-path)
+                  claude-code-ide-mcp--mime-types))
+      "text/plain"))
+
+(defun claude-code-ide-mcp--get-file-resources ()
+  "Return a list of file resources: open buffers, recent files, project files."
+  (let ((resources '())
+        (seen (make-hash-table :test 'equal)))
+    (cl-flet ((add-resource (file description)
+                (let ((uri (concat "file://" file)))
+                  (unless (gethash uri seen)
+                    (puthash uri t seen)
+                    (push `((uri . ,uri)
+                            (name . ,(file-name-nondirectory file))
+                            (description . ,description)
+                            (mimeType . ,(claude-code-ide-mcp--get-mime-type file)))
+                          resources)))))
+      ;; Open file buffers
+      (dolist (buffer (buffer-list))
+        (when-let ((file (buffer-file-name buffer)))
+          (add-resource file (format "Open file in buffer: %s" (buffer-name buffer)))))
+      ;; Recent files (limit to 20).  Guard so a failure here never breaks listing.
+      (condition-case err
+          (when (bound-and-true-p recentf-list)
+            (dolist (file (seq-take recentf-list 20))
+              (when (file-exists-p file)
+                (add-resource file "Recent file"))))
+        (error (claude-code-ide-debug "Skipping recent files in resources: %s" err)))
+      ;; Project files (limit to 50).  Guard so a failure here never breaks listing.
+      (condition-case err
+          (when-let* ((project (project-current))
+                      (root (project-root project)))
+            (dolist (file (seq-take (project-files project) 50))
+              (let ((full-path (expand-file-name file root)))
+                (when (file-regular-p full-path)
+                  (add-resource full-path "Project file")))))
+        (error (claude-code-ide-debug "Skipping project files in resources: %s" err))))
+    (nreverse resources)))
+
+(defun claude-code-ide-mcp--handle-resources-list (id _params)
+  "Handle the resources/list request with ID."
+  (claude-code-ide-mcp--make-response
+   id `((resources . ,(vconcat (claude-code-ide-mcp--get-file-resources))))))
+
+(defun claude-code-ide-mcp--handle-resources-read (id params)
+  "Handle the resources/read request with ID and PARAMS."
+  (let* ((uri (alist-get 'uri params))
+         (file-path (when (and uri (string-prefix-p "file://" uri))
+                      (substring uri 7))))
+    (if (and file-path (file-exists-p file-path))
+        (claude-code-ide-mcp--make-response
+         id `((contents . ,(vector `((uri . ,uri)
+                                     (mimeType . ,(claude-code-ide-mcp--get-mime-type file-path))
+                                     (text . ,(with-temp-buffer
+                                                (insert-file-contents file-path)
+                                                (buffer-string))))))))
+      (claude-code-ide-mcp--make-error-response
+       id -32602 (format "Resource not found: %s" uri)))))
+
 (defun claude-code-ide-mcp--handle-tools-call (id params &optional session)
   "Handle the tools/call request with ID and PARAMS.
 Optional SESSION contains the MCP session context."
@@ -347,7 +431,9 @@ Optional SESSION contains the MCP session context."
         (condition-case err
             (progn
               (claude-code-ide-debug "Found handler for tool: %s" tool-name)
-              (let ((result (if (member tool-name '("getDiagnostics"))
+              (let ((result (if (member tool-name '("getDiagnostics"
+                                                    "getCurrentSelection"
+                                                    "getWorkspaceFolders"))
                                 ;; Pass session to handlers that need it
                                 (funcall handler arguments session)
                               (funcall handler arguments))))
@@ -414,6 +500,14 @@ Optional SESSION contains the MCP session context."
              ((string= method "prompts/list")
               (claude-code-ide-debug "Handling prompts/list request")
               (claude-code-ide-mcp--handle-prompts-list id params))
+             ((and (string= method "resources/list")
+                   (bound-and-true-p claude-code-ide-enable-resources))
+              (claude-code-ide-debug "Handling resources/list request")
+              (claude-code-ide-mcp--handle-resources-list id params))
+             ((and (string= method "resources/read")
+                   (bound-and-true-p claude-code-ide-enable-resources))
+              (claude-code-ide-debug "Handling resources/read request")
+              (claude-code-ide-mcp--handle-resources-read id params))
              ;; Unknown method
              (id
               (claude-code-ide-debug "Unknown method: %s (sending error response)" method)
