@@ -92,6 +92,7 @@
 (declare-function eat-term-display-cursor "eat" (terminal))
 (declare-function eat-emacs-mode "eat" ())
 (declare-function eat-semi-char-mode "eat" ())
+(declare-function eat-term-parameter "eat" (terminal parameter))
 (declare-function eat--adjust-process-window-size "eat" (process windows))
 
 ;; External function declarations for ghostel
@@ -220,6 +221,39 @@ resources/read MCP methods.  Set to nil to disable resource sharing."
 Used by `claude-code-ide-send-region' when no region is active and the
 whole buffer would be sent."
   :type 'integer
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-enable-image-paste t
+  "Whether to enable image pasting via `yank-media' in Claude buffers.
+When non-nil, pasting an image into the Claude terminal writes it to a
+temporary file and inserts an @path reference at the prompt, which
+Claude's CLI reads natively.  Requires Emacs 29 or later."
+  :type 'boolean
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-image-paste-directory
+  (if (file-directory-p "/tmp") "/tmp" temporary-file-directory)
+  "Directory where pasted images are written.
+Defaults to \"/tmp\" when available so the inserted @path stays short."
+  :type 'directory
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-image-paste-cleanup-on-kill t
+  "Whether to delete pasted image temp files when the Claude buffer is killed."
+  :type 'boolean
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-enable-notifications t
+  "Whether to notify when Claude finishes and is awaiting input.
+Notifications are triggered by the terminal bell that Claude emits when
+it needs attention.  See `claude-code-ide-notification-function'."
+  :type 'boolean
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-notification-function #'claude-code-ide-default-notification
+  "Function called to notify the user that Claude is waiting.
+It is called with two string arguments: TITLE and MESSAGE."
+  :type 'function
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-switch-tab-on-ediff t
@@ -468,7 +502,10 @@ cursor management, and process buffering for superior user experience."
       (process-put proc 'read-output-max 4096)))
   ;; Set up rendering optimization
   (when claude-code-ide-vterm-anti-flicker
-    (advice-add 'vterm--filter :around #'claude-code-ide--vterm-smart-renderer)))
+    (advice-add 'vterm--filter :around #'claude-code-ide--vterm-smart-renderer))
+  ;; Set up bell-based completion notifications
+  (when claude-code-ide-enable-notifications
+    (advice-add 'vterm--filter :around #'claude-code-ide--vterm-bell-detector)))
 
 
 ;;; Terminal Backend Abstraction
@@ -615,6 +652,117 @@ This function binds:
   "Check if BUFFER belongs to a Claude Code session."
   (when-let ((name (if (stringp buffer) buffer (buffer-name buffer))))
     (string-prefix-p "*claude-code[" name)))
+
+;;; Image Pasting
+
+(defconst claude-code-ide--image-mime-extensions
+  '(("image/png" . ".png")
+    ("image/jpeg" . ".jpg")
+    ("image/jpg" . ".jpg")
+    ("image/gif" . ".gif")
+    ("image/webp" . ".webp")
+    ("image/bmp" . ".bmp"))
+  "Alist mapping image MIME-type prefix to file extension.")
+
+(defvar-local claude-code-ide--pasted-image-files nil
+  "List of temp image files pasted into this Claude buffer, for cleanup.")
+
+(defun claude-code-ide--image-extension-for-mimetype (mimetype)
+  "Return the file extension (including the dot) for MIMETYPE.
+MIMETYPE may be a symbol or a string.  Falls back to \".png\"."
+  (let* ((str (if (symbolp mimetype) (symbol-name mimetype) mimetype))
+         (match (seq-find (lambda (pair) (string-prefix-p (car pair) str))
+                          claude-code-ide--image-mime-extensions)))
+    (if match (cdr match) ".png")))
+
+(defun claude-code-ide--image-yank-media-handler (mimetype data)
+  "Handle an image paste in a Claude buffer.
+MIMETYPE is the MIME type (string or symbol); DATA is the raw bytes.
+Writes DATA to a temp file and injects an @path reference at the prompt."
+  (let* ((ext (claude-code-ide--image-extension-for-mimetype mimetype))
+         (temporary-file-directory claude-code-ide-image-paste-directory)
+         (path (make-temp-file "claude-image-" nil ext))
+         (coding-system-for-write 'binary))
+    (with-temp-file path (insert data))
+    (push path claude-code-ide--pasted-image-files)
+    (claude-code-ide--terminal-send-string (concat "@" path " "))
+    (message "Pasted image as %s" path)
+    t))
+
+(defun claude-code-ide--cleanup-pasted-images ()
+  "Delete temp image files created by `yank-media' in this buffer."
+  (when claude-code-ide-image-paste-cleanup-on-kill
+    (dolist (file claude-code-ide--pasted-image-files)
+      (when (file-exists-p file)
+        (ignore-errors (delete-file file))))
+    (setq claude-code-ide--pasted-image-files nil)))
+
+(defun claude-code-ide--register-image-yank-media-handler ()
+  "Register an image `yank-media-handler' in the current Claude buffer.
+No-op on Emacs versions without `yank-media-handler' (pre-29)."
+  (when (and claude-code-ide-enable-image-paste
+             (fboundp 'yank-media-handler))
+    (yank-media-handler "image/.*" #'claude-code-ide--image-yank-media-handler)
+    (add-hook 'kill-buffer-hook #'claude-code-ide--cleanup-pasted-images nil t)))
+
+;;; Completion Notifications
+
+(defun claude-code-ide--pulse-modeline ()
+  "Pulse the modeline to provide a visual notification."
+  (invert-face 'mode-line)
+  (run-at-time 0.1 nil
+               (lambda ()
+                 (invert-face 'mode-line)
+                 (run-at-time 0.1 nil
+                              (lambda ()
+                                (invert-face 'mode-line)
+                                (run-at-time 0.1 nil
+                                             (lambda ()
+                                               (invert-face 'mode-line))))))))
+
+(defun claude-code-ide-default-notification (title message)
+  "Default notification: echo TITLE and MESSAGE and pulse the modeline."
+  (message "%s: %s" title message)
+  (claude-code-ide--pulse-modeline))
+
+(defun claude-code-ide--notify (&rest _)
+  "Notify the user that Claude has finished and is awaiting input.
+Accepts and ignores any arguments so it can serve as both a terminal
+`ring-bell-function' and an eat terminal bell parameter."
+  (when claude-code-ide-enable-notifications
+    (funcall claude-code-ide-notification-function
+             "Claude Code" "Waiting for your response")))
+
+(defun claude-code-ide--vterm-bell-detector (orig-fun process input)
+  "Detect bell characters in vterm output and trigger notifications.
+ORIG-FUN is the original `vterm--filter'.  PROCESS is the vterm process.
+INPUT is the terminal output string.  Bells inside OSC title sequences
+are ignored."
+  (when (and claude-code-ide-enable-notifications
+             (string-match-p "\007" input)
+             (claude-code-ide--session-buffer-p (process-buffer process))
+             (not (string-match-p "]0;.*\007" input)))
+    (claude-code-ide--notify))
+  (funcall orig-fun process input))
+
+(defun claude-code-ide--setup-terminal-extras ()
+  "Set up image pasting and bell notifications in the current Claude buffer.
+Assumes the current buffer is the Claude terminal buffer."
+  (claude-code-ide--register-image-yank-media-handler)
+  (when claude-code-ide-enable-notifications
+    (cond
+     ((eq claude-code-ide-terminal-backend 'vterm)
+      ;; vterm notifications are handled by the bell-detector filter advice,
+      ;; installed in `claude-code-ide--configure-vterm-buffer'.
+      nil)
+     ((eq claude-code-ide-terminal-backend 'eat)
+      ;; eat invokes the terminal's ring-bell-function parameter on BEL.
+      (when (and (bound-and-true-p eat-terminal) (fboundp 'eat-term-parameter))
+        (eval '(setf (eat-term-parameter eat-terminal 'ring-bell-function)
+                     #'claude-code-ide--notify)
+              t)))
+     ((eq claude-code-ide-terminal-backend 'ghostel)
+      (setq-local ring-bell-function #'claude-code-ide--notify)))))
 
 (defun claude-code-ide--terminal-reflow-filter (original-fn &rest args)
   "Filter terminal reflows to prevent height-only resize triggers.
@@ -774,6 +922,10 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
                      claude-code-ide-vterm-anti-flicker
                      (= (hash-table-count claude-code-ide--processes) 0))
             (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer))
+          ;; Remove vterm bell detector if no sessions remain
+          (when (and (eq claude-code-ide-terminal-backend 'vterm)
+                     (= (hash-table-count claude-code-ide--processes) 0))
+            (advice-remove 'vterm--filter #'claude-code-ide--vterm-bell-detector))
           ;; Stop MCP server for this project directory
           (claude-code-ide-mcp-stop-session directory)
           ;; Notify MCP tools server about session end with session ID
@@ -1118,6 +1270,8 @@ This function handles:
                             nil t)
                   ;; Set up terminal keybindings
                   (claude-code-ide--setup-terminal-keybindings)
+                  ;; Set up image pasting and bell notifications
+                  (claude-code-ide--setup-terminal-extras)
                   ;; Add terminal-specific exit hooks
                   (cond
                    ((eq claude-code-ide-terminal-backend 'vterm)

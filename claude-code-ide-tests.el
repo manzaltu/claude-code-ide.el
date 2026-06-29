@@ -2652,6 +2652,76 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (equal (reverse states) '(t nil))))
       (kill-buffer bufname))))
 
+;;; Tests for Image Paste and Notifications (Phase 3 port)
+
+(ert-deftest claude-code-ide-test-image-extension-for-mimetype ()
+  "Test MIME type to file extension mapping."
+  (should (equal (claude-code-ide--image-extension-for-mimetype "image/png") ".png"))
+  (should (equal (claude-code-ide--image-extension-for-mimetype 'image/jpeg) ".jpg"))
+  (should (equal (claude-code-ide--image-extension-for-mimetype "image/gif") ".gif"))
+  (should (equal (claude-code-ide--image-extension-for-mimetype "image/webp") ".webp"))
+  (should (equal (claude-code-ide--image-extension-for-mimetype "image/unknown") ".png")))
+
+(ert-deftest claude-code-ide-test-image-yank-media-handler ()
+  "Test image paste writes a temp file and injects an @path reference."
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (s) (setq sent s))))
+      (with-temp-buffer
+        (let ((claude-code-ide-image-paste-directory temporary-file-directory)
+              (claude-code-ide-image-paste-cleanup-on-kill t))
+          (should (claude-code-ide--image-yank-media-handler "image/png" "fakedata"))
+          (should (= (length claude-code-ide--pasted-image-files) 1))
+          (let ((path (car claude-code-ide--pasted-image-files)))
+            (should (file-exists-p path))
+            (should (string-suffix-p ".png" path))
+            (should (equal sent (concat "@" path " ")))
+            ;; Cleanup deletes the file and clears the list
+            (claude-code-ide--cleanup-pasted-images)
+            (should-not (file-exists-p path))
+            (should-not claude-code-ide--pasted-image-files)))))))
+
+(ert-deftest claude-code-ide-test-notify ()
+  "Test notification dispatch respects the enable flag."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'claude-code-ide-default-notification)
+               (lambda (title msg) (setq called (list title msg)))))
+      (let ((claude-code-ide-enable-notifications t)
+            (claude-code-ide-notification-function
+             #'claude-code-ide-default-notification))
+        (claude-code-ide--notify)
+        (should called))
+      (setq called nil)
+      (let ((claude-code-ide-enable-notifications nil)
+            (claude-code-ide-notification-function
+             #'claude-code-ide-default-notification))
+        (claude-code-ide--notify)
+        (should-not called)))))
+
+(ert-deftest claude-code-ide-test-vterm-bell-detector ()
+  "Test the bell detector notifies on BEL but ignores OSC title sequences."
+  (let ((orig-calls 0) (notified 0)
+        (claude-code-ide-enable-notifications t))
+    (cl-letf (((symbol-function 'claude-code-ide--notify)
+               (lambda (&rest _) (cl-incf notified)))
+              ((symbol-function 'claude-code-ide--session-buffer-p)
+               (lambda (_buf) t))
+              ((symbol-function 'process-buffer)
+               (lambda (_p) (current-buffer))))
+      (let ((orig (lambda (_p _i) (cl-incf orig-calls))))
+        ;; Bell present -> notify and pass through
+        (claude-code-ide--vterm-bell-detector orig nil "hello\007world")
+        (should (= notified 1))
+        (should (= orig-calls 1))
+        ;; OSC title bell -> no notify, still passes through
+        (claude-code-ide--vterm-bell-detector orig nil "\033]0;title\007")
+        (should (= notified 1))
+        (should (= orig-calls 2))
+        ;; No bell -> no notify, passes through
+        (claude-code-ide--vterm-bell-detector orig nil "plain text")
+        (should (= notified 1))
+        (should (= orig-calls 3))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
