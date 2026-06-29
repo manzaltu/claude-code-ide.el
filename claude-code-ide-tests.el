@@ -2722,6 +2722,100 @@ have completed before cleanup.  Waits up to 5 seconds."
         (should (= notified 1))
         (should (= orig-calls 3))))))
 
+;;; Tests for Diff Pluggability and Polish (Phase 4 port)
+
+(ert-deftest claude-code-ide-test-open-diff-dispatch ()
+  "Test openDiff routes to the configured backend."
+  (let ((called nil)
+        (session (make-claude-code-ide-mcp-session
+                  :project-dir "/tmp/"
+                  :active-diffs (make-hash-table :test 'equal))))
+    (cl-letf (((symbol-function 'claude-code-ide-mcp--find-session-for-file)
+               (lambda (_f) session))
+              ((symbol-function 'claude-code-ide-mcp--open-diff-simple)
+               (lambda (&rest _) (setq called 'simple) '((deferred . t))))
+              ((symbol-function 'claude-code-ide-mcp--open-diff-ediff)
+               (lambda (&rest _) (setq called 'ediff) '((deferred . t)))))
+      (let ((claude-code-ide-diff-tool 'simple)
+            (claude-code-ide-switch-tab-on-ediff nil))
+        (claude-code-ide-mcp-handle-open-diff
+         '((old_file_path . "/tmp/x") (new_file_path . "/tmp/x")
+           (new_file_contents . "c") (tab_name . "t")))
+        (should (eq called 'simple)))
+      (let ((claude-code-ide-diff-tool 'ediff)
+            (claude-code-ide-switch-tab-on-ediff nil))
+        (claude-code-ide-mcp-handle-open-diff
+         '((old_file_path . "/tmp/x") (new_file_path . "/tmp/x")
+           (new_file_contents . "c") (tab_name . "t")))
+        (should (eq called 'ediff))))))
+
+(ert-deftest claude-code-ide-test-simple-diff-accept-reject ()
+  "Test the simple diff backend registers, accepts, and rejects."
+  (let ((completed nil))
+    (cl-letf (((symbol-function 'diff-no-select)
+               (lambda (&rest _) (get-buffer-create "*claude-diff: difftab*")))
+              ((symbol-function 'claude-code-ide-mcp-complete-deferred)
+               (lambda (_session method result &optional key)
+                 (setq completed (list method result key)))))
+      (claude-code-ide-mcp-tests--with-temp-file test-file "old 1\nold 2\n"
+                                                 (let ((session (make-claude-code-ide-mcp-session
+                                                                 :project-dir "/tmp/"
+                                                                 :active-diffs (make-hash-table :test 'equal)
+                                                                 :deferred (make-hash-table :test 'equal))))
+                                                   (unwind-protect
+                                                       (progn
+                                                         ;; Accept path
+                                                         (let ((result (claude-code-ide-mcp--open-diff-simple
+                                                                        test-file test-file "new 1\nnew 2\n" "difftab" session)))
+                                                           (should (alist-get 'deferred result))
+                                                           (should (equal (alist-get 'unique-key result) "difftab"))
+                                                           (should (gethash "difftab" (claude-code-ide-mcp-session-active-diffs session))))
+                                                         (claude-code-ide-mcp--simple-diff-accept "difftab" session)
+                                                         (should (equal (car completed) "openDiff"))
+                                                         (should (equal (alist-get 'text (car (nth 1 completed))) "FILE_SAVED"))
+                                                         (should (string-match-p "new 1" (alist-get 'text (cadr (nth 1 completed)))))
+                                                         (should-not (gethash "difftab" (claude-code-ide-mcp-session-active-diffs session)))
+                                                         ;; Reject path
+                                                         (setq completed nil)
+                                                         (claude-code-ide-mcp--open-diff-simple
+                                                          test-file test-file "new content" "difftab2" session)
+                                                         (claude-code-ide-mcp--simple-diff-reject "difftab2" session)
+                                                         (should (equal (alist-get 'text (car (nth 1 completed))) "DIFF_REJECTED"))
+                                                         (should-not (gethash "difftab2" (claude-code-ide-mcp-session-active-diffs session))))
+                                                     (when-let ((buf (find-buffer-visiting test-file)))
+                                                       (with-current-buffer buf (set-buffer-modified-p nil))
+                                                       (kill-buffer buf))))))))
+
+(ert-deftest claude-code-ide-test-keepalive-init ()
+  "Test keepalive ping starts only when enabled."
+  (let ((started nil))
+    (cl-letf (((symbol-function 'claude-code-ide-mcp--start-ping-timer)
+               (lambda (_session) (setq started t))))
+      (let ((claude-code-ide-enable-keepalive nil)
+            (session (make-claude-code-ide-mcp-session :project-dir "/tmp/")))
+        (claude-code-ide-mcp--handle-initialize 1 nil session)
+        (should-not started))
+      (let ((claude-code-ide-enable-keepalive t)
+            (session (make-claude-code-ide-mcp-session :project-dir "/tmp/")))
+        (claude-code-ide-mcp--handle-initialize 1 nil session)
+        (should started)))))
+
+(ert-deftest claude-code-ide-test-toggle-debug ()
+  "Test the debug logging toggle command.
+The test suite mocks the debug module, so load the real file to test the
+real command, then restore the mock for the remaining tests."
+  (let ((mock-debug (symbol-function 'claude-code-ide-debug)))
+    (unwind-protect
+        (progn
+          (load (expand-file-name "claude-code-ide-debug.el") nil t)
+          (let ((claude-code-ide-debug nil))
+            (claude-code-ide-toggle-debug)
+            (should claude-code-ide-debug)
+            (claude-code-ide-toggle-debug)
+            (should-not claude-code-ide-debug)))
+      ;; Restore the mock so later tests are unaffected
+      (fset 'claude-code-ide-debug mock-debug))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

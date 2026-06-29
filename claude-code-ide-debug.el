@@ -77,6 +77,16 @@ This is a macro to avoid evaluating ARGS when debugging is disabled."
     (message "%s %s" (claude-code-ide--get-session-context) message)))
 
 ;;;###autoload
+(defun claude-code-ide-toggle-debug ()
+  "Toggle debug logging of WebSocket/JSON-RPC traffic on or off.
+When enabled, messages are logged to `claude-code-ide-debug-buffer';
+view it with `claude-code-ide-show-debug'."
+  (interactive)
+  (setq claude-code-ide-debug (not claude-code-ide-debug))
+  (message "Claude Code IDE debug logging %s"
+           (if claude-code-ide-debug "enabled" "disabled")))
+
+;;;###autoload
 (defun claude-code-ide-show-debug ()
   "Show the debug buffer."
   (interactive)

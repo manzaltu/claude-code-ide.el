@@ -254,12 +254,14 @@ Returns the session if found, nil otherwise."
         (error
          (claude-code-ide-debug "Failed to send notification %s: %s" method err))))))
 
-(defun claude-code-ide-mcp--handle-initialize (id _params)
-  "Handle the initialize request with ID."
+(defun claude-code-ide-mcp--handle-initialize (id _params &optional session)
+  "Handle the initialize request with ID.
+Optional SESSION is the MCP session; when keepalive is enabled, its ping
+timer is started here."
   (claude-code-ide-debug "Handling initialize request with id: %s" id)
-  ;; Start ping timer after successful initialization
-  ;; DISABLED: Ping causing connection issues - needs investigation
-  ;; (claude-code-ide-mcp--start-ping-timer)
+  ;; Start ping timer after successful initialization, when keepalive is enabled
+  (when (and session (bound-and-true-p claude-code-ide-enable-keepalive))
+    (claude-code-ide-mcp--start-ping-timer session))
 
   ;; Send tools/list_changed notification after initialization
   (claude-code-ide-debug "Scheduling tools/list_changed notification")
@@ -490,7 +492,7 @@ Optional SESSION contains the MCP session context."
              ;; Request handlers
              ((string= method "initialize")
               (claude-code-ide-debug "Handling initialize request")
-              (claude-code-ide-mcp--handle-initialize id params))
+              (claude-code-ide-mcp--handle-initialize id params session))
              ((string= method "tools/list")
               (claude-code-ide-debug "Handling tools/list request")
               (claude-code-ide-mcp--handle-tools-list id params))

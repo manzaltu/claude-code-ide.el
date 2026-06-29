@@ -55,6 +55,7 @@
 (defvar claude-code-ide-focus-claude-after-ediff)
 (defvar claude-code-ide-switch-tab-on-ediff)
 (defvar claude-code-ide-use-ide-diff)
+(defvar claude-code-ide-diff-tool)
 (defvar claude-code-ide-enable-resources)
 
 ;;; Tool Registry - Define variables first to ensure they're available
@@ -383,12 +384,13 @@ ARGUMENTS should contain `path' or `tab_name' of the file to close."
       (signal 'mcp-error '("Either 'path' or 'tab_name' must be provided"))))))
 
 (defun claude-code-ide-mcp-handle-open-diff (arguments)
-  "Open a diff view using ediff.
+  "Open a diff view for ARGUMENTS using the configured diff backend.
 ARGUMENTS should contain:
 - `old_file_path': Original file path
 - `new_file_path': New file path (usually same as old)
 - `new_file_contents': New content to diff against
-- `tab_name': Name for the diff tab"
+- `tab_name': Name for the diff tab
+The backend is selected by `claude-code-ide-diff-tool'."
   (let ((old-file-path (alist-get 'old_file_path arguments))
         (new-file-path (alist-get 'new_file_path arguments))
         (new-file-contents (alist-get 'new_file_contents arguments))
@@ -430,6 +432,18 @@ ARGUMENTS should contain:
               ;; Switch to the original tab
               (tab-bar-select-tab-by-name (alist-get 'name original-tab)))))))
 
+    ;; Dispatch to the configured diff backend
+    (if (eq claude-code-ide-diff-tool 'simple)
+        (claude-code-ide-mcp--open-diff-simple
+         old-file-path new-file-path new-file-contents tab-name session)
+      (claude-code-ide-mcp--open-diff-ediff
+       old-file-path new-file-path new-file-contents tab-name session))))
+
+(defun claude-code-ide-mcp--open-diff-ediff (old-file-path new-file-path new-file-contents tab-name session)
+  "Open an interactive ediff for TAB-NAME in SESSION.
+OLD-FILE-PATH, NEW-FILE-PATH and NEW-FILE-CONTENTS describe the diff.
+Returns a deferred-response indicator."
+  (progn
     ;; Save current window configuration
     (let* ((saved-winconf (current-window-configuration))
            (buffers (claude-code-ide-mcp--create-diff-buffers
@@ -576,6 +590,7 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
       (let ((buffer-A (alist-get 'buffer-A diff-info))
             (buffer-B (alist-get 'buffer-B diff-info))
             (control-buf (alist-get 'control-buffer diff-info))
+            (simple-diff-buffer (alist-get 'simple-diff-buffer diff-info))
             (file-exists (alist-get 'file-exists diff-info))
             ;; First try to get buffers from diff-info (stored during close_tab)
             (error-buffer (alist-get 'error-buffer diff-info))
@@ -602,6 +617,9 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
           (when (and buf (buffer-live-p buf))
             (claude-code-ide-debug "Killing ediff auxiliary buffer: %s" (buffer-name buf))
             (kill-buffer buf)))
+        ;; Kill the simple diff display buffer if present
+        (when (and simple-diff-buffer (buffer-live-p simple-diff-buffer))
+          (kill-buffer simple-diff-buffer))
         ;; Kill the temporary buffer (buffer B)
         (when (and buffer-B (buffer-live-p buffer-B))
           (kill-buffer buffer-B))
@@ -611,6 +629,89 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
           (kill-buffer buffer-A))
         ;; Remove from active diffs
         (remhash tab-name active-diffs)))))
+
+;;; Simple diff backend
+
+(defun claude-code-ide-mcp--simple-diff-accept (tab-name session)
+  "Accept the simple diff for TAB-NAME in SESSION.
+Sends the new content back to Claude and cleans up."
+  (interactive)
+  (let* ((active-diffs (claude-code-ide-mcp--get-active-diffs session))
+         (diff-info (gethash tab-name active-diffs))
+         (buffer-B (alist-get 'buffer-B diff-info))
+         (saved-winconf (alist-get 'saved-winconf diff-info))
+         (content (when (and buffer-B (buffer-live-p buffer-B))
+                    (with-current-buffer buffer-B (buffer-string)))))
+    (claude-code-ide-mcp-complete-deferred
+     session "openDiff"
+     (list `((type . "text") (text . "FILE_SAVED"))
+           `((type . "text") (text . ,(or content ""))))
+     tab-name)
+    (claude-code-ide-mcp--cleanup-diff tab-name session)
+    (when saved-winconf
+      (set-window-configuration saved-winconf))))
+
+(defun claude-code-ide-mcp--simple-diff-reject (tab-name session)
+  "Reject the simple diff for TAB-NAME in SESSION."
+  (interactive)
+  (let* ((active-diffs (claude-code-ide-mcp--get-active-diffs session))
+         (diff-info (gethash tab-name active-diffs))
+         (saved-winconf (alist-get 'saved-winconf diff-info)))
+    (claude-code-ide-mcp-complete-deferred
+     session "openDiff"
+     (list `((type . "text") (text . "DIFF_REJECTED"))
+           `((type . "text") (text . ,tab-name)))
+     tab-name)
+    (claude-code-ide-mcp--cleanup-diff tab-name session)
+    (when saved-winconf
+      (set-window-configuration saved-winconf))))
+
+(defun claude-code-ide-mcp--open-diff-simple (old-file-path new-file-path new-file-contents tab-name session)
+  "Show a read-only `diff-mode' diff for TAB-NAME in SESSION.
+OLD-FILE-PATH, NEW-FILE-PATH and NEW-FILE-CONTENTS describe the diff.
+Press \\`y' to accept the change or \\`q' to reject it.  Returns a
+deferred-response indicator."
+  (let* ((saved-winconf (current-window-configuration))
+         (buffers (claude-code-ide-mcp--create-diff-buffers
+                   old-file-path new-file-contents tab-name))
+         (buffer-A (car buffers))
+         (buffer-B (cdr buffers))
+         (file-exists (file-exists-p old-file-path))
+         (diff-buf (get-buffer-create (format "*claude-diff: %s*" tab-name)))
+         (active-diffs (claude-code-ide-mcp--get-active-diffs session)))
+    ;; Build the diff into our buffer (synchronously)
+    (diff-no-select buffer-A buffer-B nil t diff-buf)
+    (puthash tab-name
+             `((buffer-A . ,buffer-A)
+               (buffer-B . ,buffer-B)
+               (old-file-path . ,old-file-path)
+               (new-file-path . ,new-file-path)
+               (file-exists . ,file-exists)
+               (saved-winconf . ,saved-winconf)
+               (simple-diff-buffer . ,diff-buf)
+               (session . ,session)
+               (created-at . ,(current-time)))
+             active-diffs)
+    (with-current-buffer diff-buf
+      (setq buffer-read-only t)
+      (let ((map (make-sparse-keymap)))
+        (set-keymap-parent map (current-local-map))
+        (define-key map (kbd "y")
+                    (lambda () (interactive)
+                      (claude-code-ide-mcp--simple-diff-accept tab-name session)))
+        (define-key map (kbd "q")
+                    (lambda () (interactive)
+                      (claude-code-ide-mcp--simple-diff-reject tab-name session)))
+        (define-key map (kbd "n")
+                    (lambda () (interactive)
+                      (claude-code-ide-mcp--simple-diff-reject tab-name session)))
+        (use-local-map map))
+      (goto-char (point-min)))
+    (pop-to-buffer diff-buf)
+    (message "Claude diff: press y to accept, q to reject")
+    `((deferred . t)
+      (unique-key . ,tab-name)
+      (session . ,session))))
 
 (defun claude-code-ide-mcp-handle-close-all-diff-tabs (_arguments)
   "Close all diff tabs/buffers for the current session only."
