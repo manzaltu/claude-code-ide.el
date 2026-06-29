@@ -219,13 +219,6 @@ Diffs are enabled or disabled with `claude-code-ide-use-ide-diff'."
                  (const :tag "Simple (read-only diff-mode)" simple))
   :group 'claude-code-ide)
 
-(defcustom claude-code-ide-enable-keepalive nil
-  "Whether to send periodic WebSocket pings to keep the connection alive.
-Disabled by default.  Enable if long-idle sessions drop their connection;
-pings are sent every `claude-code-ide-mcp-ping-interval' seconds."
-  :type 'boolean
-  :group 'claude-code-ide)
-
 (defcustom claude-code-ide-enable-resources t
   "Whether to expose Emacs files to Claude Code as MCP resources.
 When non-nil (default), Claude Code can list and read open buffers,

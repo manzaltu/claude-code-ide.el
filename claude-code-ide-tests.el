@@ -2759,20 +2759,6 @@ have completed before cleanup.  Waits up to 5 seconds."
                                                        (with-current-buffer buf (set-buffer-modified-p nil))
                                                        (kill-buffer buf))))))))
 
-(ert-deftest claude-code-ide-test-keepalive-init ()
-  "Test keepalive ping starts only when enabled."
-  (let ((started nil))
-    (cl-letf (((symbol-function 'claude-code-ide-mcp--start-ping-timer)
-               (lambda (_session) (setq started t))))
-      (let ((claude-code-ide-enable-keepalive nil)
-            (session (make-claude-code-ide-mcp-session :project-dir "/tmp/")))
-        (claude-code-ide-mcp--handle-initialize 1 nil session)
-        (should-not started))
-      (let ((claude-code-ide-enable-keepalive t)
-            (session (make-claude-code-ide-mcp-session :project-dir "/tmp/")))
-        (claude-code-ide-mcp--handle-initialize 1 nil session)
-        (should started)))))
-
 (ert-deftest claude-code-ide-test-toggle-debug ()
   "Test the debug logging toggle command.
 The test suite mocks the debug module, so load the real file to test the
