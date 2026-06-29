@@ -142,6 +142,16 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-list-sessions=       | List all active Claude Code sessions and switch   |
 | =M-x claude-code-ide-check-status=        | Check if Claude Code CLI is installed and working |
 | =M-x claude-code-ide-insert-at-mentioned= | Send selected text to Claude prompt               |
+| =M-x claude-code-ide-send-region=         | Send the region (or whole buffer) to Claude       |
+| =M-x claude-code-ide-send-with-context=   | Send a command with current file/line context     |
+| =M-x claude-code-ide-send-buffer-file=    | Send the current buffer's file as @reference      |
+| =M-x claude-code-ide-send-file=           | Send a chosen file as an @reference               |
+| =M-x claude-code-ide-fix-error-at-point=  | Ask Claude to fix the diagnostic at point         |
+| =M-x claude-code-ide-send-return=         | Send a lone return (confirm a prompt)             |
+| =M-x claude-code-ide-send-1/2/3=          | Select option 1, 2, or 3 in a numbered menu       |
+| =M-x claude-code-ide-cycle-mode=          | Cycle Claude modes (sends Shift-Tab)              |
+| =M-x claude-code-ide-fork=                | Jump to a previous message (sends Escape-Escape)  |
+| =M-x claude-code-ide-toggle-read-only-mode= | Toggle read-only/copy mode in the terminal      |
 | =M-x claude-code-ide-send-escape=         | Send escape key to Claude terminal                |
 | =M-x claude-code-ide-insert-newline=      | Insert newline in Claude prompt (sends \ + Enter) |
 | =M-x claude-code-ide-toggle=              | Toggle visibility of Claude Code window           |
@@ -215,6 +225,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
 | ~claude-code-ide-enable-execute-code~           | Allow model to evaluate Elisp in Emacs      | ~t~                                    |
 | ~claude-code-ide-enable-resources~              | Expose files to Claude as MCP resources     | ~t~                                    |
+| ~claude-code-ide-large-buffer-threshold~        | Confirm before sending a buffer this large  | ~100000~                               |
 
 *** Side Window Configuration
 

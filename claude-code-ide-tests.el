@@ -2501,6 +2501,157 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (equal (plist-get file-path-arg :description)
                          "Path to the file to analyze for symbols")))))))
 
+;;; Tests for Terminal UX Commands (Phase 2 port)
+
+(ert-deftest claude-code-ide-test-format-file-reference ()
+  "Test @file:line reference formatting."
+  (with-temp-buffer
+    (insert "a\nb\nc\n")
+    (goto-char (point-min))
+    (setq buffer-file-name "/tmp/foo.el")
+    (should (equal (claude-code-ide--format-file-reference) "@/tmp/foo.el:1"))
+    (should (equal (claude-code-ide--format-file-reference nil 2 5) "@/tmp/foo.el:2-5"))
+    (should (equal (claude-code-ide--format-file-reference "/x/y.el" 3) "@/x/y.el:3"))
+    (set-buffer-modified-p nil))
+  ;; No file -> nil
+  (with-temp-buffer
+    (should-not (claude-code-ide--format-file-reference))))
+
+(ert-deftest claude-code-ide-test-format-errors-at-point ()
+  "Test diagnostic extraction at point via help-at-pt fallback."
+  (cl-letf (((symbol-function 'help-at-pt-kbd-string) (lambda () nil)))
+    (should-not (claude-code-ide--format-errors-at-point)))
+  (cl-letf (((symbol-function 'help-at-pt-kbd-string) (lambda () "boom error")))
+    (should (equal (claude-code-ide--format-errors-at-point) "boom error"))))
+
+(ert-deftest claude-code-ide-test-send-region ()
+  "Test send-region builds the correct text."
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'claude-code-ide--send-text)
+               (lambda (text) (setq sent text) nil)))
+      ;; With an active region
+      (with-temp-buffer
+        (insert "Hello\nWorld")
+        (goto-char (point-min))
+        (set-mark (point))
+        (goto-char (point-max))
+        (let ((transient-mark-mode t))
+          (activate-mark)
+          (claude-code-ide-send-region))
+        (should (equal sent "Hello\nWorld")))
+      ;; No region -> whole buffer
+      (setq sent nil)
+      (with-temp-buffer
+        (insert "Whole buffer")
+        (claude-code-ide-send-region)
+        (should (equal sent "Whole buffer"))))))
+
+(ert-deftest claude-code-ide-test-send-with-context ()
+  "Test send-with-context appends an @file:line reference."
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'claude-code-ide--send-text)
+               (lambda (text) (setq sent text) nil))
+              ((symbol-function 'read-string) (lambda (&rest _) "do something")))
+      (with-temp-buffer
+        (insert "a\nb\nc")
+        (goto-char (point-min))
+        (setq buffer-file-name "/tmp/ctx.el")
+        (claude-code-ide-send-with-context)
+        (set-buffer-modified-p nil)
+        (should (string-prefix-p "do something" sent))
+        (should (string-match-p "@/tmp/ctx.el:1" sent))))))
+
+(ert-deftest claude-code-ide-test-send-buffer-file ()
+  "Test send-buffer-file sends the buffer's file reference."
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'claude-code-ide--send-text)
+               (lambda (text) (setq sent text) nil)))
+      (with-temp-buffer
+        (insert "x")
+        (goto-char (point-min))
+        (setq buffer-file-name "/tmp/bf.el")
+        (claude-code-ide-send-buffer-file)
+        (set-buffer-modified-p nil)
+        (should (equal sent "@/tmp/bf.el:1")))
+      ;; No file -> user-error
+      (with-temp-buffer
+        (should-error (claude-code-ide-send-buffer-file) :type 'user-error)))))
+
+(ert-deftest claude-code-ide-test-send-file ()
+  "Test send-file injects an @path reference."
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'claude-code-ide--send-text)
+               (lambda (text) (setq sent text) nil)))
+      (claude-code-ide-send-file "/tmp/some/file.txt")
+      (should (equal sent "@/tmp/some/file.txt")))))
+
+(ert-deftest claude-code-ide-test-fix-error-at-point ()
+  "Test fix-error-at-point only sends when a diagnostic is present."
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'claude-code-ide--send-text)
+               (lambda (text) (setq sent text) nil)))
+      ;; No error -> nothing sent
+      (cl-letf (((symbol-function 'claude-code-ide--format-errors-at-point)
+                 (lambda () nil)))
+        (with-temp-buffer
+          (claude-code-ide-fix-error-at-point)
+          (should-not sent)))
+      ;; Error present -> sent text includes it
+      (cl-letf (((symbol-function 'claude-code-ide--format-errors-at-point)
+                 (lambda () "undefined var x")))
+        (with-temp-buffer
+          (insert "code")
+          (setq buffer-file-name "/tmp/err.el")
+          (claude-code-ide-fix-error-at-point)
+          (set-buffer-modified-p nil)
+          (should (string-match-p "undefined var x" sent)))))))
+
+(ert-deftest claude-code-ide-test-send-numbered ()
+  "Test numbered menu selection commands."
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'claude-code-ide--send-text)
+               (lambda (text) (setq sent text) nil)))
+      (claude-code-ide-send-1) (should (equal sent "1"))
+      (claude-code-ide-send-2) (should (equal sent "2"))
+      (claude-code-ide-send-3) (should (equal sent "3")))))
+
+(ert-deftest claude-code-ide-test-terminal-quick-keys ()
+  "Test return, cycle-mode, and fork dispatch to the terminal."
+  (let ((sent-strings '()) (returns 0) (escapes 0)
+        (bufname "*claude-test-term*"))
+    (get-buffer-create bufname)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                   (lambda (&rest _) bufname))
+                  ((symbol-function 'claude-code-ide--terminal-send-string)
+                   (lambda (s) (push s sent-strings)))
+                  ((symbol-function 'claude-code-ide--terminal-send-return)
+                   (lambda () (cl-incf returns)))
+                  ((symbol-function 'claude-code-ide--terminal-send-escape)
+                   (lambda () (cl-incf escapes))))
+          (claude-code-ide-send-return)
+          (should (= returns 1))
+          (claude-code-ide-cycle-mode)
+          (should (member "\e[Z" sent-strings))
+          (claude-code-ide-fork)
+          (should (= escapes 2)))
+      (kill-buffer bufname))))
+
+(ert-deftest claude-code-ide-test-toggle-read-only-mode ()
+  "Test read-only mode toggles its buffer-local state."
+  (let ((states '()) (bufname "*claude-test-term2*"))
+    (get-buffer-create bufname)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                   (lambda (&rest _) bufname))
+                  ((symbol-function 'claude-code-ide--terminal-set-read-only)
+                   (lambda (enable) (push enable states))))
+          (claude-code-ide-toggle-read-only-mode)
+          (claude-code-ide-toggle-read-only-mode)
+          ;; First call enables, second disables
+          (should (equal (reverse states) '(t nil))))
+      (kill-buffer bufname))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

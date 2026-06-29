@@ -82,6 +82,7 @@
 (declare-function vterm-send-string "vterm" (string))
 (declare-function vterm-send-escape "vterm" ())
 (declare-function vterm-send-return "vterm" ())
+(declare-function vterm-copy-mode "vterm" (&optional arg))
 (declare-function vterm--window-adjust-process-window-size "vterm" (&optional frame))
 
 ;; External function declarations for eat
@@ -89,6 +90,8 @@
 (declare-function eat-exec "eat" (buffer name command startfile &rest switches))
 (declare-function eat-term-send-string "eat" (terminal string))
 (declare-function eat-term-display-cursor "eat" (terminal))
+(declare-function eat-emacs-mode "eat" ())
+(declare-function eat-semi-char-mode "eat" ())
 (declare-function eat--adjust-process-window-size "eat" (process windows))
 
 ;; External function declarations for ghostel
@@ -210,6 +213,13 @@ When non-nil (default), Claude Code can list and read open buffers,
 recent files, and project files via the resources/list and
 resources/read MCP methods.  Set to nil to disable resource sharing."
   :type 'boolean
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-large-buffer-threshold 100000
+  "Buffer size in characters above which sending requires confirmation.
+Used by `claude-code-ide-send-region' when no region is active and the
+whole buffer would be sent."
+  :type 'integer
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-switch-tab-on-ediff t
@@ -562,12 +572,14 @@ This function binds:
    ((eq claude-code-ide-terminal-backend 'vterm)
     ;; For vterm, we set up local keybindings in vterm-mode-map
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
+    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape)
+    (local-set-key (kbd "C-c C-r") #'claude-code-ide-toggle-read-only-mode))
    ((eq claude-code-ide-terminal-backend 'eat)
     ;; For eat, we need to modify the semi-char mode map which is the default
     ;; We use local-set-key to make it buffer-local
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
+    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape)
+    (local-set-key (kbd "C-c C-r") #'claude-code-ide-toggle-read-only-mode))
    ((eq claude-code-ide-terminal-backend 'ghostel)
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
@@ -1226,6 +1238,80 @@ If the buffer is already visible, switch focus to it."
       (claude-code-ide-log "No active Claude Code sessions"))))
 
 ;;;###autoload
+;;; Terminal interaction helpers
+
+(defvar claude-code-ide-command-history nil
+  "History list for commands sent to Claude Code via the minibuffer.")
+
+(defvar-local claude-code-ide--read-only-active nil
+  "Whether read-only/copy mode is active in this Claude terminal buffer.")
+
+(defmacro claude-code-ide--with-terminal-buffer (&rest body)
+  "Execute BODY in the current project's Claude terminal buffer.
+Signals a `user-error' when there is no session for the project."
+  (declare (indent 0))
+  `(let ((buffer-name (claude-code-ide--get-buffer-name)))
+     (if-let ((buffer (get-buffer buffer-name)))
+         (with-current-buffer buffer ,@body)
+       (user-error "No Claude Code session for this project"))))
+
+(defun claude-code-ide--send-text (text)
+  "Send TEXT followed by a return to the current project's Claude terminal.
+Returns the Claude buffer on success, signals a `user-error' otherwise."
+  (claude-code-ide--with-terminal-buffer
+   (claude-code-ide--terminal-send-string text)
+   ;; Small delay to ensure the text is processed before sending return
+   (sit-for 0.1)
+   (claude-code-ide--terminal-send-return)
+   buffer))
+
+(defun claude-code-ide--format-file-reference (&optional file-name line-start line-end)
+  "Format a file reference in the @file:line style.
+FILE-NAME defaults to the current buffer's file.  LINE-START defaults to
+the current line.  LINE-END, when given, formats a line range."
+  (let ((file (or file-name (buffer-file-name)))
+        (start (or line-start (line-number-at-pos nil t))))
+    (when file
+      (if line-end
+          (format "@%s:%d-%d" file start line-end)
+        (format "@%s:%d" file start)))))
+
+(defun claude-code-ide--format-errors-at-point ()
+  "Return a string describing diagnostics at point.
+Tries Flycheck first, then falls back to `help-at-pt' (used by Flymake
+and other systems).  Returns nil when no diagnostics are found."
+  (cond
+   ((and (featurep 'flycheck) (bound-and-true-p flycheck-mode)
+         (fboundp 'flycheck-overlay-errors-at))
+    (let ((errors (flycheck-overlay-errors-at (point))))
+      (when errors
+        (string-trim-right
+         (mapconcat (lambda (err)
+                      (format "%s:%s: %s"
+                              (flycheck-error-filename err)
+                              (flycheck-error-line err)
+                              (flycheck-error-message err)))
+                    errors "\n")))))
+   ((help-at-pt-kbd-string)
+    (substring-no-properties (help-at-pt-kbd-string)))
+   (t nil)))
+
+(defun claude-code-ide--terminal-set-read-only (enable)
+  "Enable or disable read-only/copy mode in the current terminal buffer.
+When ENABLE is non-nil, switch to a navigable read-only mode; otherwise
+return to interactive mode."
+  (cond
+   ((eq claude-code-ide-terminal-backend 'vterm)
+    (if enable (vterm-copy-mode 1) (vterm-copy-mode -1)))
+   ((eq claude-code-ide-terminal-backend 'eat)
+    (if enable
+        (when (fboundp 'eat-emacs-mode) (eat-emacs-mode))
+      (when (fboundp 'eat-semi-char-mode) (eat-semi-char-mode))))
+   ((eq claude-code-ide-terminal-backend 'ghostel)
+    (user-error "Read-only mode is not supported for the ghostel backend"))
+   (t
+    (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
+
 (defun claude-code-ide-insert-at-mentioned ()
   "Insert selected text into Claude prompt."
   (interactive)
@@ -1280,17 +1366,129 @@ Use this to balance between visual smoothness and raw responsiveness."
 When called interactively, reads a prompt from the minibuffer.
 When called programmatically, sends the given PROMPT string."
   (interactive)
-  (let ((buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
-        (let ((prompt-to-send (or prompt (read-string "Claude prompt: "))))
-          (when (not (string-empty-p prompt-to-send))
-            (with-current-buffer buffer
-              (claude-code-ide--terminal-send-string prompt-to-send)
-              ;; Small delay to ensure prompt text is processed before sending return
-              (sit-for 0.1)
-              (claude-code-ide--terminal-send-return))
-            (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt-to-send)))
-      (user-error "No Claude Code session for this project"))))
+  (let ((prompt-to-send (or prompt (read-string "Claude prompt: "))))
+    (unless (string-empty-p prompt-to-send)
+      (claude-code-ide--send-text prompt-to-send)
+      (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt-to-send))))
+
+;;;###autoload
+(defun claude-code-ide-send-region (&optional arg)
+  "Send the active region to Claude Code.
+If no region is active, send the whole buffer, asking for confirmation
+when it exceeds `claude-code-ide-large-buffer-threshold'.  With prefix
+ARG, prompt for instructions to prepend to the text."
+  (interactive "P")
+  (let* ((text (if (use-region-p)
+                   (buffer-substring-no-properties (region-beginning) (region-end))
+                 (if (and (> (buffer-size) claude-code-ide-large-buffer-threshold)
+                          (not (yes-or-no-p "Buffer is large.  Send anyway? ")))
+                     nil
+                   (buffer-substring-no-properties (point-min) (point-max)))))
+         (instructions (when arg (read-string "Instructions for Claude: ")))
+         (full-text (if (and instructions (not (string-empty-p instructions)))
+                        (format "%s\n\n%s" instructions text)
+                      text)))
+    (when full-text
+      (claude-code-ide--send-text full-text))))
+
+;;;###autoload
+(defun claude-code-ide-send-buffer-file ()
+  "Send a reference to the current buffer's file to Claude Code."
+  (interactive)
+  (let ((ref (claude-code-ide--format-file-reference)))
+    (unless ref
+      (user-error "Current buffer is not visiting a file"))
+    (claude-code-ide--send-text ref)))
+
+;;;###autoload
+(defun claude-code-ide-send-file (file)
+  "Send a reference to FILE to Claude Code.
+Interactively, prompt for the file."
+  (interactive "fSend file to Claude: ")
+  (claude-code-ide--send-text (format "@%s" (expand-file-name file))))
+
+;;;###autoload
+(defun claude-code-ide-send-with-context ()
+  "Read a command and send it with the current file and line as context.
+If a region is active, include its line range."
+  (interactive)
+  (let* ((cmd (read-string "Claude command: " nil 'claude-code-ide-command-history))
+         (file-ref (if (use-region-p)
+                       (claude-code-ide--format-file-reference
+                        nil
+                        (line-number-at-pos (region-beginning) t)
+                        (line-number-at-pos (region-end) t))
+                     (claude-code-ide--format-file-reference)))
+         (full (if file-ref (format "%s\n%s" cmd file-ref) cmd)))
+    (claude-code-ide--send-text full)))
+
+;;;###autoload
+(defun claude-code-ide-fix-error-at-point ()
+  "Ask Claude Code to fix the diagnostic at point.
+Supports Flycheck, Flymake, and any system implementing `help-at-pt'."
+  (interactive)
+  (let ((error-text (claude-code-ide--format-errors-at-point))
+        (file-ref (claude-code-ide--format-file-reference)))
+    (if (not error-text)
+        (message "No errors found at point")
+      (claude-code-ide--send-text
+       (format "Fix this error at %s. Do not run any external linter; just fix the error at point using the context provided in the error message: <%s>"
+               (or file-ref "the current position") error-text)))))
+
+;;;###autoload
+(defun claude-code-ide-send-return ()
+  "Send a lone return to Claude Code (e.g. to confirm a prompt)."
+  (interactive)
+  (claude-code-ide--with-terminal-buffer
+   (claude-code-ide--terminal-send-return)))
+
+;;;###autoload
+(defun claude-code-ide-send-1 ()
+  "Select the first option in a Claude Code numbered menu."
+  (interactive)
+  (claude-code-ide--send-text "1"))
+
+;;;###autoload
+(defun claude-code-ide-send-2 ()
+  "Select the second option in a Claude Code numbered menu."
+  (interactive)
+  (claude-code-ide--send-text "2"))
+
+;;;###autoload
+(defun claude-code-ide-send-3 ()
+  "Select the third option in a Claude Code numbered menu."
+  (interactive)
+  (claude-code-ide--send-text "3"))
+
+;;;###autoload
+(defun claude-code-ide-cycle-mode ()
+  "Send Shift-Tab to Claude Code to cycle between modes.
+Claude cycles through default, auto-accept edits, and plan modes."
+  (interactive)
+  (claude-code-ide--with-terminal-buffer
+   (claude-code-ide--terminal-send-string "\e[Z")))
+
+;;;###autoload
+(defun claude-code-ide-fork ()
+  "Send escape-escape to Claude Code to jump to a previous message."
+  (interactive)
+  (claude-code-ide--with-terminal-buffer
+   (claude-code-ide--terminal-send-escape)
+   (sit-for 0.05)
+   (claude-code-ide--terminal-send-escape)))
+
+;;;###autoload
+(defun claude-code-ide-toggle-read-only-mode ()
+  "Toggle read-only/copy mode in the Claude Code terminal buffer.
+This makes the terminal navigable for selecting text without sending
+input to Claude.  Not supported for the ghostel backend."
+  (interactive)
+  (claude-code-ide--with-terminal-buffer
+   (setq claude-code-ide--read-only-active
+         (not claude-code-ide--read-only-active))
+   (claude-code-ide--terminal-set-read-only claude-code-ide--read-only-active)
+   (message "Claude Code read-only mode %s"
+            (if claude-code-ide--read-only-active "enabled" "disabled"))))
 
 ;;;###autoload
 (defun claude-code-ide-toggle ()

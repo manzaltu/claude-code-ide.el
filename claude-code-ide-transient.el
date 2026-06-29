@@ -41,6 +41,18 @@
 (declare-function claude-code-ide-send-prompt "claude-code-ide" ())
 (declare-function claude-code-ide-send-escape "claude-code-ide" ())
 (declare-function claude-code-ide-insert-newline "claude-code-ide" ())
+(declare-function claude-code-ide-send-region "claude-code-ide" (&optional arg))
+(declare-function claude-code-ide-send-with-context "claude-code-ide" ())
+(declare-function claude-code-ide-send-buffer-file "claude-code-ide" ())
+(declare-function claude-code-ide-send-file "claude-code-ide" (file))
+(declare-function claude-code-ide-fix-error-at-point "claude-code-ide" ())
+(declare-function claude-code-ide-send-return "claude-code-ide" ())
+(declare-function claude-code-ide-send-1 "claude-code-ide" ())
+(declare-function claude-code-ide-send-2 "claude-code-ide" ())
+(declare-function claude-code-ide-send-3 "claude-code-ide" ())
+(declare-function claude-code-ide-cycle-mode "claude-code-ide" ())
+(declare-function claude-code-ide-fork "claude-code-ide" ())
+(declare-function claude-code-ide-toggle-read-only-mode "claude-code-ide" ())
 (declare-function claude-code-ide-toggle "claude-code-ide" ())
 (declare-function claude-code-ide-check-status "claude-code-ide" ())
 (declare-function claude-code-ide--ensure-cli "claude-code-ide" ())
@@ -333,8 +345,31 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("e" "Send escape key" claude-code-ide-send-escape)
     ("n" "Insert newline" claude-code-ide-insert-newline)]
    ["Submenus"
+    ("S" "Send & quick actions" claude-code-ide-send-menu)
     ("C" "Configuration" claude-code-ide-config-menu)
     ("d" "Debugging" claude-code-ide-debug-menu)]])
+
+(transient-define-prefix claude-code-ide-send-menu ()
+  "Send content and quick responses to Claude Code."
+  ["Send to Claude Code"
+   ["Send"
+    ("r" "Region or buffer" claude-code-ide-send-region)
+    ("x" "Command with file/line context" claude-code-ide-send-with-context)
+    ("o" "Current buffer's file" claude-code-ide-send-buffer-file)
+    ("f" "A file" claude-code-ide-send-file)
+    ("p" "Prompt from minibuffer" claude-code-ide-send-prompt)
+    ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
+    ("E" "Fix error at point" claude-code-ide-fix-error-at-point)]
+   ["Quick responses"
+    ("y" "Return (confirm)" claude-code-ide-send-return)
+    ("1" "Select option 1" claude-code-ide-send-1)
+    ("2" "Select option 2" claude-code-ide-send-2)
+    ("3" "Select option 3" claude-code-ide-send-3)
+    ("e" "Escape" claude-code-ide-send-escape)
+    ("n" "Newline" claude-code-ide-insert-newline)
+    ("m" "Cycle mode (Shift-Tab)" claude-code-ide-cycle-mode)
+    ("k" "Fork (jump back)" claude-code-ide-fork)
+    ("z" "Toggle read-only mode" claude-code-ide-toggle-read-only-mode)]])
 
 (transient-define-prefix claude-code-ide-config-menu ()
   "Claude Code configuration menu."
