@@ -20,7 +20,7 @@ Claude Code IDE for Emacs provides native integration with Claude Code CLI throu
 - MCP protocol implementation for IDE integration
 - Tool support for file operations, editor state, and workspace info (selections, open editors, workspace folders, document save/dirty state)
 - MCP resources support for sharing open buffers, recent files, and project files with Claude
-- Image pasting into the terminal (Emacs 29+) and completion notifications when Claude awaits input
+- Completion notifications when Claude finishes and awaits your input
 - Extensible MCP tools server for accessing Emacs commands (xrefs, tree-sitter, project info, e.g.)
 - Diagnostic integration with Flycheck and Flymake
 - Advanced diff view with a selectable backend: interactive ediff (modify suggestions before applying) or a simple read-only diff
@@ -230,9 +230,6 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-enable-execute-code~           | Allow model to evaluate Elisp in Emacs      | ~t~                                    |
 | ~claude-code-ide-enable-resources~              | Expose files to Claude as MCP resources     | ~t~                                    |
 | ~claude-code-ide-large-buffer-threshold~        | Confirm before sending a buffer this large  | ~100000~                               |
-| ~claude-code-ide-enable-image-paste~            | Enable image paste via ~yank-media~ (Emacs 29+) | ~t~                                |
-| ~claude-code-ide-image-paste-directory~         | Directory for pasted image temp files       | ~/tmp~ (or temp dir)                   |
-| ~claude-code-ide-image-paste-cleanup-on-kill~   | Delete pasted images when buffer is killed  | ~t~                                    |
 | ~claude-code-ide-enable-notifications~          | Notify when Claude finishes and awaits input | ~t~                                   |
 | ~claude-code-ide-notification-function~         | Function called to notify the user          | ~claude-code-ide-default-notification~ |
 

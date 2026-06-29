@@ -2652,34 +2652,7 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (equal (reverse states) '(t nil))))
       (kill-buffer bufname))))
 
-;;; Tests for Image Paste and Notifications (Phase 3 port)
-
-(ert-deftest claude-code-ide-test-image-extension-for-mimetype ()
-  "Test MIME type to file extension mapping."
-  (should (equal (claude-code-ide--image-extension-for-mimetype "image/png") ".png"))
-  (should (equal (claude-code-ide--image-extension-for-mimetype 'image/jpeg) ".jpg"))
-  (should (equal (claude-code-ide--image-extension-for-mimetype "image/gif") ".gif"))
-  (should (equal (claude-code-ide--image-extension-for-mimetype "image/webp") ".webp"))
-  (should (equal (claude-code-ide--image-extension-for-mimetype "image/unknown") ".png")))
-
-(ert-deftest claude-code-ide-test-image-yank-media-handler ()
-  "Test image paste writes a temp file and injects an @path reference."
-  (let ((sent nil))
-    (cl-letf (((symbol-function 'claude-code-ide--terminal-send-string)
-               (lambda (s) (setq sent s))))
-      (with-temp-buffer
-        (let ((claude-code-ide-image-paste-directory temporary-file-directory)
-              (claude-code-ide-image-paste-cleanup-on-kill t))
-          (should (claude-code-ide--image-yank-media-handler "image/png" "fakedata"))
-          (should (= (length claude-code-ide--pasted-image-files) 1))
-          (let ((path (car claude-code-ide--pasted-image-files)))
-            (should (file-exists-p path))
-            (should (string-suffix-p ".png" path))
-            (should (equal sent (concat "@" path " ")))
-            ;; Cleanup deletes the file and clears the list
-            (claude-code-ide--cleanup-pasted-images)
-            (should-not (file-exists-p path))
-            (should-not claude-code-ide--pasted-image-files)))))))
+;;; Tests for Completion Notifications (Phase 3 port)
 
 (ert-deftest claude-code-ide-test-notify ()
   "Test notification dispatch respects the enable flag."

@@ -241,26 +241,6 @@ whole buffer would be sent."
   :type 'integer
   :group 'claude-code-ide)
 
-(defcustom claude-code-ide-enable-image-paste t
-  "Whether to enable image pasting via `yank-media' in Claude buffers.
-When non-nil, pasting an image into the Claude terminal writes it to a
-temporary file and inserts an @path reference at the prompt, which
-Claude's CLI reads natively.  Requires Emacs 29 or later."
-  :type 'boolean
-  :group 'claude-code-ide)
-
-(defcustom claude-code-ide-image-paste-directory
-  (if (file-directory-p "/tmp") "/tmp" temporary-file-directory)
-  "Directory where pasted images are written.
-Defaults to \"/tmp\" when available so the inserted @path stays short."
-  :type 'directory
-  :group 'claude-code-ide)
-
-(defcustom claude-code-ide-image-paste-cleanup-on-kill t
-  "Whether to delete pasted image temp files when the Claude buffer is killed."
-  :type 'boolean
-  :group 'claude-code-ide)
-
 (defcustom claude-code-ide-enable-notifications t
   "Whether to notify when Claude finishes and is awaiting input.
 Notifications are triggered by the terminal bell that Claude emits when
@@ -671,58 +651,6 @@ This function binds:
   (when-let ((name (if (stringp buffer) buffer (buffer-name buffer))))
     (string-prefix-p "*claude-code[" name)))
 
-;;; Image Pasting
-
-(defconst claude-code-ide--image-mime-extensions
-  '(("image/png" . ".png")
-    ("image/jpeg" . ".jpg")
-    ("image/jpg" . ".jpg")
-    ("image/gif" . ".gif")
-    ("image/webp" . ".webp")
-    ("image/bmp" . ".bmp"))
-  "Alist mapping image MIME-type prefix to file extension.")
-
-(defvar-local claude-code-ide--pasted-image-files nil
-  "List of temp image files pasted into this Claude buffer, for cleanup.")
-
-(defun claude-code-ide--image-extension-for-mimetype (mimetype)
-  "Return the file extension (including the dot) for MIMETYPE.
-MIMETYPE may be a symbol or a string.  Falls back to \".png\"."
-  (let* ((str (if (symbolp mimetype) (symbol-name mimetype) mimetype))
-         (match (seq-find (lambda (pair) (string-prefix-p (car pair) str))
-                          claude-code-ide--image-mime-extensions)))
-    (if match (cdr match) ".png")))
-
-(defun claude-code-ide--image-yank-media-handler (mimetype data)
-  "Handle an image paste in a Claude buffer.
-MIMETYPE is the MIME type (string or symbol); DATA is the raw bytes.
-Writes DATA to a temp file and injects an @path reference at the prompt."
-  (let* ((ext (claude-code-ide--image-extension-for-mimetype mimetype))
-         (temporary-file-directory claude-code-ide-image-paste-directory)
-         (path (make-temp-file "claude-image-" nil ext))
-         (coding-system-for-write 'binary))
-    (with-temp-file path (insert data))
-    (push path claude-code-ide--pasted-image-files)
-    (claude-code-ide--terminal-send-string (concat "@" path " "))
-    (message "Pasted image as %s" path)
-    t))
-
-(defun claude-code-ide--cleanup-pasted-images ()
-  "Delete temp image files created by `yank-media' in this buffer."
-  (when claude-code-ide-image-paste-cleanup-on-kill
-    (dolist (file claude-code-ide--pasted-image-files)
-      (when (file-exists-p file)
-        (ignore-errors (delete-file file))))
-    (setq claude-code-ide--pasted-image-files nil)))
-
-(defun claude-code-ide--register-image-yank-media-handler ()
-  "Register an image `yank-media-handler' in the current Claude buffer.
-No-op on Emacs versions without `yank-media-handler' (pre-29)."
-  (when (and claude-code-ide-enable-image-paste
-             (fboundp 'yank-media-handler))
-    (yank-media-handler "image/.*" #'claude-code-ide--image-yank-media-handler)
-    (add-hook 'kill-buffer-hook #'claude-code-ide--cleanup-pasted-images nil t)))
-
 ;;; Completion Notifications
 
 (defun claude-code-ide--pulse-modeline ()
@@ -764,9 +692,8 @@ are ignored."
   (funcall orig-fun process input))
 
 (defun claude-code-ide--setup-terminal-extras ()
-  "Set up image pasting and bell notifications in the current Claude buffer.
+  "Set up bell-based completion notifications in the current Claude buffer.
 Assumes the current buffer is the Claude terminal buffer."
-  (claude-code-ide--register-image-yank-media-handler)
   (when claude-code-ide-enable-notifications
     (cond
      ((eq claude-code-ide-terminal-backend 'vterm)
