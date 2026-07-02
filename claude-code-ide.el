@@ -76,6 +76,8 @@
 (defvar ghostel-set-title-function)
 (defvar ghostel-enable-title-tracking)
 (defvar ghostel-kill-buffer-on-exit)
+(defvar evil-ghostel-mode)
+(defvar evil-ghostel--escape-mode)
 
 ;; External function declarations for vterm
 (declare-function vterm "vterm" (&optional arg))
@@ -230,6 +232,27 @@ environments."
   :type '(choice (const :tag "vterm" vterm)
                  (const :tag "eat" eat)
                  (const :tag "ghostel" ghostel))
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-ghostel-evil-escape 'evil
+  "How insert-state ESC is routed in the ghostel backend's Claude buffers.
+Applied per buffer via `evil-ghostel--escape-mode', so it overrides the
+global `evil-ghostel-escape' default for Claude Code sessions only.
+
+Claude Code runs as a full-screen TUI (alt-screen / DECSET 1049), so
+`evil-ghostel-escape's default `auto' routes ESC to the terminal and
+never enters evil normal state.  The default here is `evil' so ESC
+switches to normal state for editing the prompt; note that Claude then
+no longer receives ESC as its interrupt key.
+
+Valid values match `evil-ghostel-escape': `auto', `terminal', `evil'.
+Set to nil to leave the buffer at the global `evil-ghostel-escape'
+default.  Has no effect unless the `evil-ghostel' package is loaded and
+the terminal backend is `ghostel'."
+  :type '(choice (const :tag "Evil (ESC enters normal state)" evil)
+                 (const :tag "Terminal (ESC sent to Claude)" terminal)
+                 (const :tag "Auto (alt-screen heuristic)" auto)
+                 (const :tag "Leave global default" nil))
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-no-flicker nil
@@ -485,6 +508,18 @@ cursor management, and process buffering for superior user experience."
     (setq-local ghostel-set-title-function nil))
    ((boundp 'ghostel-enable-title-tracking)
     (setq-local ghostel-enable-title-tracking nil))))
+
+(defun claude-code-ide--apply-ghostel-evil-escape ()
+  "Set the buffer-local ESC routing for the current ghostel buffer.
+Overrides `evil-ghostel--escape-mode' with
+`claude-code-ide-ghostel-evil-escape' so ESC behaves as configured in
+Claude Code sessions only, without touching the global
+`evil-ghostel-escape' default.  A nil setting leaves the value that
+`evil-ghostel-mode' derived from the global default in place.  No-op
+unless `evil-ghostel-mode' is active in this buffer."
+  (when (and claude-code-ide-ghostel-evil-escape
+             (bound-and-true-p evil-ghostel-mode))
+    (setq-local evil-ghostel--escape-mode claude-code-ide-ghostel-evil-escape)))
 
 (defun claude-code-ide--terminal-send-string (string)
   "Send STRING to the terminal in the current buffer."
@@ -1009,6 +1044,10 @@ Signals an error if terminal fails to initialize."
             ;; resets buffer-local variables.
             (claude-code-ide--disable-ghostel-title-tracking)
             (setq-local ghostel-kill-buffer-on-exit nil)
+            ;; `ghostel-mode-hook' has run by now, so if `evil-ghostel-mode'
+            ;; is enabled it has already seeded `evil-ghostel--escape-mode'
+            ;; from the global default; override it for this buffer only.
+            (claude-code-ide--apply-ghostel-evil-escape)
             (unless process
               (error "Failed to create ghostel process.  Please ensure ghostel is properly installed"))
             ;; Chain ghostel's own sentinel so its buffer-local timers,
