@@ -171,6 +171,12 @@
 
 (provide (quote ghostel))
 
+;; === Mock evil-ghostel module ===
+;; These stand in for the evil-ghostel package's variables so the ESC
+;; routing helper can be exercised in batch mode without evil installed.
+(defvar evil-ghostel-mode nil)
+(defvar evil-ghostel--escape-mode nil)
+
 ;; === Mock Emacs display functions ===
 (unless (fboundp 'display-buffer-in-side-window)
   (defun display-buffer-in-side-window (buffer _alist)
@@ -615,6 +621,30 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should (member "CLAUDE_CODE_SSE_PORT=12345" mock-ghostel-env))
             (should (member "TERM_PROGRAM=emacs" mock-ghostel-env))
             (should (member "FORCE_CODE_TERMINAL=true" mock-ghostel-env))))))))
+
+(ert-deftest claude-code-ide-test-ghostel-evil-escape-override ()
+  "Test that the ghostel evil ESC routing is overridden per buffer."
+  ;; Overrides the buffer-local escape mode when evil-ghostel-mode is on.
+  (with-temp-buffer
+    (setq-local evil-ghostel-mode t)
+    (setq-local evil-ghostel--escape-mode 'auto)
+    (let ((claude-code-ide-ghostel-evil-escape 'evil))
+      (claude-code-ide--apply-ghostel-evil-escape)
+      (should (eq evil-ghostel--escape-mode 'evil))))
+  ;; A nil setting leaves the value seeded from the global default alone.
+  (with-temp-buffer
+    (setq-local evil-ghostel-mode t)
+    (setq-local evil-ghostel--escape-mode 'auto)
+    (let ((claude-code-ide-ghostel-evil-escape nil))
+      (claude-code-ide--apply-ghostel-evil-escape)
+      (should (eq evil-ghostel--escape-mode 'auto))))
+  ;; No-op when evil-ghostel-mode is not active in the buffer.
+  (with-temp-buffer
+    (setq-local evil-ghostel-mode nil)
+    (setq-local evil-ghostel--escape-mode 'auto)
+    (let ((claude-code-ide-ghostel-evil-escape 'evil))
+      (claude-code-ide--apply-ghostel-evil-escape)
+      (should (eq evil-ghostel--escape-mode 'auto)))))
 
 (ert-deftest claude-code-ide-test-vterm-smart-renderer-passthrough ()
   "Test that vterm smart renderer passes through normal text immediately."
