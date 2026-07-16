@@ -237,6 +237,23 @@ Set =claude-code-ide-status-notify= to =t= to also be notified the moment a sess
                       "-message" (abbreviate-file-name dir))))
 #+end_src
 
+*** Session API for extensions
+
+The overview is built on a small public API for inspecting and reaching live sessions, so you can add your own session-aware UI without touching the internal process table. From =claude-code-ide=:
+
+- =(claude-code-ide-session-directories)= — directories of all live sessions.
+- =(claude-code-ide-session-live-p DIR)= — non-nil when a session runs in =DIR=.
+- =(claude-code-ide-session-buffer-name &optional DIR)= — the session's terminal buffer name.
+- =(claude-code-ide-current-working-directory)= — the current buffer's project root (or =default-directory=).
+- =(claude-code-ide-pop-to-session-buffer BUFFER)= — reach a session buffer the same way the rest of the package does.
+- =(claude-code-ide-cleanup-dead-sessions)= — prune entries whose process has exited.
+
+And directory-keyed views of MCP session state, from =claude-code-ide-mcp=:
+
+- =(claude-code-ide-mcp-session-connected-p DIR)= — a client is connected.
+- =(claude-code-ide-mcp-session-pending-permissions DIR)= — count of requests awaiting your approval (a positive count means the session needs you).
+- =(claude-code-ide-mcp-session-cli-pid-for DIR)= — PID of the connected CLI process.
+
 ** Window Management
 
 - Running =claude-code-ide= when a session is already active will toggle the window visibility

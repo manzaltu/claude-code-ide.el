@@ -2855,6 +2855,67 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (null (claude-code-ide-status--resume-entries
                    (make-hash-table :test 'equal))))))
 
+;;; Public session API
+
+(ert-deftest claude-code-ide-test-session-public-api ()
+  "The public session API mirrors the private process table."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (progn
+        (puthash "/tmp/a/" (current-buffer) claude-code-ide--processes)
+        (puthash "/tmp/b/" (current-buffer) claude-code-ide--processes)
+        ;; Enumeration returns every live directory.
+        (should (equal (sort (claude-code-ide-session-directories) #'string<)
+                       '("/tmp/a/" "/tmp/b/")))
+        ;; The liveness predicate tracks membership.
+        (should (claude-code-ide-session-live-p "/tmp/a/"))
+        (should-not (claude-code-ide-session-live-p "/tmp/missing/"))
+        ;; Buffer naming delegates to the configured namer.
+        (should (equal (claude-code-ide-session-buffer-name "/tmp/a/")
+                       (funcall claude-code-ide-buffer-name-function "/tmp/a/")))
+        ;; The working directory is a non-empty string.
+        (should (> (length (claude-code-ide-current-working-directory)) 0)))
+    (claude-code-ide-tests--clear-processes)))
+
+(ert-deftest claude-code-ide-test-session-public-api-delegation ()
+  "The cleanup and navigation wrappers delegate to the shared internals."
+  (let ((cleaned nil) (popped nil))
+    (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-processes)
+               (lambda () (setq cleaned t)))
+              ((symbol-function 'claude-code-ide--pop-to-session-buffer)
+               (lambda (buffer) (setq popped buffer))))
+      (claude-code-ide-cleanup-dead-sessions)
+      (claude-code-ide-pop-to-session-buffer 'a-buffer)
+      (should cleaned)
+      (should (eq popped 'a-buffer)))))
+
+(ert-deftest claude-code-ide-test-mcp-session-query-api ()
+  "Directory-keyed predicates report connection, pending permissions, and PID."
+  (require 'claude-code-ide-mcp)
+  (let* ((claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+         (deferred (make-hash-table :test 'equal))
+         (session (make-claude-code-ide-mcp-session
+                   :server nil :client nil :port 12345
+                   :project-dir "/tmp/mcp/"
+                   :deferred deferred
+                   :ping-timer nil :selection-timer nil
+                   :last-selection nil :cli-pid 4242)))
+    (puthash "/tmp/mcp/" session claude-code-ide-mcp--sessions)
+    ;; No client connected yet.
+    (should-not (claude-code-ide-mcp-session-connected-p "/tmp/mcp/"))
+    (setf (claude-code-ide-mcp-session-client session) 'ws)
+    (should (claude-code-ide-mcp-session-connected-p "/tmp/mcp/"))
+    ;; Pending-permission count reflects the deferred table.
+    (should (= (claude-code-ide-mcp-session-pending-permissions "/tmp/mcp/") 0))
+    (puthash "req-1" 'callback deferred)
+    (should (= (claude-code-ide-mcp-session-pending-permissions "/tmp/mcp/") 1))
+    ;; The CLI PID is surfaced by directory.
+    (should (= (claude-code-ide-mcp-session-cli-pid-for "/tmp/mcp/") 4242))
+    ;; Unknown directories report nil throughout, never erroring.
+    (should-not (claude-code-ide-mcp-session-connected-p "/tmp/none/"))
+    (should-not (claude-code-ide-mcp-session-pending-permissions "/tmp/none/"))
+    (should-not (claude-code-ide-mcp-session-cli-pid-for "/tmp/none/"))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

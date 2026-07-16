@@ -776,6 +776,44 @@ everywhere."
       (select-window window)
     (claude-code-ide--display-buffer-in-side-window buffer)))
 
+;;;; Public session API
+;; A small, stable surface over the private process table and buffer/window
+;; helpers so overviews and extensions (such as `claude-code-ide-status') can
+;; enumerate and reach sessions without depending on internal `--' symbols.
+
+(defun claude-code-ide-session-directories ()
+  "Return the directories of all live Claude Code sessions.
+The list is a snapshot; it may include an entry whose process has just
+exited until `claude-code-ide-cleanup-dead-sessions' prunes it."
+  (let (dirs)
+    (maphash (lambda (directory _process) (push directory dirs))
+             claude-code-ide--processes)
+    (nreverse dirs)))
+
+(defun claude-code-ide-session-live-p (directory)
+  "Return non-nil when a live Claude Code session runs in DIRECTORY."
+  (and (gethash directory claude-code-ide--processes) t))
+
+(defun claude-code-ide-session-buffer-name (&optional directory)
+  "Return the terminal buffer name for the session in DIRECTORY.
+DIRECTORY defaults to the current working directory."
+  (claude-code-ide--get-buffer-name directory))
+
+(defun claude-code-ide-current-working-directory ()
+  "Return the working directory of the current buffer's session context.
+This is the project root when in a project, else `default-directory'."
+  (claude-code-ide--get-working-directory))
+
+(defun claude-code-ide-cleanup-dead-sessions ()
+  "Prune process-table entries whose Claude process has exited."
+  (claude-code-ide--cleanup-dead-processes))
+
+(defun claude-code-ide-pop-to-session-buffer (buffer)
+  "Navigate to the Claude Code session shown in BUFFER.
+Selects BUFFER's window if visible, else displays it via the configured
+side window — the shared navigation path used across the package."
+  (claude-code-ide--pop-to-session-buffer buffer))
+
 (defvar claude-code-ide--cleanup-in-progress nil
   "Flag to prevent recursive cleanup calls.")
 

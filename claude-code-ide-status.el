@@ -52,12 +52,11 @@
 (require 'vc-git)
 (require 'claude-code-ide)
 
-;; Forward declarations for the MCP session struct accessors (defined in
+;; Forward declarations for the public MCP session-query API (defined in
 ;; claude-code-ide-mcp.el, loaded transitively by claude-code-ide).
-(declare-function claude-code-ide-mcp--get-session-for-project "claude-code-ide-mcp" (project-dir))
-(declare-function claude-code-ide-mcp-session-client "claude-code-ide-mcp" (session))
-(declare-function claude-code-ide-mcp-session-deferred "claude-code-ide-mcp" (session))
-(declare-function claude-code-ide-mcp-session-cli-pid "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-connected-p "claude-code-ide-mcp" (directory))
+(declare-function claude-code-ide-mcp-session-pending-permissions "claude-code-ide-mcp" (directory))
+(declare-function claude-code-ide-mcp-session-cli-pid-for "claude-code-ide-mcp" (directory))
 
 (defvar claude-code-ide-status-buffer-name "*Claude Sessions*"
   "Name of the buffer showing the Claude session status list.")
@@ -152,17 +151,15 @@ previous poll; a change stamps its last-active time.  A directory seen for
 the first time is only recorded as a baseline, so a merely-open terminal is
 not mistaken for one that just produced output."
   (let ((now (float-time)))
-    (maphash
-     (lambda (dir _process)
-       (when-let ((buffer (get-buffer (claude-code-ide--get-buffer-name dir))))
-         (let ((tick (buffer-chars-modified-tick buffer))
-               (entry (gethash dir claude-code-ide-status--activity)))
-           (cond
-            ((null entry)
-             (puthash dir (cons tick 0.0) claude-code-ide-status--activity))
-            ((/= tick (car entry))
-             (puthash dir (cons tick now) claude-code-ide-status--activity))))))
-     claude-code-ide--processes)))
+    (dolist (dir (claude-code-ide-session-directories))
+      (when-let ((buffer (get-buffer (claude-code-ide-session-buffer-name dir))))
+        (let ((tick (buffer-chars-modified-tick buffer))
+              (entry (gethash dir claude-code-ide-status--activity)))
+          (cond
+           ((null entry)
+            (puthash dir (cons tick 0.0) claude-code-ide-status--activity))
+           ((/= tick (car entry))
+            (puthash dir (cons tick now) claude-code-ide-status--activity))))))))
 
 (defun claude-code-ide-status--busy-p (dir)
   "Return non-nil when DIR's terminal produced output very recently.
@@ -177,19 +174,16 @@ One of `permission', `input', `working', `waiting', `idle', or
 all; an `input' flag (Claude blocked on your input) wins over active
 output; output wins over a `waiting' flag (a finished turn, shown once the
 final output has flushed); a merely-connected session is `idle'."
-  (let* ((session (claude-code-ide-mcp--get-session-for-project dir))
-         (live (gethash dir claude-code-ide--processes))
-         (flag (gethash dir claude-code-ide-status--attention)))
+  (let* ((live (claude-code-ide-session-live-p dir))
+         (flag (gethash dir claude-code-ide-status--attention))
+         (pending (claude-code-ide-mcp-session-pending-permissions dir)))
     (cond
-     ((and session
-           (let ((deferred (claude-code-ide-mcp-session-deferred session)))
-             (and deferred (> (hash-table-count deferred) 0))))
-      'permission)
+     ((and pending (> pending 0)) 'permission)
      ((eq flag 'input) 'input)
      ((and live (claude-code-ide-status--busy-p dir))
       'working)
      (flag 'waiting)
-     ((and session (claude-code-ide-mcp-session-client session))
+     ((claude-code-ide-mcp-session-connected-p dir)
       'idle)
      (t 'disconnected))))
 
@@ -229,7 +223,7 @@ DIR defaults to the current project directory.  Normalising means an
 external caller (such as a Stop hook passing \"$CLAUDE_PROJECT_DIR\"
 without a trailing slash) still matches the live session's entry."
   (file-name-as-directory
-   (expand-file-name (or dir (claude-code-ide--get-working-directory)))))
+   (expand-file-name (or dir (claude-code-ide-current-working-directory)))))
 
 ;;;###autoload
 (defun claude-code-ide-status-mark-waiting (&optional dir reason)
@@ -262,10 +256,9 @@ Reverses the deterministic mapping from directory to buffer name so any
 live session's terminal buffer can be recognised regardless of backend."
   (when-let ((name (and (buffer-live-p buffer) (buffer-name buffer))))
     (catch 'found
-      (maphash (lambda (dir _process)
-                 (when (equal name (claude-code-ide--get-buffer-name dir))
-                   (throw 'found dir)))
-               claude-code-ide--processes)
+      (dolist (dir (claude-code-ide-session-directories))
+        (when (equal name (claude-code-ide-session-buffer-name dir))
+          (throw 'found dir)))
       nil)))
 
 (defun claude-code-ide-status--clear-on-select (&optional frame-or-window)
@@ -358,8 +351,7 @@ rather than by the glyph of the label string."
 
 (defun claude-code-ide-status--uptime-string (dir)
   "Return how long the Claude process in DIR has run, or \"\" if unknown."
-  (or (when-let* ((session (claude-code-ide-mcp--get-session-for-project dir))
-                  (pid (claude-code-ide-mcp-session-cli-pid session))
+  (or (when-let* ((pid (claude-code-ide-mcp-session-cli-pid-for dir))
                   (attrs (ignore-errors (process-attributes pid)))
                   (etime (alist-get 'etime attrs)))
         (claude-code-ide-status--format-duration (float-time etime)))
@@ -406,21 +398,19 @@ so the column sorts by urgency rather than by the label's leading glyph."
   "Return `tabulated-list-mode' entries for all live Claude sessions.
 Rows are ordered by urgency: a pending permission first, then working,
 waiting, idle, and disconnected."
-  (claude-code-ide--cleanup-dead-processes)
+  (claude-code-ide-cleanup-dead-sessions)
   (let (rows)
-    (maphash
-     (lambda (dir _process)
-       (let ((state  (claude-code-ide-status--state-for dir))
-             (branch (or (claude-code-ide-status--branch dir) "—")))
-         (push (cons state
-                     (list (cons dir 'live)
-                           (vector (claude-code-ide-status--state-label state)
-                                   (abbreviate-file-name dir)
-                                   branch
-                                   (claude-code-ide-status--uptime-string dir)
-                                   (claude-code-ide-status--activity-string dir))))
-               rows)))
-     claude-code-ide--processes)
+    (dolist (dir (claude-code-ide-session-directories))
+      (let ((state  (claude-code-ide-status--state-for dir))
+            (branch (or (claude-code-ide-status--branch dir) "—")))
+        (push (cons state
+                    (list (cons dir 'live)
+                          (vector (claude-code-ide-status--state-label state)
+                                  (abbreviate-file-name dir)
+                                  branch
+                                  (claude-code-ide-status--uptime-string dir)
+                                  (claude-code-ide-status--activity-string dir))))
+              rows)))
     (mapcar #'cdr
             (sort rows (lambda (a b)
                          (< (claude-code-ide-status--state-rank (car a))
@@ -564,17 +554,15 @@ avoid rebuilding it again during printing."
 Cheap enough to recompute on each redisplay: it counts live states and
 reuses the resumable-project cache without rescanning the disk."
   (let ((live 0) (permission 0) (input 0) (working 0) (waiting 0) (resumable 0))
-    (maphash
-     (lambda (dir _process)
-       (setq live (1+ live))
-       (pcase (claude-code-ide-status--state-for dir)
-         ('permission (setq permission (1+ permission)))
-         ('input (setq input (1+ input)))
-         ('working (setq working (1+ working)))
-         ('waiting (setq waiting (1+ waiting)))))
-     claude-code-ide--processes)
+    (dolist (dir (claude-code-ide-session-directories))
+      (setq live (1+ live))
+      (pcase (claude-code-ide-status--state-for dir)
+        ('permission (setq permission (1+ permission)))
+        ('input (setq input (1+ input)))
+        ('working (setq working (1+ working)))
+        ('waiting (setq waiting (1+ waiting)))))
     (dolist (entry claude-code-ide-status--resume-cache)
-      (unless (gethash (car (car entry)) claude-code-ide--processes)
+      (unless (claude-code-ide-session-live-p (car (car entry)))
         (setq resumable (1+ resumable))))
     (let (parts)
       (when (> permission 0) (push (format "%d permission" permission) parts))
@@ -688,10 +676,10 @@ project, resume Claude in that directory."
       (user-error "No session on this line"))
     (pcase kind
       ('live
-       (if-let ((buffer (get-buffer (claude-code-ide--get-buffer-name dir))))
+       (if-let ((buffer (get-buffer (claude-code-ide-session-buffer-name dir))))
            (progn
              (claude-code-ide-status-mark-active dir)
-             (claude-code-ide--pop-to-session-buffer buffer))
+             (claude-code-ide-pop-to-session-buffer buffer))
          (user-error "The buffer for %s no longer exists" (abbreviate-file-name dir))))
       ('resume
        (let ((default-directory dir))
@@ -734,14 +722,14 @@ leaving the overview window and other docked windows untouched."
       (user-error "No session on this line"))
     (pcase kind
       ('live
-       (if-let ((buffer (get-buffer (claude-code-ide--get-buffer-name dir))))
+       (if-let ((buffer (get-buffer (claude-code-ide-session-buffer-name dir))))
            (progn
              (claude-code-ide-status-mark-active dir)
              (if-let ((win (claude-code-ide-status--display-in-split buffer)))
                  (select-window win)
                ;; No main window to split (frame is all side windows): fall
                ;; back to the ordinary side-window display.
-               (claude-code-ide--pop-to-session-buffer buffer)))
+               (claude-code-ide-pop-to-session-buffer buffer)))
          (user-error "The buffer for %s no longer exists" (abbreviate-file-name dir))))
       ('resume
        ;; `display-buffer-overriding-action' is consulted before the side-window
@@ -769,7 +757,7 @@ stop.  The confirmation requires a full `yes'/`no' answer even when
     (when (let ((use-short-answers nil))
             (yes-or-no-p (format "Stop Claude session in %s? "
                                  (abbreviate-file-name dir))))
-      (if-let ((buffer (get-buffer (claude-code-ide--get-buffer-name dir))))
+      (if-let ((buffer (get-buffer (claude-code-ide-session-buffer-name dir))))
           (progn
             (kill-buffer buffer)
             (claude-code-ide-status--maybe-refresh))
@@ -934,22 +922,20 @@ a session needs you.  Clickable to open the overview."
 (defun claude-code-ide-status--poll-attention ()
   "Refresh the breakdown badge and notify on newly-attentive sessions."
   (let ((counts nil) (total 0))
-    (maphash
-     (lambda (dir _process)
-       (setq total (1+ total))
-       (let* ((state (claude-code-ide-status--state-for dir))
-              ;; Only these states are worth a notification.
-              (attention (and (memq state '(permission input waiting)) state)))
-         (setf (alist-get state counts 0) (1+ (alist-get state counts 0)))
-         ;; Edge trigger: notify only as a session enters an attention state.
-         (when (and attention
-                    claude-code-ide-status-notify
-                    (not (eq attention (gethash dir claude-code-ide-status--attention-seen))))
-           (funcall claude-code-ide-status-notify-function dir attention))
-         (if attention
-             (puthash dir attention claude-code-ide-status--attention-seen)
-           (remhash dir claude-code-ide-status--attention-seen))))
-     claude-code-ide--processes)
+    (dolist (dir (claude-code-ide-session-directories))
+      (setq total (1+ total))
+      (let* ((state (claude-code-ide-status--state-for dir))
+             ;; Only these states are worth a notification.
+             (attention (and (memq state '(permission input waiting)) state)))
+        (setf (alist-get state counts 0) (1+ (alist-get state counts 0)))
+        ;; Edge trigger: notify only as a session enters an attention state.
+        (when (and attention
+                   claude-code-ide-status-notify
+                   (not (eq attention (gethash dir claude-code-ide-status--attention-seen))))
+          (funcall claude-code-ide-status-notify-function dir attention))
+        (if attention
+            (puthash dir attention claude-code-ide-status--attention-seen)
+          (remhash dir claude-code-ide-status--attention-seen))))
     (setq claude-code-ide-status--attention-lighter
           (claude-code-ide-status--attention-lighter-string counts total))
     (force-mode-line-update t)))
