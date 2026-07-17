@@ -198,11 +198,21 @@ Assumes the current buffer is the status buffer."
   ;; The column header is printed as the first buffer line; mark it (and its
   ;; newline) `cursor-intangible' so point cannot rest on it, then nudge point
   ;; onto the first real row.  Re-applied here because each print rewrites it.
-  (let ((inhibit-read-only t))
-    (put-text-property (point-min)
-                       (save-excursion (goto-char (point-min))
-                                       (forward-line 1) (point))
-                       'cursor-intangible t))
+  (let ((inhibit-read-only t)
+        (row1 (save-excursion (goto-char (point-min))
+                              (forward-line 1) (point))))
+    (put-text-property (point-min) row1 'cursor-intangible t)
+    ;; Text properties are rear-sticky by default, so without this the start
+    ;; of row 1 inherits the header's `cursor-intangible' (via
+    ;; `get-pos-property').  `cursor-sensor' would then treat the first row as
+    ;; intangible and try to move point off it, calling
+    ;; `cursor-sensor-tangible-pos', which dereferences the
+    ;; `cursor-intangible--last-point' window parameter — nil on a fresh
+    ;; window's first redisplay — and signals (wrong-type-argument
+    ;; number-or-marker-p nil).  Marking the boundary rear-nonsticky keeps the
+    ;; property from bleeding onto row 1 so the row stays tangible.
+    (when (> row1 (point-min))
+      (put-text-property (1- row1) row1 'rear-nonsticky '(cursor-intangible))))
   (when (null (tabulated-list-get-id))
     (claude-code-ide-status--goto-first-row))
   ;; `tabulated-list' prints nothing when there are no rows; add a note.

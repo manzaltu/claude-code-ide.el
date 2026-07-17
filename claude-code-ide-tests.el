@@ -2882,6 +2882,37 @@ have completed before cleanup.  Waits up to 5 seconds."
     (claude-code-ide-status-previous-line)
     (should (equal (car (tabulated-list-get-id)) "2"))))
 
+(ert-deftest claude-code-ide-test-status-header-intangible-no-bleed ()
+  "`redraw' marks the header `cursor-intangible' without bleeding onto row 1.
+Text properties are rear-sticky by default, so the first row's start would
+otherwise inherit the header's `cursor-intangible' via `get-pos-property'
+and make `cursor-sensor' try to move point off a fresh window (signalling
+`wrong-type-argument number-or-marker-p nil' on the first redisplay)."
+  (claude-code-ide-tests--clear-processes)
+  (with-temp-buffer
+    (claude-code-ide-status-mode)
+    (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-processes)
+               (lambda () nil))
+              ;; One live row so there is a first data row to inspect.
+              ((symbol-function 'claude-code-ide-status--entries)
+               (lambda ()
+                 (list (list (cons "/tmp/x/" 'live)
+                             (vector (claude-code-ide-status--state-label 'idle)
+                                     "~/x/" "main" "" ""))))))
+      (claude-code-ide-status--redraw)
+      (let ((row1 (save-excursion (goto-char (point-min))
+                                  (forward-line 1) (point))))
+        ;; The header line itself carries the property (so point is repelled
+        ;; from it — `cursor-sensor' checks `get-pos-property', which sees it
+        ;; on interior header positions via rear-stickiness).
+        (should (get-char-property (point-min) 'cursor-intangible))
+        (should (get-pos-property (1+ (point-min)) 'cursor-intangible))
+        ;; The first row's start does not — the property is stopped at the
+        ;; boundary, so `cursor-sensor' leaves the row tangible.
+        (should-not (get-pos-property row1 'cursor-intangible))
+        (should (equal (car (get-text-property (1- row1) 'rear-nonsticky))
+                       'cursor-intangible))))))
+
 ;;; Public session API
 
 (ert-deftest claude-code-ide-test-session-public-api ()
