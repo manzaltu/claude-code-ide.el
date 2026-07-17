@@ -47,6 +47,7 @@
 
 (require 'cl-lib)
 (require 'seq)
+(require 'cursor-sensor)
 (require 'hl-line)
 (require 'tabulated-list)
 (require 'vc-git)
@@ -194,6 +195,16 @@ so the selection follows a session across refreshes and reorderings; the
 `hl-line' highlight tracks it without relying on a fragile cursor offset.
 Assumes the current buffer is the status buffer."
   (revert-buffer)
+  ;; The column header is printed as the first buffer line; mark it (and its
+  ;; newline) `cursor-intangible' so point cannot rest on it, then nudge point
+  ;; onto the first real row.  Re-applied here because each print rewrites it.
+  (let ((inhibit-read-only t))
+    (put-text-property (point-min)
+                       (save-excursion (goto-char (point-min))
+                                       (forward-line 1) (point))
+                       'cursor-intangible t))
+  (when (null (tabulated-list-get-id))
+    (claude-code-ide-status--goto-first-row))
   ;; `tabulated-list' prints nothing when there are no rows; add a note.
   (when (null tabulated-list-entries)
     (let ((inhibit-read-only t))
@@ -581,6 +592,38 @@ reuses the resumable-project cache without rescanning the disk."
 
 ;;; Major mode and commands
 
+(defun claude-code-ide-status--goto-first-row ()
+  "Move point to the first session row, skipping the column-header line."
+  (goto-char (point-min))
+  (while (and (not (eobp)) (null (tabulated-list-get-id)))
+    (forward-line 1)))
+
+(defun claude-code-ide-status--goto-last-row ()
+  "Move point to the last session row, if any."
+  (goto-char (point-max))
+  (while (and (not (bobp)) (null (tabulated-list-get-id)))
+    (forward-line -1)))
+
+(defun claude-code-ide-status-next-line (&optional n)
+  "Move down N session rows, wrapping past the last row back to the first.
+Only lines carrying a row id are targets, so the column-header line is
+skipped."
+  (interactive "p")
+  (dotimes (_ (max 1 (or n 1)))
+    (forward-line 1)
+    ;; Off the end (the trailing line has no id): wrap to the first row.
+    (when (null (tabulated-list-get-id))
+      (claude-code-ide-status--goto-first-row))))
+
+(defun claude-code-ide-status-previous-line (&optional n)
+  "Move up N session rows, wrapping past the first row to the last."
+  (interactive "p")
+  (dotimes (_ (max 1 (or n 1)))
+    (let ((stuck (not (zerop (forward-line -1)))))
+      ;; Stuck at the top, or stepped onto the header (no id): wrap to the last.
+      (when (or stuck (null (tabulated-list-get-id)))
+        (claude-code-ide-status--goto-last-row)))))
+
 (defvar claude-code-ide-status-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'claude-code-ide-status-visit)
@@ -594,6 +637,14 @@ reuses the resumable-project cache without rescanning the disk."
     (define-key map (kbd "S")   #'claude-code-ide-status-sort)
     (define-key map (kbd "/")   #'claude-code-ide-status-filter)
     (define-key map (kbd "g")   #'claude-code-ide-status-refresh)
+    ;; Wrap-around row movement: past the last row rolls to the first and
+    ;; vice versa, and the header (a window header line) is never a target.
+    (define-key map (kbd "n")      #'claude-code-ide-status-next-line)
+    (define-key map (kbd "p")      #'claude-code-ide-status-previous-line)
+    (define-key map (kbd "C-n")    #'claude-code-ide-status-next-line)
+    (define-key map (kbd "C-p")    #'claude-code-ide-status-previous-line)
+    (define-key map (kbd "<down>") #'claude-code-ide-status-next-line)
+    (define-key map (kbd "<up>")   #'claude-code-ide-status-previous-line)
     map)
   "Keymap for `claude-code-ide-status-mode'.")
 
@@ -607,11 +658,16 @@ projects from Claude's on-disk history."
          ("Uptime" 8 t) ("Activity" 12 t)]
         tabulated-list-entries #'claude-code-ide-status--entries
         tabulated-list-padding 1
-        ;; Free the window header line for the count summary; the column
-        ;; header is drawn as the first line of the buffer instead.
+        ;; Draw the column header as the first buffer line, but make it
+        ;; non-navigable: `claude-code-ide-status--redraw' marks it
+        ;; `cursor-intangible' after each print so point skips onto the first
+        ;; real row.  The count summary lives in the window header line, which
+        ;; every mode-line package leaves alone (unlike the mode line itself).
         tabulated-list-use-header-line nil
         header-line-format '(:eval (claude-code-ide-status--header)))
   (tabulated-list-init-header)
+  ;; Enable so the `cursor-intangible' header line actually repels point.
+  (cursor-intangible-mode 1)
   ;; Highlight the current row instead of relying on a bare cursor; the
   ;; highlight follows the session by id across the timed refreshes, and
   ;; hiding the cursor leaves the row highlight as the sole selection mark.
@@ -662,6 +718,11 @@ idempotent, so this is a no-op when the timer is already running."
                     "S"  #'claude-code-ide-status-sort
                     "/"  #'claude-code-ide-status-filter
                     "gr" #'claude-code-ide-status-refresh
+                    ;; Wrap-around row movement (see the mode-map bindings).
+                    "j"  #'claude-code-ide-status-next-line
+                    "k"  #'claude-code-ide-status-previous-line
+                    (kbd "<down>") #'claude-code-ide-status-next-line
+                    (kbd "<up>")   #'claude-code-ide-status-previous-line
                     "q"  #'quit-window))
 
 (defun claude-code-ide-status-visit ()

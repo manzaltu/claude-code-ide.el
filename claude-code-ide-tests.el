@@ -2855,6 +2855,33 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (null (claude-code-ide-status--resume-entries
                    (make-hash-table :test 'equal))))))
 
+(ert-deftest claude-code-ide-test-status-wrap-navigation ()
+  "Row movement wraps at both ends and never lands on a non-row line."
+  (with-temp-buffer
+    ;; Three rows, each a line carrying a `tabulated-list-id', followed by the
+    ;; trailing empty line `tabulated-list' leaves after the last row (no id).
+    (dolist (n '("1" "2" "3"))
+      (let ((start (point)))
+        (insert "row" n "\n")
+        (put-text-property start (1- (point))
+                           'tabulated-list-id (cons n 'live))))
+    (goto-char (point-min))
+    (should (equal (car (tabulated-list-get-id)) "1"))
+    ;; Down through the rows.
+    (claude-code-ide-status-next-line)
+    (should (equal (car (tabulated-list-get-id)) "2"))
+    (claude-code-ide-status-next-line)
+    (should (equal (car (tabulated-list-get-id)) "3"))
+    ;; Down from the last row wraps to the first (never the empty line).
+    (claude-code-ide-status-next-line)
+    (should (equal (car (tabulated-list-get-id)) "1"))
+    ;; Up from the first row wraps to the last.
+    (claude-code-ide-status-previous-line)
+    (should (equal (car (tabulated-list-get-id)) "3"))
+    ;; And back up one more, staying on a real row.
+    (claude-code-ide-status-previous-line)
+    (should (equal (car (tabulated-list-get-id)) "2"))))
+
 ;;; Public session API
 
 (ert-deftest claude-code-ide-test-session-public-api ()
