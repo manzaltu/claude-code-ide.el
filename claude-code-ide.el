@@ -939,6 +939,22 @@ and args is a list of arguments."
   (let ((parts (split-string-shell-command command-string)))
     (cons (car parts) (cdr parts))))
 
+(defun claude-code-ide--resolve-program (program)
+  "Return an absolute path for PROGRAM when it resolves locally.
+A bare name is looked up via `exec-path'; a name with a directory
+component is expanded relative to `default-directory'.  Returns
+PROGRAM unchanged when the lookup fails, leaving the missing
+executable for the terminal backend to report.
+
+Ghostel's native PTY path (ghostel 0.35.x) execs PROGRAM against the
+raw process environment, whose PATH can be missing `exec-path'
+entries that the rest of the package resolves against; passing an
+absolute path sidesteps that lookup."
+  (or (if (file-name-directory program)
+          (expand-file-name program)
+        (executable-find program))
+      program))
+
 
 (defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
   "Create a new terminal session for Claude Code.
@@ -1022,7 +1038,7 @@ Signals an error if terminal fails to initialize."
      ;; ghostel backend
      ((eq claude-code-ide-terminal-backend 'ghostel)
       (let* ((cmd-parts (claude-code-ide--parse-command-string claude-cmd))
-             (program (car cmd-parts))
+             (program (claude-code-ide--resolve-program (car cmd-parts)))
              (args (cdr cmd-parts))
              (buffer nil))
         (when-let ((stale-buffer (get-buffer buffer-name)))
@@ -1152,6 +1168,14 @@ This function handles:
                     (setq-local eat-kill-buffer-on-exit t))))
                 ;; Stabilization period for terminal layout initialization
                 (sleep-for claude-code-ide-terminal-initialization-delay)
+                ;; The CLI can die within the stabilization delay (e.g. it
+                ;; failed to exec in the terminal backend's environment), in
+                ;; which case the exit sentinel has already killed the buffer.
+                ;; Displaying the dead buffer would surface only as a cryptic
+                ;; wrong-type-argument, so fail with a real explanation.
+                (unless (and (buffer-live-p buffer) (process-live-p process))
+                  (error "Claude Code exited immediately after startup.  Verify that `claude-code-ide-cli-path' (%s) is executable in the %s backend's environment"
+                         claude-code-ide-cli-path claude-code-ide-terminal-backend))
                 ;; Display the buffer in a side window
                 (claude-code-ide--display-buffer-in-side-window buffer)
                 (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"
