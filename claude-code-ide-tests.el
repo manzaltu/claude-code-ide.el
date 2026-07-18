@@ -606,14 +606,19 @@ have completed before cleanup.  Waits up to 5 seconds."
       (let ((claude-code-ide-terminal-backend 'ghostel)
             (claude-code-ide--cli-available t))
         (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
-                   (lambda (&rest _) "claude --print \"hello world\"")))
+                   (lambda (&rest _) "claude --print \"hello world\""))
+                  ;; The ghostel branch resolves the program to an absolute
+                  ;; path so ghostel's native PTY spawn does not depend on
+                  ;; the process environment's PATH.
+                  ((symbol-function 'executable-find)
+                   (lambda (name) (when (equal name "claude") "/opt/bin/claude"))))
           (let ((result (claude-code-ide--create-terminal-session
                          "*test-ghostel*" "/tmp" 12345 nil nil "test-session")))
             (should (consp result))
             (should (bufferp (car result)))
             (should (processp (cdr result)))
             (should (equal (buffer-name mock-ghostel-buffer) "*test-ghostel*"))
-            (should (equal mock-ghostel-program "claude"))
+            (should (equal mock-ghostel-program "/opt/bin/claude"))
             (should (equal mock-ghostel-args '("--print" "hello world")))
             (should (equal mock-ghostel-default-directory "/tmp"))
             (with-current-buffer mock-ghostel-buffer
@@ -621,6 +626,73 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should (member "CLAUDE_CODE_SSE_PORT=12345" mock-ghostel-env))
             (should (member "TERM_PROGRAM=emacs" mock-ghostel-env))
             (should (member "FORCE_CODE_TERMINAL=true" mock-ghostel-env))))))))
+
+(ert-deftest claude-code-ide-test-resolve-program ()
+  "Test CLI program resolution for terminal exec APIs."
+  ;; A bare name resolves to an absolute path via `executable-find'.
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name) (when (equal name "claude") "/opt/bin/claude"))))
+    (should (equal (claude-code-ide--resolve-program "claude")
+                   "/opt/bin/claude"))
+    ;; An unresolvable name is passed through unchanged so the terminal
+    ;; backend reports the missing executable itself.
+    (should (equal (claude-code-ide--resolve-program "no-such-cli")
+                   "no-such-cli")))
+  ;; A name with a directory component expands instead of a PATH lookup.
+  (let ((default-directory "/tmp/"))
+    (should (equal (claude-code-ide--resolve-program "./bin/claude")
+                   "/tmp/bin/claude"))
+    (should (equal (claude-code-ide--resolve-program "~/bin/claude")
+                   (expand-file-name "~/bin/claude")))))
+
+(ert-deftest claude-code-ide-test-start-session-cli-dies-during-init ()
+  "A CLI death during the initialization delay signals a clear error.
+When the process dies within the stabilization delay, the exit
+sentinel kills the terminal buffer; the session start must then fail
+with an explanatory error rather than operating on the dead buffer."
+  (let ((buffer (generate-new-buffer "*test-death*"))
+        (process (start-process "mock-claude" nil "sleep" "30"))
+        (displayed nil)
+        (mcp-stopped nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--ensure-cli)
+                   (lambda () t))
+                  ((symbol-function 'claude-code-ide--get-working-directory)
+                   (lambda () "/tmp/test-death/"))
+                  ((symbol-function 'claude-code-ide--get-buffer-name)
+                   (lambda (&optional _) "*test-death*"))
+                  ((symbol-function 'claude-code-ide--terminal-ensure-backend)
+                   #'ignore)
+                  ((symbol-function 'claude-code-ide-mcp-start)
+                   (lambda (_) 12345))
+                  ((symbol-function 'claude-code-ide--create-terminal-session)
+                   (lambda (&rest _) (cons buffer process)))
+                  ((symbol-function 'claude-code-ide-mcp-server-session-started)
+                   #'ignore)
+                  ((symbol-function 'claude-code-ide--cleanup-on-exit)
+                   #'ignore)
+                  ((symbol-function 'claude-code-ide-mcp-stop-session)
+                   (lambda (_) (setq mcp-stopped t)))
+                  ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+                   (lambda (_) (setq displayed t)))
+                  ;; Simulate the CLI dying while the session stabilizes:
+                  ;; the process exits and its sentinel kills the buffer.
+                  ((symbol-function 'sleep-for)
+                   (lambda (&rest _)
+                     (delete-process process)
+                     (kill-buffer buffer))))
+          (let* ((claude-code-ide-terminal-backend 'ghostel)
+                 (err (should-error (claude-code-ide--start-session))))
+            (should (string-match-p "exited immediately after startup"
+                                    (error-message-string err)))
+            (should-not displayed)
+            (should mcp-stopped)))
+      (when (process-live-p process)
+        (delete-process process))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (remhash "/tmp/test-death/" claude-code-ide--processes)
+      (remhash "/tmp/test-death/" claude-code-ide--session-ids))))
 
 (ert-deftest claude-code-ide-test-ghostel-evil-escape-override ()
   "Test that the ghostel evil ESC routing is overridden per buffer."
