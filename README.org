@@ -252,7 +252,11 @@ Or, if you'd prefer to use a regular window:
 
 *** Terminal Backend Configuration
 
-Claude Code IDE supports =vterm=, =eat=, and =ghostel= as terminal backends. By default, it uses =vterm=, but you can switch to another backend if preferred:
+Claude Code IDE supports =vterm=, =eat=, and =ghostel= as terminal backends, with =vterm= used by default.
+
+*Note:* Of the available backends, =ghostel= delivers the smoothest experience: its rendering is largely free of the flickering, scrolling glitches, and display artifacts that =vterm= and =eat= are prone to, so if it is available in your setup it is the recommended choice.
+
+To switch to another backend:
 
 #+begin_src emacs-lisp
 ;; Use eat instead of vterm
