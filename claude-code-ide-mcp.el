@@ -170,6 +170,29 @@ Returns the session if found, nil otherwise."
              claude-code-ide-mcp--sessions)
     sessions))
 
+;;; Public session-query API
+;; Directory-keyed predicates over the MCP session state, so overviews and
+;; extensions (such as `claude-code-ide-status') can inspect a session
+;; without reaching into the private lookup or the session struct fields.
+
+(defun claude-code-ide-mcp-session-connected-p (directory)
+  "Return non-nil when the MCP session in DIRECTORY has a connected client."
+  (when-let ((session (claude-code-ide-mcp--get-session-for-project directory)))
+    (and (claude-code-ide-mcp-session-client session) t)))
+
+(defun claude-code-ide-mcp-session-pending-permissions (directory)
+  "Return the number of deferred requests awaiting approval in DIRECTORY.
+These are tool or diff requests Claude has blocked on; a positive count
+means the session needs the user.  Returns nil when there is no session."
+  (when-let ((session (claude-code-ide-mcp--get-session-for-project directory))
+             (deferred (claude-code-ide-mcp-session-deferred session)))
+    (hash-table-count deferred)))
+
+(defun claude-code-ide-mcp-session-cli-pid-for (directory)
+  "Return the PID of the CLI process for the session in DIRECTORY, or nil."
+  (when-let ((session (claude-code-ide-mcp--get-session-for-project directory)))
+    (claude-code-ide-mcp-session-cli-pid session)))
+
 ;;; Backward Compatibility Layer
 
 ;;; Lockfile Management

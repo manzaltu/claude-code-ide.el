@@ -19,8 +19,15 @@ This package integrates Claude Code CLI with Emacs via WebSocket and the Model C
 - `claude-code-ide-emacs-tools.el` - Emacs tools: xref, project info, imenu
 - `claude-code-ide-diagnostics.el` - Flycheck integration
 - `claude-code-ide-transient.el` - Transient menu interface
+- `claude-code-ide-status.el` - `claude-code-ide-status` session overview (tabulated-list of live sessions and resumable projects) and the global mode-line attention indicator; built entirely on the public session API below
 - `claude-code-ide-debug.el` - Debug logging utilities
 - `claude-code-ide-tests.el` - ERT test suite with mocks
+
+**Public session API:** `claude-code-ide.el` and `claude-code-ide-mcp.el` expose a small public seam for session-aware UI, so overviews and extensions need not reach into the private process table (`claude-code-ide--processes`) or the MCP session struct:
+- `claude-code-ide-session-directories`, `claude-code-ide-session-live-p`, `claude-code-ide-session-buffer-name`, `claude-code-ide-current-working-directory`, `claude-code-ide-pop-to-session-buffer`, `claude-code-ide-cleanup-dead-sessions`
+- directory-keyed MCP predicates: `claude-code-ide-mcp-session-connected-p`, `claude-code-ide-mcp-session-pending-permissions`, `claude-code-ide-mcp-session-cli-pid-for`
+
+Prefer these over the internals when adding session-aware features.
 
 ## Hooks
 

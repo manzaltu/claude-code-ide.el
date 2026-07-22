@@ -139,6 +139,7 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-stop=                | Stop Claude Code for the current project          |
 | =M-x claude-code-ide-switch-to-buffer=    | Switch to project's Claude buffer                 |
 | =M-x claude-code-ide-list-sessions=       | List all active Claude Code sessions and switch   |
+| =M-x claude-code-ide-status=              | Live overview of all sessions and resumable ones  |
 | =M-x claude-code-ide-check-status=        | Check if Claude Code CLI is installed and working |
 | =M-x claude-code-ide-insert-at-mentioned= | Send selected text to Claude prompt               |
 | =M-x claude-code-ide-send-escape=         | Send escape key to Claude terminal                |
@@ -153,6 +154,105 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 Claude Code IDE automatically detects your project using Emacs' built-in =project.el=. Each project gets its own Claude Code instance with a unique buffer name like =*claude-code[project-name]*=.
 
 You can run multiple Claude Code instances simultaneously for different projects. Use =claude-code-ide-list-sessions= to see all active sessions and switch between them.
+
+** Session Overview
+
+=M-x claude-code-ide-status= opens a live =tabulated-list= buffer showing every Claude session across your projects and worktrees, followed by resumable projects from Claude's on-disk history (most recently active first). It is the visual counterpart to =claude-code-ide-list-sessions=; both share the same navigation.
+
+#+html: <img src="screenshots/session-overview.png" alt="claude-code-ide-status session overview" width="850">
+
+/(Illustrative mockup with synthetic data — no real projects; exact layout, including where the attention indicator appears, depends on your mode-line configuration.)/
+
+Each live session shows a colour-coded state:
+
+| State           | Meaning                                             |
+|-----------------+-----------------------------------------------------|
+| =● permission=    | An Emacs diff/tool is waiting for you to accept it  |
+| =◆ needs you=     | Claude is blocked waiting for your input (see below) |
+| =▶ working=       | Terminal is actively producing output               |
+| =● waiting=       | Finished a turn and waiting on you (see below)      |
+| =○ idle=          | Connected but quiet                                 |
+| =· disconnected=  | No live MCP client                                  |
+| =· resume=        | A resumable project from history (not running)      |
+
+The two "needs you" cases are distinguished: =◆ needs you= means Claude paused *mid-task* for your input or a permission decision, while =● waiting= means it *finished* a turn and awaits your next message.
+
+Alongside the state, project, and git branch, each row shows:
+
+| Column     | Meaning                                                           |
+|------------+-------------------------------------------------------------------|
+| =Uptime=     | How long the session's process has run (live sessions only)       |
+| =Activity=   | =working=, or how long a live session has been idle; for a resume row, how long since it was last active |
+
+Key bindings in the overview (Evil users: =RET= / =o= / =D= / =S= / =/= work in normal and motion state, and =gr= refreshes):
+
+| Key | Action                                                        |
+|-----+--------------------------------------------------------------|
+| =RET= | Visit the live session, or resume the project under point    |
+| =o=   | Same, but open in a vertical split of the main editing area  |
+| =S-RET= | Alias for =o= (graphical Emacs only; terminals cannot send it) |
+| =D=   | Stop the live session under point (asks for confirmation)    |
+| =S=   | Cycle the sort: each column ascending, then reversed, then default |
+| =/=   | Filter the list by typing; narrows live (empty clears, =g= also clears) |
+| =g=   | Refresh, rebuild the resume list, and restore the default view |
+| =q=   | Bury the buffer                                              |
+
+Live rows are ordered by urgency (permission, then needs-you, working, waiting, idle, disconnected), and a summary line at the top shows counts, e.g. =2 live (1 working) · 33 resumable=. =S= cycles the sort — each column ascending, then reversed, then back to the default order — rather than sorting by the cursor's column, since the row is highlighted per-line with the cursor hidden. The =State= column sorts by urgency rather than by the label glyph; =g= restores the default. The highlighted row stays with its session across the automatic refreshes.
+
+Columns are sized to fit their content on each refresh, capped by =claude-code-ide-status-max-column-width= (default 80) so a very long project path cannot make the buffer unreadably wide.
+
+While displayed, the list refreshes itself every =claude-code-ide-status-refresh-interval= seconds (default 1.5). The =working= state is detected by polling each terminal for new output within =claude-code-ide-status-busy-timeout= seconds (default 12, wide enough to span the pauses within a turn so =working= does not flicker to =idle=). Scanning history for resumable projects is comparatively expensive, so it is cached for =claude-code-ide-status-resume-cache-ttl= seconds (default 30); press =g= to rebuild immediately.
+
+The =waiting= and =◆ needs you= states are driven by Claude Code hooks, which clear themselves as soon as you select that session's terminal. Add a =Stop= hook for finished turns (=waiting=) and a =Notification= hook matching =permission_prompt= for mid-task input (=◆ needs you=):
+
+#+begin_src sh
+# Stop hook — finished a turn:
+emacsclient --eval "(claude-code-ide-status-mark-waiting \"$CLAUDE_PROJECT_DIR\")"
+# Notification hook (matcher permission_prompt) — Claude needs your input:
+emacsclient --eval "(claude-code-ide-status-mark-waiting \"$CLAUDE_PROJECT_DIR\" 'input)"
+#+end_src
+
+Because Claude Code loads hooks when a session starts, these only take effect for sessions started after the hooks are configured — restart old sessions to get the signals.
+
+The overview lives under =o= in the transient menu (=claude-code-ide-menu=), so with the suggested =C-c C-'= menu binding you reach it with =C-c C-'= then =o=. To give =claude-code-ide-status= its own global key as well, bind it to any free key you like — for example:
+
+#+begin_src emacs-lisp
+(keymap-global-set "C-c s" #'claude-code-ide-status)
+#+end_src
+
+*** Attention indicator and notifications
+
+=claude-code-ide-status-attention-mode= is a global minor mode that puts a small badge in the mode line showing a colour-coded breakdown of your live sessions by state, most urgent first — e.g. =◆1 ▶2 ○3= for one needing your input, two working, and three idle. It lights up red or yellow the moment a session needs you and stays informative (working vs idle) even when all is calm. Click it to open the overview. It works without keeping the overview buffer open, so you notice a session needs you from anywhere.
+
+Set =claude-code-ide-status-notify= to =t= to also be notified the moment a session enters one of those states. The notification is delivered by =claude-code-ide-status-notify-function=, which defaults to an echo-area message plus a bell (portable everywhere, including terminals and macOS where D-Bus is unavailable). Point it at your own function for desktop notifications:
+
+#+begin_src emacs-lisp
+(claude-code-ide-status-attention-mode 1)
+(setq claude-code-ide-status-notify t)
+;; Optional: real desktop notifications instead of the echo-area default.
+(setq claude-code-ide-status-notify-function
+      (lambda (dir state)
+        (call-process "terminal-notifier" nil 0 nil
+                      "-title" (format "Claude %s" state)
+                      "-message" (abbreviate-file-name dir))))
+#+end_src
+
+*** Session API for extensions
+
+The overview is built on a small public API for inspecting and reaching live sessions, so you can add your own session-aware UI without touching the internal process table. From =claude-code-ide=:
+
+- =(claude-code-ide-session-directories)= — directories of all live sessions.
+- =(claude-code-ide-session-live-p DIR)= — non-nil when a session runs in =DIR=.
+- =(claude-code-ide-session-buffer-name &optional DIR)= — the session's terminal buffer name.
+- =(claude-code-ide-current-working-directory)= — the current buffer's project root (or =default-directory=).
+- =(claude-code-ide-pop-to-session-buffer BUFFER)= — reach a session buffer the same way the rest of the package does.
+- =(claude-code-ide-cleanup-dead-sessions)= — prune entries whose process has exited.
+
+And directory-keyed views of MCP session state, from =claude-code-ide-mcp=:
+
+- =(claude-code-ide-mcp-session-connected-p DIR)= — a client is connected.
+- =(claude-code-ide-mcp-session-pending-permissions DIR)= — count of requests awaiting your approval (a positive count means the session needs you).
+- =(claude-code-ide-mcp-session-cli-pid-for DIR)= — PID of the connected CLI process.
 
 ** Window Management
 

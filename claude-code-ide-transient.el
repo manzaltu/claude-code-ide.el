@@ -36,6 +36,11 @@
 (declare-function claude-code-ide-continue "claude-code-ide" ())
 (declare-function claude-code-ide-stop "claude-code-ide" ())
 (declare-function claude-code-ide-list-sessions "claude-code-ide" ())
+;; Autoload rather than `require' (which would cycle: claude-code-ide ->
+;; transient -> status -> claude-code-ide).  This also makes the menu entry
+;; available without relying on generated package autoloads.
+(autoload 'claude-code-ide-status "claude-code-ide-status"
+  "Display an overview of all Claude Code sessions." t)
 (declare-function claude-code-ide-switch-to-buffer "claude-code-ide" ())
 (declare-function claude-code-ide-insert-at-mentioned "claude-code-ide" ())
 (declare-function claude-code-ide-send-prompt "claude-code-ide" ())
@@ -322,7 +327,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("c" claude-code-ide--continue-if-no-session :description claude-code-ide--continue-description)
     ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
     ("q" "Stop current session" claude-code-ide-stop)
-    ("l" "List all sessions" claude-code-ide-list-sessions)]
+    ("o" "Session overview" claude-code-ide-status)]
    ["Navigation"
     ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
     ("w" "Toggle window visibility" claude-code-ide-toggle-window)
@@ -334,7 +339,11 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("n" "Insert newline" claude-code-ide-insert-newline)]
    ["Submenus"
     ("C" "Configuration" claude-code-ide-config-menu)
-    ("d" "Debugging" claude-code-ide-debug-menu)]])
+    ("d" "Debugging" claude-code-ide-debug-menu)]]
+  ;; Hidden but still bound: `l' runs the classic completing-read session
+  ;; list, while only `o' (the overview) is shown in the menu.
+  [:hide always
+         ("l" "List all sessions" claude-code-ide-list-sessions)])
 
 (transient-define-prefix claude-code-ide-config-menu ()
   "Claude Code configuration menu."

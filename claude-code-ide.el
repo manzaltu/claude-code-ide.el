@@ -765,6 +765,55 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
       (claude-code-ide--sync-terminal-dimensions buffer window))
     window))
 
+(defun claude-code-ide--pop-to-session-buffer (buffer)
+  "Navigate to the session shown in BUFFER.
+If BUFFER is already visible in a window, select that window; otherwise
+display it in the configured side window.  This is the shared navigation
+path for `claude-code-ide-switch-to-buffer', `claude-code-ide-list-sessions',
+and the status overview, so that reaching a session behaves the same way
+everywhere."
+  (if-let ((window (get-buffer-window buffer)))
+      (select-window window)
+    (claude-code-ide--display-buffer-in-side-window buffer)))
+
+;;;; Public session API
+;; A small, stable surface over the private process table and buffer/window
+;; helpers so overviews and extensions (such as `claude-code-ide-status') can
+;; enumerate and reach sessions without depending on internal `--' symbols.
+
+(defun claude-code-ide-session-directories ()
+  "Return the directories of all live Claude Code sessions.
+The list is a snapshot; it may include an entry whose process has just
+exited until `claude-code-ide-cleanup-dead-sessions' prunes it."
+  (let (dirs)
+    (maphash (lambda (directory _process) (push directory dirs))
+             claude-code-ide--processes)
+    (nreverse dirs)))
+
+(defun claude-code-ide-session-live-p (directory)
+  "Return non-nil when a live Claude Code session runs in DIRECTORY."
+  (and (gethash directory claude-code-ide--processes) t))
+
+(defun claude-code-ide-session-buffer-name (&optional directory)
+  "Return the terminal buffer name for the session in DIRECTORY.
+DIRECTORY defaults to the current working directory."
+  (claude-code-ide--get-buffer-name directory))
+
+(defun claude-code-ide-current-working-directory ()
+  "Return the working directory of the current buffer's session context.
+This is the project root when in a project, else `default-directory'."
+  (claude-code-ide--get-working-directory))
+
+(defun claude-code-ide-cleanup-dead-sessions ()
+  "Prune process-table entries whose Claude process has exited."
+  (claude-code-ide--cleanup-dead-processes))
+
+(defun claude-code-ide-pop-to-session-buffer (buffer)
+  "Navigate to the Claude Code session shown in BUFFER.
+Selects BUFFER's window if visible, else displays it via the configured
+side window — the shared navigation path used across the package."
+  (claude-code-ide--pop-to-session-buffer buffer))
+
 (defvar claude-code-ide--cleanup-in-progress nil
   "Flag to prevent recursive cleanup calls.")
 
@@ -1251,11 +1300,7 @@ If the buffer is already visible, switch focus to it."
   (interactive)
   (let ((buffer-name (claude-code-ide--get-buffer-name)))
     (if-let ((buffer (get-buffer buffer-name)))
-        (if-let ((window (get-buffer-window buffer)))
-            ;; Buffer is visible, just focus it
-            (select-window window)
-          ;; Buffer exists but not visible, display it
-          (claude-code-ide--display-buffer-in-side-window buffer))
+        (claude-code-ide--pop-to-session-buffer buffer)
       (user-error "No Claude Code session for this project.  Use M-x claude-code-ide to start one"))))
 
 ;;;###autoload
@@ -1276,7 +1321,7 @@ If the buffer is already visible, switch focus to it."
             (let* ((directory (alist-get choice sessions nil nil #'string=))
                    (buffer-name (funcall claude-code-ide-buffer-name-function directory)))
               (if-let ((buffer (get-buffer buffer-name)))
-                  (claude-code-ide--display-buffer-in-side-window buffer)
+                  (claude-code-ide--pop-to-session-buffer buffer)
                 (user-error "Buffer for session %s no longer exists" choice)))))
       (claude-code-ide-log "No active Claude Code sessions"))))
 
