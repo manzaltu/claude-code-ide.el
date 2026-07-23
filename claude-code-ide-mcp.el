@@ -123,15 +123,26 @@ Set to nil when cache needs to be invalidated.")
 (defun claude-code-ide-mcp--get-buffer-project ()
   "Get the project directory for the current buffer.
 Returns the expanded project root path if a project is found,
-otherwise returns nil.
+falls back to finding a registered session directory that contains
+the buffer's file, otherwise returns nil.
 Uses buffer-local cache to avoid repeated project lookups."
   ;; Check if we have a valid cache
   (if claude-code-ide-mcp--buffer-cache-valid
       ;; Cache is valid, return cached value (even if nil)
       claude-code-ide-mcp--buffer-project-cache
     ;; Cache is invalid or doesn't exist, recalculate
-    (let ((project-dir (when-let ((project (project-current)))
-                         (expand-file-name (project-root project)))))
+    (let ((project-dir (or (when-let ((project (project-current)))
+                             (expand-file-name (project-root project)))
+                           ;; Fallback: find a registered session whose project-dir
+                           ;; is a prefix of the buffer's file path
+                           (when-let ((file-path (buffer-file-name)))
+                             (let ((found nil))
+                               (maphash (lambda (dir _session)
+                                          (when (and (not found)
+                                                     (string-prefix-p dir (expand-file-name file-path)))
+                                            (setq found dir)))
+                                        claude-code-ide-mcp--sessions)
+                               found)))))
       ;; Update cache
       (setq claude-code-ide-mcp--buffer-project-cache project-dir
             claude-code-ide-mcp--buffer-cache-valid t)
