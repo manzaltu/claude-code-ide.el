@@ -73,6 +73,11 @@
 (defvar vterm-environment)
 (defvar eat-term-name)
 (defvar vterm--process)
+(defvar ghostel-set-title-function)
+(defvar ghostel-enable-title-tracking)
+(defvar ghostel-kill-buffer-on-exit)
+(defvar evil-ghostel-mode)
+(defvar evil-ghostel--escape-mode)
 
 ;; External function declarations for vterm
 (declare-function vterm "vterm" (&optional arg))
@@ -87,6 +92,11 @@
 (declare-function eat-term-send-string "eat" (terminal string))
 (declare-function eat-term-display-cursor "eat" (terminal))
 (declare-function eat--adjust-process-window-size "eat" (process windows))
+
+;; External function declarations for ghostel
+(declare-function ghostel-exec "ghostel" (buffer program &optional args))
+(declare-function ghostel-send-string "ghostel" (string))
+(declare-function ghostel--window-adjust-process-window-size "ghostel" (process windows))
 
 ;;; Customization
 
@@ -215,12 +225,34 @@ display-buffer behavior."
 
 (defcustom claude-code-ide-terminal-backend 'vterm
   "Terminal backend to use for Claude Code sessions.
-Can be either `vterm' or `eat'.  The vterm backend is the default
+Can be `vterm', `eat', or `ghostel'.  The vterm backend is the default
 and provides a fully-featured terminal emulator.  The eat backend
 is an alternative terminal emulator that may work better in some
 environments."
   :type '(choice (const :tag "vterm" vterm)
-                 (const :tag "eat" eat))
+                 (const :tag "eat" eat)
+                 (const :tag "ghostel" ghostel))
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-ghostel-evil-escape 'evil
+  "How insert-state ESC is routed in the ghostel backend's Claude buffers.
+Applied per buffer via `evil-ghostel--escape-mode', so it overrides the
+global `evil-ghostel-escape' default for Claude Code sessions only.
+
+Claude Code runs as a full-screen TUI (alt-screen / DECSET 1049), so
+`evil-ghostel-escape's default `auto' routes ESC to the terminal and
+never enters evil normal state.  The default here is `evil' so ESC
+switches to normal state for editing the prompt; note that Claude then
+no longer receives ESC as its interrupt key.
+
+Valid values match `evil-ghostel-escape': `auto', `terminal', `evil'.
+Set to nil to leave the buffer at the global `evil-ghostel-escape'
+default.  Has no effect unless the `evil-ghostel' package is loaded and
+the terminal backend is `ghostel'."
+  :type '(choice (const :tag "Evil (ESC enters normal state)" evil)
+                 (const :tag "Terminal (ESC sent to Claude)" terminal)
+                 (const :tag "Auto (alt-screen heuristic)" auto)
+                 (const :tag "Leave global default" nil))
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-no-flicker nil
@@ -459,8 +491,35 @@ cursor management, and process buffering for superior user experience."
       (require 'eat nil t))
     (unless (featurep 'eat)
       (user-error "The package eat is not installed.  Please install the eat package or change `claude-code-ide-terminal-backend' to 'vterm")))
+   ((eq claude-code-ide-terminal-backend 'ghostel)
+    (unless (featurep 'ghostel)
+      (require 'ghostel nil t))
+    (unless (featurep 'ghostel)
+      (user-error "The package ghostel is not installed.  Please install the ghostel package or change `claude-code-ide-terminal-backend' to `vterm' or `eat'"))
+    (unless (fboundp 'ghostel-exec)
+      (user-error "The installed ghostel package does not provide `ghostel-exec'.  Please update ghostel or change `claude-code-ide-terminal-backend' to `vterm' or `eat'")))
    (t
-    (user-error "Invalid terminal backend: %s.  Valid options are 'vterm or 'eat" claude-code-ide-terminal-backend))))
+    (user-error "Invalid terminal backend: %s.  Valid options are 'vterm, 'eat, or 'ghostel" claude-code-ide-terminal-backend))))
+
+(defun claude-code-ide--disable-ghostel-title-tracking ()
+  "Disable Ghostel OSC title tracking in the current buffer."
+  (cond
+   ((boundp 'ghostel-set-title-function)
+    (setq-local ghostel-set-title-function nil))
+   ((boundp 'ghostel-enable-title-tracking)
+    (setq-local ghostel-enable-title-tracking nil))))
+
+(defun claude-code-ide--apply-ghostel-evil-escape ()
+  "Set the buffer-local ESC routing for the current ghostel buffer.
+Overrides `evil-ghostel--escape-mode' with
+`claude-code-ide-ghostel-evil-escape' so ESC behaves as configured in
+Claude Code sessions only, without touching the global
+`evil-ghostel-escape' default.  A nil setting leaves the value that
+`evil-ghostel-mode' derived from the global default in place.  No-op
+unless `evil-ghostel-mode' is active in this buffer."
+  (when (and claude-code-ide-ghostel-evil-escape
+             (bound-and-true-p evil-ghostel-mode))
+    (setq-local evil-ghostel--escape-mode claude-code-ide-ghostel-evil-escape)))
 
 (defun claude-code-ide--terminal-send-string (string)
   "Send STRING to the terminal in the current buffer."
@@ -470,6 +529,11 @@ cursor management, and process buffering for superior user experience."
    ((eq claude-code-ide-terminal-backend 'eat)
     (when eat-terminal
       (eat-term-send-string eat-terminal string)))
+   ((eq claude-code-ide-terminal-backend 'ghostel)
+    (if (fboundp 'ghostel-send-string)
+        (ghostel-send-string string)
+      (when-let ((process (get-buffer-process (current-buffer))))
+        (process-send-string process string))))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
@@ -481,6 +545,8 @@ cursor management, and process buffering for superior user experience."
    ((eq claude-code-ide-terminal-backend 'eat)
     (when eat-terminal
       (eat-term-send-string eat-terminal "\e")))
+   ((eq claude-code-ide-terminal-backend 'ghostel)
+    (claude-code-ide--terminal-send-string "\e"))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
@@ -492,6 +558,8 @@ cursor management, and process buffering for superior user experience."
    ((eq claude-code-ide-terminal-backend 'eat)
     (when eat-terminal
       (eat-term-send-string eat-terminal "\r")))
+   ((eq claude-code-ide-terminal-backend 'ghostel)
+    (claude-code-ide--terminal-send-string "\r"))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
@@ -505,7 +573,12 @@ from the window where it was initially created."
       (when-let ((proc (get-buffer-process buffer)))
         (let ((height (window-body-height window))
               (width (window-body-width window)))
-          (set-process-window-size proc height width))))))
+          (if (eq claude-code-ide-terminal-backend 'ghostel)
+              (progn
+                (when (fboundp 'ghostel--window-adjust-process-window-size)
+                  (ghostel--window-adjust-process-window-size proc (list window)))
+                (set-process-window-size proc height width))
+            (set-process-window-size proc height width)))))))
 
 (defun claude-code-ide--setup-terminal-keybindings ()
   "Set up keybindings for the Claude Code terminal buffer.
@@ -520,6 +593,9 @@ This function binds:
    ((eq claude-code-ide-terminal-backend 'eat)
     ;; For eat, we need to modify the semi-char mode map which is the default
     ;; We use local-set-key to make it buffer-local
+    (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
+    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
+   ((eq claude-code-ide-terminal-backend 'ghostel)
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
    (t
@@ -538,6 +614,9 @@ This function binds:
   (pcase claude-code-ide-terminal-backend
     ('vterm #'vterm--window-adjust-process-window-size)
     ('eat #'eat--adjust-process-window-size)
+    ;; Ghostel manages resizing differently enough that the vterm/eat
+    ;; reflow workaround should stay disabled for it.
+    ('ghostel nil)
     (_ (error "Unsupported terminal backend: %s" claude-code-ide-terminal-backend))))
 
 (defun claude-code-ide--terminal-scroll-mode-active-p ()
@@ -610,10 +689,12 @@ If DIRECTORY is not provided, use the current working directory."
 (defun claude-code-ide--set-process (process &optional directory)
   "Set the Claude Code PROCESS for DIRECTORY or current working directory."
   ;; Check if this is the first session starting
-  (when (and claude-code-ide-prevent-reflow-glitch
-             (= (hash-table-count claude-code-ide--processes) 0))
+  (when-let ((resize-handler
+              (and claude-code-ide-prevent-reflow-glitch
+                   (= (hash-table-count claude-code-ide--processes) 0)
+                   (claude-code-ide--terminal-resize-handler))))
     ;; Apply advice globally for the first session
-    (advice-add (claude-code-ide--terminal-resize-handler)
+    (advice-add resize-handler
                 :around #'claude-code-ide--terminal-reflow-filter))
   (puthash (or directory (claude-code-ide--get-working-directory))
            process
@@ -696,10 +777,12 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
           ;; Remove from process table
           (remhash directory claude-code-ide--processes)
           ;; Check if this was the last session
-          (when (and claude-code-ide-prevent-reflow-glitch
-                     (= (hash-table-count claude-code-ide--processes) 0))
+          (when-let ((resize-handler
+                      (and claude-code-ide-prevent-reflow-glitch
+                           (= (hash-table-count claude-code-ide--processes) 0)
+                           (claude-code-ide--terminal-resize-handler))))
             ;; Remove advice globally when no sessions remain
-            (advice-remove (claude-code-ide--terminal-resize-handler)
+            (advice-remove resize-handler
                            #'claude-code-ide--terminal-reflow-filter))
           ;; Remove vterm rendering optimization if no sessions remain
           (when (and (eq claude-code-ide-terminal-backend 'vterm)
@@ -849,12 +932,28 @@ when navigating between terminal and other buffers."
               (recenter)))))))))
 
 (defun claude-code-ide--parse-command-string (command-string)
-  "Parse a command string into (program . args) for eat-exec.
+  "Parse a command string into (program . args) for terminal exec APIs.
 COMMAND-STRING is a shell command line to parse.
 Returns a cons cell (program . args) where program is the executable
 and args is a list of arguments."
   (let ((parts (split-string-shell-command command-string)))
     (cons (car parts) (cdr parts))))
+
+(defun claude-code-ide--resolve-program (program)
+  "Return an absolute path for PROGRAM when it resolves locally.
+A bare name is looked up via `exec-path'; a name with a directory
+component is expanded relative to `default-directory'.  Returns
+PROGRAM unchanged when the lookup fails, leaving the missing
+executable for the terminal backend to report.
+
+Ghostel's native PTY path (ghostel 0.35.x) execs PROGRAM against the
+raw process environment, whose PATH can be missing `exec-path'
+entries that the rest of the package resolves against; passing an
+absolute path sidesteps that lookup."
+  (or (if (file-name-directory program)
+          (expand-file-name program)
+        (executable-find program))
+      program))
 
 
 (defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
@@ -936,6 +1035,45 @@ Signals an error if terminal fails to initialize."
               (error "Failed to create eat process.  Please ensure eat is properly installed"))
             (cons buffer process)))))
 
+     ;; ghostel backend
+     ((eq claude-code-ide-terminal-backend 'ghostel)
+      (let* ((cmd-parts (claude-code-ide--parse-command-string claude-cmd))
+             (program (claude-code-ide--resolve-program (car cmd-parts)))
+             (args (cdr cmd-parts))
+             (buffer nil))
+        (when-let ((stale-buffer (get-buffer buffer-name)))
+          (kill-buffer stale-buffer))
+        (setq buffer (get-buffer-create buffer-name))
+        (unless (buffer-live-p buffer)
+          (error "Failed to create ghostel buffer.  Please ensure ghostel is properly installed"))
+        (with-current-buffer buffer
+          (setq default-directory working-dir)
+          (claude-code-ide--disable-ghostel-title-tracking)
+          ;; Let `claude-code-ide--cleanup-on-exit' be the single place that
+          ;; kills the buffer.  Otherwise ghostel's sentinel kills the buffer
+          ;; first, firing `kill-buffer-hook' → cleanup-on-exit, and then our
+          ;; wrapping sentinel runs cleanup-on-exit a second time.
+          (setq-local ghostel-kill-buffer-on-exit nil)
+          (let* ((process-environment (append env-vars process-environment))
+                 (process (ghostel-exec buffer program args)))
+            ;; `ghostel-exec' switches the buffer into `ghostel-mode', which
+            ;; resets buffer-local variables.
+            (claude-code-ide--disable-ghostel-title-tracking)
+            (setq-local ghostel-kill-buffer-on-exit nil)
+            ;; `ghostel-mode-hook' has run by now, so if `evil-ghostel-mode'
+            ;; is enabled it has already seeded `evil-ghostel--escape-mode'
+            ;; from the global default; override it for this buffer only.
+            (claude-code-ide--apply-ghostel-evil-escape)
+            (unless process
+              (error "Failed to create ghostel process.  Please ensure ghostel is properly installed"))
+            ;; Chain ghostel's own sentinel so its buffer-local timers,
+            ;; focus-change hook, and `ghostel-exit-functions' still run
+            ;; when `claude-code-ide--start-session' installs its own
+            ;; sentinel on top.  Without this, ghostel teardown is skipped.
+            (process-put process 'claude-code-ide--ghostel-sentinel
+                         (process-sentinel process))
+            (cons buffer process)))))
+
      (t
       (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend)))))
 
@@ -987,20 +1125,26 @@ This function handles:
                 (claude-code-ide--set-process process working-dir)
                 ;; Store session ID for cleanup
                 (puthash working-dir session-id claude-code-ide--session-ids)
-                ;; Set up process sentinel to clean up when Claude exits
-                (set-process-sentinel process
-                                      (lambda (_proc event)
-                                        ;; Check for abnormal exit with error code
-                                        (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
-                                          (let ((exit-code (match-string 1 event)))
-                                            (claude-code-ide-debug "Claude process exited with code %s, event: %s"
-                                                                   exit-code event)
-                                            (message "Claude exited with error code %s" exit-code)))
-                                        (when (or (string-match "finished" event)
-                                                  (string-match "exited" event)
-                                                  (string-match "killed" event)
-                                                  (string-match "terminated" event))
-                                          (claude-code-ide--cleanup-on-exit working-dir))))
+                ;; Set up process sentinel to clean up when Claude exits.
+                ;; The ghostel backend stashes its native sentinel on the
+                ;; process so we can chain it here — otherwise ghostel's
+                ;; buffer-local timers and focus-change hook never tear down.
+                (let ((prev-sentinel (process-get process 'claude-code-ide--ghostel-sentinel)))
+                  (set-process-sentinel process
+                                        (lambda (proc event)
+                                          (when prev-sentinel
+                                            (ignore-errors (funcall prev-sentinel proc event)))
+                                          ;; Check for abnormal exit with error code
+                                          (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
+                                            (let ((exit-code (match-string 1 event)))
+                                              (claude-code-ide-debug "Claude process exited with code %s, event: %s"
+                                                                     exit-code event)
+                                              (message "Claude exited with error code %s" exit-code)))
+                                          (when (or (string-match "finished" event)
+                                                    (string-match "exited" event)
+                                                    (string-match "killed" event)
+                                                    (string-match "terminated" event))
+                                            (claude-code-ide--cleanup-on-exit working-dir)))))
                 ;; Also add buffer kill hook as a backup
                 (with-current-buffer buffer
                   (add-hook 'kill-buffer-hook
@@ -1024,6 +1168,14 @@ This function handles:
                     (setq-local eat-kill-buffer-on-exit t))))
                 ;; Stabilization period for terminal layout initialization
                 (sleep-for claude-code-ide-terminal-initialization-delay)
+                ;; The CLI can die within the stabilization delay (e.g. it
+                ;; failed to exec in the terminal backend's environment), in
+                ;; which case the exit sentinel has already killed the buffer.
+                ;; Displaying the dead buffer would surface only as a cryptic
+                ;; wrong-type-argument, so fail with a real explanation.
+                (unless (and (buffer-live-p buffer) (process-live-p process))
+                  (error "Claude Code exited immediately after startup.  Verify that `claude-code-ide-cli-path' (%s) is executable in the %s backend's environment"
+                         claude-code-ide-cli-path claude-code-ide-terminal-backend))
                 ;; Display the buffer in a side window
                 (claude-code-ide--display-buffer-in-side-window buffer)
                 (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"

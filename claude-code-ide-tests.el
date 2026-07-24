@@ -136,6 +136,47 @@
 
 (provide (quote vterm))
 
+;; === Mock ghostel module ===
+(defvar ghostel-buffer-name nil)
+(defvar ghostel-set-title-function #'ignore)
+(defvar ghostel-enable-title-tracking t)
+(defvar ghostel-kill-buffer-on-exit t)
+
+(defun ghostel (&optional _arg)
+  "Mock ghostel function for testing."
+  (let ((buffer (get-buffer-create (or ghostel-buffer-name "*ghostel*"))))
+    (set-buffer buffer)
+    (with-current-buffer buffer
+      (make-process :name "mock-ghostel"
+                    :buffer buffer
+                    :command '("true")
+                    :connection-type 'pty))
+    buffer))
+
+(defun ghostel-exec (buffer _program &optional _args)
+  "Mock ghostel-exec function for testing."
+  (with-current-buffer buffer
+    (make-process :name "mock-ghostel"
+                  :buffer buffer
+                  :command '("true")
+                  :connection-type 'pty)))
+
+(defun ghostel-send-string (_string)
+  "Mock ghostel send function for testing."
+  nil)
+
+(defun ghostel--window-adjust-process-window-size (_process _windows)
+  "Mock ghostel resize handler for testing."
+  '(80 . 24))
+
+(provide (quote ghostel))
+
+;; === Mock evil-ghostel module ===
+;; These stand in for the evil-ghostel package's variables so the ESC
+;; routing helper can be exercised in batch mode without evil installed.
+(defvar evil-ghostel-mode nil)
+(defvar evil-ghostel--escape-mode nil)
+
 ;; === Mock Emacs display functions ===
 (unless (fboundp 'display-buffer-in-side-window)
   (defun display-buffer-in-side-window (buffer _alist)
@@ -367,6 +408,21 @@ have completed before cleanup.  Waits up to 5 seconds."
       (should-error (claude-code-ide)
                     :type 'user-error))))
 
+(ert-deftest claude-code-ide-test-run-without-ghostel ()
+  "Test run command when ghostel is not available."
+  (let ((claude-code-ide--cli-available t)
+        (claude-code-ide-cli-path "echo")
+        (claude-code-ide-terminal-backend 'ghostel)
+        (orig-featurep (symbol-function 'featurep)))
+    (cl-letf (((symbol-function 'featurep)
+               (lambda (sym &rest _) (if (eq sym 'ghostel) nil (funcall orig-featurep sym))))
+              ((symbol-function 'require)
+               (lambda (feature &optional filename noerror)
+                 (unless (eq feature 'ghostel)
+                   (require feature filename noerror)))))
+      (should-error (claude-code-ide)
+                    :type 'user-error))))
+
 (ert-deftest claude-code-ide-test-terminal-backend-selection ()
   "Test terminal backend selection and validation."
   ;; Test vterm backend
@@ -376,6 +432,10 @@ have completed before cleanup.  Waits up to 5 seconds."
   ;; Test eat backend
   (let ((claude-code-ide-terminal-backend 'eat))
     (should (eq claude-code-ide-terminal-backend 'eat)))
+
+  ;; Test ghostel backend
+  (let ((claude-code-ide-terminal-backend 'ghostel))
+    (should (eq claude-code-ide-terminal-backend 'ghostel)))
 
   ;; Test invalid backend
   (let ((claude-code-ide-terminal-backend 'invalid-backend)
@@ -391,7 +451,8 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((vterm-string-sent nil)
         (vterm-escape-sent nil)
         (vterm-return-sent nil)
-        (eat-string-sent nil))
+        (eat-string-sent nil)
+        (ghostel-string-sent nil))
     (cl-letf (((symbol-function 'vterm-send-string)
                (lambda (str) (setq vterm-string-sent str)))
               ((symbol-function 'vterm-send-escape)
@@ -399,7 +460,9 @@ have completed before cleanup.  Waits up to 5 seconds."
               ((symbol-function 'vterm-send-return)
                (lambda () (setq vterm-return-sent t)))
               ((symbol-function 'eat-term-send-string)
-               (lambda (term str) (setq eat-string-sent str))))
+               (lambda (term str) (setq eat-string-sent str)))
+              ((symbol-function 'ghostel-send-string)
+               (lambda (str) (setq ghostel-string-sent str))))
 
       ;; Test vterm backend
       (let ((claude-code-ide-terminal-backend 'vterm))
@@ -426,7 +489,21 @@ have completed before cleanup.  Waits up to 5 seconds."
 
           (setq eat-string-sent nil)
           (claude-code-ide--terminal-send-return)
-          (should (equal eat-string-sent "\r")))))))
+          (should (equal eat-string-sent "\r"))))
+
+      ;; Test ghostel backend
+      (with-temp-buffer
+        (let ((claude-code-ide-terminal-backend 'ghostel))
+          (claude-code-ide--terminal-send-string "test")
+          (should (equal ghostel-string-sent "test"))
+
+          (setq ghostel-string-sent nil)
+          (claude-code-ide--terminal-send-escape)
+          (should (equal ghostel-string-sent "\e"))
+
+          (setq ghostel-string-sent nil)
+          (claude-code-ide--terminal-send-return)
+          (should (equal ghostel-string-sent "\r")))))))
 
 (ert-deftest claude-code-ide-test-send-prompt-command ()
   "Test the claude-code-ide-send-prompt command."
@@ -471,6 +548,11 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test terminal session creation with both backends."
   (let ((mock-vterm-buffer nil)
         (mock-eat-buffer nil)
+        (mock-ghostel-buffer nil)
+        (mock-ghostel-program nil)
+        (mock-ghostel-args nil)
+        (mock-ghostel-env nil)
+        (mock-ghostel-default-directory nil)
         (mock-process (start-process "mock" nil "true")))
     (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
                (lambda () nil))  ; Mock the ensure function to do nothing
@@ -482,6 +564,15 @@ have completed before cleanup.  Waits up to 5 seconds."
               ((symbol-function 'eat-exec)
                (lambda (buffer name cmd startfile args)
                  (setq mock-eat-buffer buffer)))
+              ((symbol-function 'ghostel-exec)
+               (lambda (buffer program &optional args)
+                 (setq mock-ghostel-buffer buffer)
+                 (setq mock-ghostel-program program)
+                 (setq mock-ghostel-args args)
+                 (setq mock-ghostel-env process-environment)
+                 (setq mock-ghostel-default-directory default-directory)
+                 (setq-local ghostel-set-title-function #'ignore)
+                 mock-process))
               ((symbol-function 'get-buffer-process)
                (lambda (buffer) mock-process))
               ((symbol-function 'claude-code-ide-mcp-start)
@@ -509,7 +600,123 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should (consp result))
             (should (bufferp (car result)))
             (should (processp (cdr result)))
-            (should (bufferp mock-eat-buffer))))))))
+            (should (bufferp mock-eat-buffer)))))
+
+      ;; Test ghostel backend session creation
+      (let ((claude-code-ide-terminal-backend 'ghostel)
+            (claude-code-ide--cli-available t))
+        (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
+                   (lambda (&rest _) "claude --print \"hello world\""))
+                  ;; The ghostel branch resolves the program to an absolute
+                  ;; path so ghostel's native PTY spawn does not depend on
+                  ;; the process environment's PATH.
+                  ((symbol-function 'executable-find)
+                   (lambda (name) (when (equal name "claude") "/opt/bin/claude"))))
+          (let ((result (claude-code-ide--create-terminal-session
+                         "*test-ghostel*" "/tmp" 12345 nil nil "test-session")))
+            (should (consp result))
+            (should (bufferp (car result)))
+            (should (processp (cdr result)))
+            (should (equal (buffer-name mock-ghostel-buffer) "*test-ghostel*"))
+            (should (equal mock-ghostel-program "/opt/bin/claude"))
+            (should (equal mock-ghostel-args '("--print" "hello world")))
+            (should (equal mock-ghostel-default-directory "/tmp"))
+            (with-current-buffer mock-ghostel-buffer
+              (should (null ghostel-set-title-function)))
+            (should (member "CLAUDE_CODE_SSE_PORT=12345" mock-ghostel-env))
+            (should (member "TERM_PROGRAM=emacs" mock-ghostel-env))
+            (should (member "FORCE_CODE_TERMINAL=true" mock-ghostel-env))))))))
+
+(ert-deftest claude-code-ide-test-resolve-program ()
+  "Test CLI program resolution for terminal exec APIs."
+  ;; A bare name resolves to an absolute path via `executable-find'.
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name) (when (equal name "claude") "/opt/bin/claude"))))
+    (should (equal (claude-code-ide--resolve-program "claude")
+                   "/opt/bin/claude"))
+    ;; An unresolvable name is passed through unchanged so the terminal
+    ;; backend reports the missing executable itself.
+    (should (equal (claude-code-ide--resolve-program "no-such-cli")
+                   "no-such-cli")))
+  ;; A name with a directory component expands instead of a PATH lookup.
+  (let ((default-directory "/tmp/"))
+    (should (equal (claude-code-ide--resolve-program "./bin/claude")
+                   "/tmp/bin/claude"))
+    (should (equal (claude-code-ide--resolve-program "~/bin/claude")
+                   (expand-file-name "~/bin/claude")))))
+
+(ert-deftest claude-code-ide-test-start-session-cli-dies-during-init ()
+  "A CLI death during the initialization delay signals a clear error.
+When the process dies within the stabilization delay, the exit
+sentinel kills the terminal buffer; the session start must then fail
+with an explanatory error rather than operating on the dead buffer."
+  (let ((buffer (generate-new-buffer "*test-death*"))
+        (process (start-process "mock-claude" nil "sleep" "30"))
+        (displayed nil)
+        (mcp-stopped nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--ensure-cli)
+                   (lambda () t))
+                  ((symbol-function 'claude-code-ide--get-working-directory)
+                   (lambda () "/tmp/test-death/"))
+                  ((symbol-function 'claude-code-ide--get-buffer-name)
+                   (lambda (&optional _) "*test-death*"))
+                  ((symbol-function 'claude-code-ide--terminal-ensure-backend)
+                   #'ignore)
+                  ((symbol-function 'claude-code-ide-mcp-start)
+                   (lambda (_) 12345))
+                  ((symbol-function 'claude-code-ide--create-terminal-session)
+                   (lambda (&rest _) (cons buffer process)))
+                  ((symbol-function 'claude-code-ide-mcp-server-session-started)
+                   #'ignore)
+                  ((symbol-function 'claude-code-ide--cleanup-on-exit)
+                   #'ignore)
+                  ((symbol-function 'claude-code-ide-mcp-stop-session)
+                   (lambda (_) (setq mcp-stopped t)))
+                  ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+                   (lambda (_) (setq displayed t)))
+                  ;; Simulate the CLI dying while the session stabilizes:
+                  ;; the process exits and its sentinel kills the buffer.
+                  ((symbol-function 'sleep-for)
+                   (lambda (&rest _)
+                     (delete-process process)
+                     (kill-buffer buffer))))
+          (let* ((claude-code-ide-terminal-backend 'ghostel)
+                 (err (should-error (claude-code-ide--start-session))))
+            (should (string-match-p "exited immediately after startup"
+                                    (error-message-string err)))
+            (should-not displayed)
+            (should mcp-stopped)))
+      (when (process-live-p process)
+        (delete-process process))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (remhash "/tmp/test-death/" claude-code-ide--processes)
+      (remhash "/tmp/test-death/" claude-code-ide--session-ids))))
+
+(ert-deftest claude-code-ide-test-ghostel-evil-escape-override ()
+  "Test that the ghostel evil ESC routing is overridden per buffer."
+  ;; Overrides the buffer-local escape mode when evil-ghostel-mode is on.
+  (with-temp-buffer
+    (setq-local evil-ghostel-mode t)
+    (setq-local evil-ghostel--escape-mode 'auto)
+    (let ((claude-code-ide-ghostel-evil-escape 'evil))
+      (claude-code-ide--apply-ghostel-evil-escape)
+      (should (eq evil-ghostel--escape-mode 'evil))))
+  ;; A nil setting leaves the value seeded from the global default alone.
+  (with-temp-buffer
+    (setq-local evil-ghostel-mode t)
+    (setq-local evil-ghostel--escape-mode 'auto)
+    (let ((claude-code-ide-ghostel-evil-escape nil))
+      (claude-code-ide--apply-ghostel-evil-escape)
+      (should (eq evil-ghostel--escape-mode 'auto))))
+  ;; No-op when evil-ghostel-mode is not active in the buffer.
+  (with-temp-buffer
+    (setq-local evil-ghostel-mode nil)
+    (setq-local evil-ghostel--escape-mode 'auto)
+    (let ((claude-code-ide-ghostel-evil-escape 'evil))
+      (claude-code-ide--apply-ghostel-evil-escape)
+      (should (eq evil-ghostel--escape-mode 'auto)))))
 
 (ert-deftest claude-code-ide-test-vterm-smart-renderer-passthrough ()
   "Test that vterm smart renderer passes through normal text immediately."
