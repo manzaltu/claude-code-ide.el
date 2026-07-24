@@ -132,6 +132,51 @@ Returns project directory, active buffer, and file count."
                   (length (project-files (project-current nil project-dir)))))
       "No session context available")))
 
+(defun claude-code-ide-mcp-imenu--process-items (items file-path prefix)
+  "Recursively process imenu ITEMS, prepending PREFIX to categories.
+Returns a list of formatted symbol strings."
+  (let ((results '()))
+    (dolist (item items)
+      (cond
+       ;; Skip if item is just a string (header/annotation in LSP imenu)
+       ((stringp item) nil)
+       ;; Skip special entries starting with *
+       ((and (consp item) (stringp (car item))
+             (string-match-p "^\\*" (car item)))
+        nil)
+       ;; Handle sublists (categories/namespaces) - use imenu--subalist-p
+       ((imenu--subalist-p item)
+        (let* ((category (car item))
+               (new-prefix (if (string-empty-p prefix)
+                               category
+                             (concat prefix imenu-level-separator category))))
+          (setq results (nconc (claude-code-ide-mcp-imenu--process-items
+                                (cdr item) file-path new-prefix)
+                               results))))
+       ;; Handle entries with markers
+       ((and (consp item) (markerp (cdr item)))
+        (let ((line (line-number-at-pos (marker-position (cdr item))))
+              (name (if (string-empty-p prefix)
+                        (car item)
+                      (concat prefix " " (car item)))))
+          (push (format "%s:%d: %s"
+                        file-path
+                        line
+                        name)
+                results)))
+       ;; Handle entries with position numbers
+       ((and (consp item) (numberp (cdr item)))
+        (let ((line (line-number-at-pos (cdr item)))
+              (name (if (string-empty-p prefix)
+                        (car item)
+                      (concat prefix " " (car item)))))
+          (push (format "%s:%d: %s"
+                        file-path
+                        line
+                        name)
+                results)))))
+    results))
+
 (defun claude-code-ide-mcp-imenu-list-symbols (file-path)
   "List all symbols in FILE-PATH using imenu.
 Returns a list of symbols with their types and positions."
@@ -145,45 +190,8 @@ Returns a list of symbols with their types and positions."
               ;; Generate or update imenu index
               (imenu--make-index-alist)
               (if imenu--index-alist
-                  (let ((results '()))
-                    ;; Process the imenu index
-                    (dolist (item imenu--index-alist)
-                      (cond
-                       ;; Skip special entries
-                       ((string-match-p "^\\*" (car item)) nil)
-                       ;; Handle simple entries (name . position)
-                       ((markerp (cdr item))
-                        (let ((line (line-number-at-pos (marker-position (cdr item)))))
-                          (push (format "%s:%d: %s"
-                                        file-path
-                                        line
-                                        (car item))
-                                results)))
-                       ;; Handle position numbers
-                       ((numberp (cdr item))
-                        (let ((line (line-number-at-pos (cdr item))))
-                          (push (format "%s:%d: %s"
-                                        file-path
-                                        line
-                                        (car item))
-                                results)))
-                       ;; Handle nested entries (category . items)
-                       ((listp (cdr item))
-                        (let ((category (car item)))
-                          (dolist (subitem (cdr item))
-                            (when (and (consp subitem)
-                                       (or (markerp (cdr subitem))
-                                           (numberp (cdr subitem))))
-                              (let ((line (line-number-at-pos
-                                           (if (markerp (cdr subitem))
-                                               (marker-position (cdr subitem))
-                                             (cdr subitem)))))
-                                (push (format "%s:%d: [%s] %s"
-                                              file-path
-                                              line
-                                              category
-                                              (car subitem))
-                                      results))))))))
+                  (let ((results (claude-code-ide-mcp-imenu--process-items
+                                  imenu--index-alist file-path "")))
                     (if results
                         (nreverse results)
                       (format "No symbols found in %s" file-path)))
