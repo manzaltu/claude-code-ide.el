@@ -927,6 +927,15 @@ with an explanatory error rather than operating on the dead buffer."
              (should (null (claude-code-ide--get-process)))))))
     (claude-code-ide-tests--clear-processes)))
 
+(ert-deftest claude-code-ide-test-stop-all-no-sessions ()
+  "Test `stop-all' command when no sessions are running."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (progn
+        ;; Should not error when no sessions exist
+        (claude-code-ide-stop-all))
+    (claude-code-ide-tests--clear-processes)))
+
 (ert-deftest claude-code-ide-test-switch-to-buffer-no-session ()
   "Test `switch-to-buffer' command when no session exists."
   (claude-code-ide-tests--clear-processes)
