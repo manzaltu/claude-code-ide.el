@@ -3368,6 +3368,30 @@ cleanup used to leave them firing on a dead one."
       (claude-code-ide-tests--stop-all-sessions)
       (claude-code-ide-tests--clear-processes))))
 
+(ert-deftest claude-code-ide-test-backend-recommendation ()
+  "The ghostel suggestion is echoed once, only for vterm and eat."
+  (let ((claude-code-ide--backend-recommendation-shown nil)
+        (claude-code-ide-show-backend-recommendation t)
+        (messages '()))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      ;; ghostel: no suggestion
+      (let ((claude-code-ide-terminal-backend 'ghostel))
+        (claude-code-ide--maybe-recommend-ghostel))
+      (should (null messages))
+      ;; eat: suggested once, then never again
+      (let ((claude-code-ide-terminal-backend 'eat))
+        (claude-code-ide--maybe-recommend-ghostel)
+        (claude-code-ide--maybe-recommend-ghostel))
+      (should (= 1 (length messages)))
+      (should (string-match-p "ghostel" (car messages)))
+      ;; disabled: nothing even when unseen
+      (let ((claude-code-ide--backend-recommendation-shown nil)
+            (claude-code-ide-show-backend-recommendation nil)
+            (claude-code-ide-terminal-backend 'vterm))
+        (claude-code-ide--maybe-recommend-ghostel))
+      (should (= 1 (length messages))))))
+
 (ert-deftest claude-code-ide-test-selection-dedupe-includes-file ()
   "Switching files at identical coordinates still notifies the CLI."
   (claude-code-ide-tests--clear-processes)
