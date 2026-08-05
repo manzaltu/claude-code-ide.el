@@ -132,33 +132,46 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 |-----------------------------------------+---------------------------------------------------|
 | =M-x claude-code-ide-menu=                | Open transient menu with all Claude Code commands |
 | =M-x claude-code-ide-emacs-tools-setup=   | Set up built-in MCP tools (e.g. xref, project)    |
-| =M-x claude-code-ide=                     | Start Claude Code for the current project         |
+| =M-x claude-code-ide=                     | Start a new Claude Code instance for the project  |
 | =M-x claude-code-ide-send-prompt=         | Send prompt to Claude from minibuffer input       |
-| =M-x claude-code-ide-continue=            | Continue most recent conversation in directory    |
-| =M-x claude-code-ide-resume=              | Resume Claude Code with previous conversation     |
-| =M-x claude-code-ide-stop=                | Stop Claude Code for the current project          |
-| =M-x claude-code-ide-switch-to-buffer=    | Switch to project's Claude buffer                 |
-| =M-x claude-code-ide-list-sessions=       | List all active Claude Code sessions and switch   |
+| =M-x claude-code-ide-continue=            | Continue most recent conversation in new instance |
+| =M-x claude-code-ide-resume=              | Resume a previous conversation in new instance    |
+| =M-x claude-code-ide-stop=                | Stop a Claude Code instance of the project        |
+| =M-x claude-code-ide-stop-all=            | Stop all instances in the project (=C-u=: global)   |
+| =M-x claude-code-ide-rename-session=      | Rename a Claude Code instance                     |
+| =M-x claude-code-ide-switch-to-buffer=    | Switch to a Claude buffer of the project          |
+| =M-x claude-code-ide-list-sessions=       | List all active Claude Code instances and switch  |
 | =M-x claude-code-ide-check-status=        | Check if Claude Code CLI is installed and working |
 | =M-x claude-code-ide-insert-at-mentioned= | Send selected text to Claude prompt               |
 | =M-x claude-code-ide-send-escape=         | Send escape key to Claude terminal                |
 | =M-x claude-code-ide-insert-newline=      | Insert newline in Claude prompt (sends \ + Enter) |
-| =M-x claude-code-ide-toggle=              | Toggle visibility of Claude Code window           |
-| =M-x claude-code-ide-toggle-recent=       | Toggle most recent Claude window globally         |
+| =M-x claude-code-ide-toggle=              | Show/hide the project's Claude windows            |
+| =M-x claude-code-ide-toggle-recent=       | Show/hide all Claude windows globally             |
+| =M-x claude-code-ide-show-all=            | Show every instance of the project (=C-u=: global)  |
 | =M-x claude-code-ide-show-debug=          | Show the debug buffer with WebSocket messages     |
 | =M-x claude-code-ide-clear-debug=         | Clear the debug buffer                            |
 
-** Multi-Project Support
+Commands that target one instance (stop, switch, send-prompt, insert-at-mentioned, escape, newline) resolve their target automatically: the Claude terminal you are in, the project's only instance, or its only visible one; beyond that, send-type commands use the most recently used instance (echoing the choice) while =claude-code-ide-stop= asks. A prefix argument (=C-u=) always lets you pick the instance explicitly.
 
-Claude Code IDE automatically detects your project using Emacs' built-in =project.el=. Each project gets its own Claude Code instance with a unique buffer name like =*claude-code[project-name]*=.
+** Multiple Projects and Instances
 
-You can run multiple Claude Code instances simultaneously for different projects. Use =claude-code-ide-list-sessions= to see all active sessions and switch between them.
+Claude Code IDE automatically detects your project using Emacs' built-in =project.el=, and any project can run several Claude Code instances at the same time — for example one instance refactoring while another answers questions.
+
+- The first instance of a project gets the plain buffer name =*claude-code[project-name]*=.
+- Running =M-x claude-code-ide= again starts an /additional/ instance and prompts for an optional name: entering =refactor= yields =*claude-code[project-name:refactor]*=, while empty input auto-numbers (=*claude-code[project-name:2]*=, =*claude-code[project-name:3]*=, ...). Auto numbers are positional and get reused after an instance exits.
+- =M-x claude-code-ide-rename-session= renames an instance later; names show up in buffer names, session lists and prompts.
+- Each instance runs its own MCP server, so cursor/selection context is shared with /every/ instance of the project, while explicit actions (prompts, at-mentions, diffs) target exactly one.
+- Use =claude-code-ide-list-sessions= to see all instances across all projects and switch between them.
+
+Note for =claude-code-ide-continue=: starting a second continued instance in the same directory forks the same "most recent" conversation — that is CLI behavior.
 
 ** Window Management
 
-- Running =claude-code-ide= when a session is already active will toggle the window visibility
+- Each instance owns its own side-window slot, so several instances can be visible side by side along =claude-code-ide-window-side=; instances of the same project are grouped next to each other. Emacs' =window-sides-slots= controls how many side windows fit per side; heavy users can e.g. =(setq window-sides-slots '(nil nil 3 nil))= for three windows on the right side
+- =claude-code-ide-toggle= works as a project panel: it hides all of the project's visible Claude windows (remembering the set) or restores them; with =C-u= it toggles a single chosen instance
+- With =tab-bar-mode=, tabs keep independent window layouts, and the toggles follow that model: hiding and restoring apply to the current tab only, and each tab remembers its own sets. Newly created tabs never inherit Claude windows from the cloned layout — use =claude-code-ide-show-all= or the toggles to summon instances into a fresh tab
 - The window can be closed with standard Emacs window commands (=C-x 0=) without stopping Claude
-- Use =claude-code-ide-toggle-recent= to toggle the most recent Claude window from anywhere, regardless of your current project context. This is useful when you're outside a project directory but want to quickly hide/show Claude
+- Use =claude-code-ide-toggle-recent= to hide/show all Claude windows from anywhere, regardless of your current project context. This is useful when you're outside a project directory but want to quickly hide/show Claude
 
 ** Diff Viewing with Ediff
 
@@ -359,15 +372,20 @@ To disable it:
 
 *** Custom Buffer Naming
 
-You can customize how Claude Code buffers are named:
+You can customize how Claude Code buffers are named. The function receives the project directory and, optionally, the instance name (nil for the first, unnamed instance of a project):
 
 #+begin_src emacs-lisp
 (setq claude-code-ide-buffer-name-function
-      (lambda (directory)
-        (if directory
-            (format "*Claude:%s*" (file-name-nondirectory (directory-file-name directory)))
-          "*Claude:Global*")))
+      (lambda (directory &optional instance-name)
+        (let ((project (if directory
+                           (file-name-nondirectory (directory-file-name directory))
+                         "Global")))
+          (if instance-name
+              (format "*Claude:%s/%s*" project instance-name)
+            (format "*Claude:%s*" project)))))
 #+end_src
+
+Existing single-argument functions keep working: they are called with just the directory, and for named instances the name is spliced into the result (a =...]*= suffix becomes =...:NAME]*=) or appended as =<NAME>=.
 
 *** Custom CLI Flags
 
@@ -432,7 +450,9 @@ The debug buffer shows:
 
 ** Multiple Claude Code Instances on One Project
 
-Using git worktrees is the recommended way for running multiple Claude Code instances on different branches of the same project. This allows you to develop features or fix bugs in parallel:
+Running several instances on the same checkout is supported natively: just run =M-x claude-code-ide= again and give the new instance an optional name (see [[*Multiple Projects and Instances][Multiple Projects and Instances]]). All instances share the working tree, so this fits collaborating agents — one implementing, one reviewing, one answering questions.
+
+When the instances should /not/ share a working tree — e.g. parallel work on different branches with conflicting edits — git worktrees remain the right tool:
 
 #+begin_src bash
 # Create a new worktree for a feature branch
@@ -449,7 +469,7 @@ find-file /path/to/myproject-worktree
 M-x claude-code-ide
 #+end_src
 
-Each worktree is treated as a separate project by =project.el=, allowing you to have independent Claude Code sessions with their own buffers (e.g., =*claude-code[myproject]*= and =*claude-code[myproject-worktree]*=).
+Each worktree is treated as a separate project by =project.el=, giving fully independent sessions with their own buffers (e.g., =*claude-code[myproject]*= and =*claude-code[myproject-worktree]*=).
 
 ** Emacs MCP Tools
 

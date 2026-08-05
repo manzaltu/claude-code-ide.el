@@ -39,7 +39,7 @@
 
 ;; Forward declarations
 (declare-function ws-process "web-server" (server))
-(declare-function claude-code-ide-mcp-http-server-start "claude-code-ide-mcp-http-server" (handler &optional port))
+(declare-function claude-code-ide-mcp-http-server-start "claude-code-ide-mcp-http-server" (&optional port))
 (declare-function claude-code-ide-mcp-http-server-stop "claude-code-ide-mcp-http-server" (server))
 
 ;;; Customization
@@ -84,9 +84,6 @@ Each entry is (FUNCTION . PLIST) where PLIST contains:
 
 (defvar claude-code-ide-mcp-server--port nil
   "The port the MCP tools server is running on.")
-
-(defvar claude-code-ide-mcp-server--session-count 0
-  "Number of active Claude sessions using the MCP tools server.")
 
 (defvar claude-code-ide-mcp-server--sessions (make-hash-table :test 'equal)
   "Hash table mapping session IDs to session contexts.
@@ -248,26 +245,35 @@ Returns nil if server is not running."
 
 (defun claude-code-ide-mcp-server-session-started (&optional session-id project-dir buffer)
   "Notify that a Claude session has started.
-If SESSION-ID, PROJECT-DIR and BUFFER are provided, register the session.
-Increments the session counter."
-  (cl-incf claude-code-ide-mcp-server--session-count)
+If SESSION-ID and PROJECT-DIR are provided, register the session.
+BUFFER may be nil when the terminal has not been created yet; use
+`claude-code-ide-mcp-server-update-session-buffer' once it exists.
+The server lifecycle follows the registered-session table, so an
+unbalanced end call cannot stop the server under a live session."
+  (when (and session-id project-dir)
+    (claude-code-ide-mcp-server-register-session session-id project-dir buffer))
   (claude-code-ide-debug "MCP session started. Count: %d"
-                         claude-code-ide-mcp-server--session-count)
-  (when (and session-id project-dir buffer)
-    (claude-code-ide-mcp-server-register-session session-id project-dir buffer)))
+                         (hash-table-count claude-code-ide-mcp-server--sessions)))
 
 (defun claude-code-ide-mcp-server-session-ended (&optional session-id)
-  "Notify that a Claude session has ended.
-If SESSION-ID is provided, unregister that specific session.
-Decrements the session counter and stops server if no sessions remain."
+  "Notify that the Claude session SESSION-ID has ended.
+Unregisters the session and stops the server when none remain.
+Idempotent: ending an unknown or already-ended session is a no-op."
   (when session-id
     (claude-code-ide-mcp-server-unregister-session session-id))
-  (when (> claude-code-ide-mcp-server--session-count 0)
-    (cl-decf claude-code-ide-mcp-server--session-count)
-    (claude-code-ide-debug "MCP session ended. Count: %d"
-                           claude-code-ide-mcp-server--session-count)
-    (when (= claude-code-ide-mcp-server--session-count 0)
-      (claude-code-ide-mcp-server--stop-server))))
+  (claude-code-ide-debug "MCP session ended. Count: %d"
+                         (hash-table-count claude-code-ide-mcp-server--sessions))
+  (when (and claude-code-ide-mcp-server--server
+             (= 0 (hash-table-count claude-code-ide-mcp-server--sessions)))
+    (claude-code-ide-mcp-server--stop-server)))
+
+(defun claude-code-ide-mcp-server-update-session-buffer (session-id buffer)
+  "Set the terminal BUFFER of the registered session SESSION-ID."
+  (when-let ((session (gethash session-id claude-code-ide-mcp-server--sessions)))
+    ;; Store the result: plist-put only mutates in place when the key
+    ;; already exists in the list
+    (puthash session-id (plist-put session :buffer buffer)
+             claude-code-ide-mcp-server--sessions)))
 
 (defun claude-code-ide-mcp-server-get-config (&optional session-id)
   "Get the MCP configuration for the tools server.
@@ -325,7 +331,10 @@ Returns a plist with :project-dir and :buffer, or nil if not found."
 This should be called when the user switches to a different buffer
 in the project to ensure MCP tools execute in the correct context."
   (when-let ((session (gethash session-id claude-code-ide-mcp-server--sessions)))
-    (plist-put session :last-active-buffer buffer)
+    ;; Store the result: plist-put only mutates in place when the key
+    ;; already exists in the list
+    (puthash session-id (plist-put session :last-active-buffer buffer)
+             claude-code-ide-mcp-server--sessions)
     (claude-code-ide-debug "Updated last active buffer for session %s to %s"
                            session-id (buffer-name buffer))))
 

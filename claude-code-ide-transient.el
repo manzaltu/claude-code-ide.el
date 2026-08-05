@@ -28,6 +28,7 @@
 ;;; Code:
 
 (require 'transient)
+(require 'cl-lib)
 (require 'claude-code-ide-debug)
 
 ;; Declare functions from other files to avoid circular dependencies
@@ -35,22 +36,28 @@
 (declare-function claude-code-ide-resume "claude-code-ide" ())
 (declare-function claude-code-ide-continue "claude-code-ide" ())
 (declare-function claude-code-ide-stop "claude-code-ide" ())
+(declare-function claude-code-ide-stop-all "claude-code-ide" (&optional all-projects))
+(declare-function claude-code-ide-rename-session "claude-code-ide" ())
 (declare-function claude-code-ide-list-sessions "claude-code-ide" ())
 (declare-function claude-code-ide-switch-to-buffer "claude-code-ide" ())
 (declare-function claude-code-ide-insert-at-mentioned "claude-code-ide" ())
-(declare-function claude-code-ide-send-prompt "claude-code-ide" ())
+(declare-function claude-code-ide-send-prompt "claude-code-ide" (&optional prompt session))
 (declare-function claude-code-ide-send-escape "claude-code-ide" ())
 (declare-function claude-code-ide-insert-newline "claude-code-ide" ())
-(declare-function claude-code-ide-toggle "claude-code-ide" ())
+(declare-function claude-code-ide-toggle "claude-code-ide" (&optional pick))
+(declare-function claude-code-ide-show-all "claude-code-ide" (&optional all-projects))
 (declare-function claude-code-ide-check-status "claude-code-ide" ())
 (declare-function claude-code-ide--ensure-cli "claude-code-ide" ())
+(declare-function claude-code-ide--session-display-name "claude-code-ide" (session))
+(declare-function claude-code-ide--session-visible-p "claude-code-ide" (session))
 (declare-function claude-code-ide-mcp--active-sessions "claude-code-ide-mcp" ())
+(declare-function claude-code-ide-mcp--sessions-for-project "claude-code-ide-mcp" (project-dir))
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-port "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-client "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-buffer "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-cli-pid "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-last-buffer "claude-code-ide-mcp" (session))
-(declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
 (declare-function claude-code-ide--get-working-directory "claude-code-ide" ())
 
 ;; Declare variables
@@ -71,74 +78,58 @@
 
 ;;; Helper Functions
 
-(defun claude-code-ide--has-active-session-p ()
-  "Check if there's an active Claude Code session for the current buffer."
-  (when (claude-code-ide-mcp--get-current-session) t))
+(defun claude-code-ide--project-session-count ()
+  "Return the number of instances in the current project."
+  (length (claude-code-ide-mcp--sessions-for-project
+           (claude-code-ide--get-working-directory))))
 
 (defun claude-code-ide--start-description ()
-  "Dynamic description for start command based on session status."
-  (if (claude-code-ide--has-active-session-p)
-      (propertize "Start new Claude Code session (session already running)"
-                  'face 'transient-inactive-value)
-    "Start new Claude Code session"))
-
-(defun claude-code-ide--start-if-no-session ()
-  "Start Claude Code only if no session is active for current buffer."
-  (interactive)
-  (if (claude-code-ide--has-active-session-p)
-      (let ((working-dir (claude-code-ide--get-working-directory)))
-        (claude-code-ide-log "Claude Code session already running in %s"
-                             (abbreviate-file-name working-dir)))
-    (claude-code-ide)))
-
-(defun claude-code-ide--continue-description ()
-  "Dynamic description for continue command based on session status."
-  (if (claude-code-ide--has-active-session-p)
-      (propertize "Continue most recent conversation (session already running)"
-                  'face 'transient-inactive-value)
-    "Continue most recent conversation"))
-
-(defun claude-code-ide--continue-if-no-session ()
-  "Continue Claude Code only if no session is active for current buffer."
-  (interactive)
-  (if (claude-code-ide--has-active-session-p)
-      (let ((working-dir (claude-code-ide--get-working-directory)))
-        (claude-code-ide-log "Claude Code session already running in %s"
-                             (abbreviate-file-name working-dir)))
-    (claude-code-ide-continue)))
-
-(defun claude-code-ide--resume-description ()
-  "Dynamic description for resume command based on session status."
-  (if (claude-code-ide--has-active-session-p)
-      (propertize "Resume session (session already running)"
-                  'face 'transient-inactive-value)
-    "Resume session (from previous conversation)"))
-
-(defun claude-code-ide--resume-if-no-session ()
-  "Resume Claude Code only if no session is active for current buffer."
-  (interactive)
-  (if (claude-code-ide--has-active-session-p)
-      (let ((working-dir (claude-code-ide--get-working-directory)))
-        (claude-code-ide-log "Claude Code session already running in %s"
-                             (abbreviate-file-name working-dir)))
-    (claude-code-ide-resume)))
+  "Dynamic description for the start command."
+  (let ((count (claude-code-ide--project-session-count)))
+    (if (> count 0)
+        (format "Start new Claude Code instance (%d running)" count)
+      "Start new Claude Code instance")))
 
 (defun claude-code-ide--session-status ()
-  "Return a string describing the current session status."
-  (if-let ((session (claude-code-ide-mcp--get-current-session)))
-      (let* ((project-dir (claude-code-ide-mcp-session-project-dir session))
-             (project-name (file-name-nondirectory (directory-file-name project-dir)))
-             (connected (if (claude-code-ide-mcp-session-client session) "connected" "disconnected")))
-        (propertize (format "Active session in [%s] - %s" project-name connected)
-                    'face 'success))
-    (propertize "No active session" 'face 'transient-inactive-value)))
-
-(defun claude-code-ide-toggle-window ()
-  "Toggle visibility of Claude Code window.
-If called from a Claude vterm buffer, toggle that window.
-Otherwise, if multiple sessions exist, prompt for selection."
-  (interactive)
-  (claude-code-ide-toggle))
+  "Return a string describing the current project's instances."
+  (let* ((project-dir (claude-code-ide--get-working-directory))
+         (sessions (claude-code-ide-mcp--sessions-for-project project-dir))
+         (all-count (length (claude-code-ide-mcp--active-sessions))))
+    (cond
+     (sessions
+      (let* ((project-name (file-name-nondirectory (directory-file-name project-dir)))
+             (connected (cl-count-if #'claude-code-ide-mcp-session-client sessions))
+             (header (propertize (format "%s — %d instance%s (%d connected)"
+                                         project-name
+                                         (length sessions)
+                                         (if (cdr sessions) "s" "")
+                                         connected)
+                                 'face 'success))
+             (shown (cl-subseq sessions 0 (min 4 (length sessions))))
+             (lines (mapcar
+                     (lambda (session)
+                       (let ((line (format "  %-20s port %-6s %s%s"
+                                           (claude-code-ide--session-display-name session)
+                                           (or (claude-code-ide-mcp-session-port session) "?")
+                                           (if (claude-code-ide-mcp-session-client session)
+                                               "connected" "disconnected")
+                                           (if (claude-code-ide--session-visible-p session)
+                                               "  visible" ""))))
+                         (if (claude-code-ide-mcp-session-client session)
+                             line
+                           (propertize line 'face 'transient-inactive-value))))
+                     shown)))
+        (when (> (length sessions) (length shown))
+          (setq lines (append lines
+                              (list (propertize
+                                     (format "  …and %d more" (- (length sessions) (length shown)))
+                                     'face 'transient-inactive-value)))))
+        (mapconcat #'identity (cons header lines) "\n")))
+     ((> all-count 0)
+      (propertize (format "No session in this project (%d running elsewhere)" all-count)
+                  'face 'transient-inactive-value))
+     (t
+      (propertize "No active sessions" 'face 'transient-inactive-value)))))
 
 (defun claude-code-ide-show-version-info ()
   "Show detailed version information for Claude Code CLI."
@@ -157,7 +148,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     (user-error "Claude Code CLI not available")))
 
 (defun claude-code-ide-show-mcp-sessions ()
-  "Show information about active MCP sessions."
+  "Show information about active MCP sessions, one block per instance."
   (interactive)
   (let ((sessions (claude-code-ide-mcp--active-sessions)))
     (if sessions
@@ -165,11 +156,21 @@ Otherwise, if multiple sessions exist, prompt for selection."
           (princ "Active MCP Sessions\n")
           (princ "==================\n\n")
           (dolist (session sessions)
-            (princ (format "Project: %s\n" (claude-code-ide-mcp-session-project-dir session)))
+            (princ (format "Instance: %s\n" (claude-code-ide--session-display-name session)))
+            (princ (format "  Project: %s\n" (claude-code-ide-mcp-session-project-dir session)))
+            (princ (format "  Buffer: %s\n"
+                           (let ((buffer (claude-code-ide-mcp-session-buffer session)))
+                             (if (and buffer (buffer-live-p buffer))
+                                 (buffer-name buffer)
+                               "None"))))
             (princ (format "  Port: %d\n" (claude-code-ide-mcp-session-port session)))
             (princ (format "  Connected: %s\n"
-                           (if (claude-code-ide-mcp-session-client session) "Yes" "No")))
-            (princ (format "  Buffer: %s\n"
+                           (if (claude-code-ide-mcp-session-client session)
+                               (if-let ((pid (claude-code-ide-mcp-session-cli-pid session)))
+                                   (format "Yes (CLI PID %s)" pid)
+                                 "Yes")
+                             "No")))
+            (princ (format "  Last file: %s\n"
                            (if (claude-code-ide-mcp-session-last-buffer session)
                                (buffer-name (claude-code-ide-mcp-session-last-buffer session))
                              "None")))
@@ -177,7 +178,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
       (claude-code-ide-log "No active MCP sessions"))))
 
 (defun claude-code-ide-show-active-ports ()
-  "Show active ports used by MCP servers."
+  "Show active ports used by MCP servers, one row per instance."
   (interactive)
   (let ((sessions (claude-code-ide-mcp--active-sessions)))
     (if sessions
@@ -185,9 +186,12 @@ Otherwise, if multiple sessions exist, prompt for selection."
           (princ "Active MCP Server Ports\n")
           (princ "======================\n\n")
           (dolist (session sessions)
-            (princ (format "Port %d: %s\n"
+            (princ (format "Port %d: %-20s %s (%s)\n"
                            (claude-code-ide-mcp-session-port session)
-                           (abbreviate-file-name (claude-code-ide-mcp-session-project-dir session))))))
+                           (claude-code-ide--session-display-name session)
+                           (abbreviate-file-name (claude-code-ide-mcp-session-project-dir session))
+                           (if (claude-code-ide-mcp-session-client session)
+                               "connected" "disconnected")))))
       (claude-code-ide-log "No active MCP servers"))))
 
 (defun claude-code-ide-toggle-debug-mode ()
@@ -318,15 +322,18 @@ Otherwise, if multiple sessions exist, prompt for selection."
   [:description claude-code-ide--session-status]
   ["Claude Code IDE"
    ["Session Management"
-    ("s" claude-code-ide--start-if-no-session :description claude-code-ide--start-description)
-    ("c" claude-code-ide--continue-if-no-session :description claude-code-ide--continue-description)
-    ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
-    ("q" "Stop current session" claude-code-ide-stop)
+    ("s" claude-code-ide :description claude-code-ide--start-description)
+    ("c" "Continue in new instance" claude-code-ide-continue)
+    ("r" "Resume in new instance" claude-code-ide-resume)
+    ("q" "Stop instance" claude-code-ide-stop)
+    ("Q" "Stop all instances" claude-code-ide-stop-all)
+    ("R" "Rename instance" claude-code-ide-rename-session)
     ("l" "List all sessions" claude-code-ide-list-sessions)]
    ["Navigation"
     ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
-    ("w" "Toggle window visibility" claude-code-ide-toggle-window)
-    ("W" "Toggle recent window" claude-code-ide-toggle-recent)]
+    ("w" "Toggle project windows" claude-code-ide-toggle)
+    ("W" "Toggle all windows" claude-code-ide-toggle-recent)
+    ("a" "Show all instances" claude-code-ide-show-all)]
    ["Interaction"
     ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
     ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)
