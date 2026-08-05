@@ -301,7 +301,7 @@ calling this once per session."
                                      (prompts . ((listChanged . t)))
                                      (logging . ,(make-hash-table :test 'equal))))
                     (serverInfo . ((name . "claude-code-ide-mcp")
-                                   (version . "0.1.0"))))))
+                                   (version . "0.3.0"))))))
     (claude-code-ide-debug "Initialize response capabilities: tools.listChanged=%s, resources.subscribe=%s, resources.listChanged=%s, prompts.listChanged=%s"
                            t :json-false :json-false t)
     (claude-code-ide-mcp--make-response id response)))
