@@ -145,7 +145,7 @@ Uses buffer-local cache to avoid repeated project lookups."
       ;; Cache is valid, return cached value (even if nil)
       claude-code-ide-mcp--buffer-project-cache
     ;; Cache is invalid or doesn't exist, recalculate
-    (let ((project-dir (when-let ((project (project-current)))
+    (let ((project-dir (when-let* ((project (project-current)))
                          (expand-file-name (project-root project)))))
       ;; Update cache
       (setq claude-code-ide-mcp--buffer-project-cache project-dir
@@ -187,7 +187,7 @@ Resolution order: the terminal buffer's own session backpointer, the
 sole session of the buffer's project, or the project's most recently
 used session."
   (or claude-code-ide--session
-      (when-let ((project-dir (claude-code-ide-mcp--get-buffer-project)))
+      (when-let* ((project-dir (claude-code-ide-mcp--get-buffer-project)))
         (let ((sessions (claude-code-ide-mcp--sessions-for-project project-dir)))
           (if (cdr sessions)
               (claude-code-ide-mcp--mru-session project-dir)
@@ -455,7 +455,7 @@ socket that sent the request — or be dropped, never to its successor."
                id -32601 (format "Method not found: %s" method)))
              ;; Notifications (no id)
              ((string= method "ide_connected")
-              (when-let ((pid (alist-get 'pid params)))
+              (when-let* ((pid (alist-get 'pid params)))
                 (claude-code-ide-debug "CLI connected with PID: %s" pid)
                 (when session
                   (setf (claude-code-ide-mcp-session-cli-pid session) pid)))
@@ -683,13 +683,13 @@ Returns a cons cell (SERVER . PORT)."
 
 (defun claude-code-ide-mcp--stop-ping-timer (session)
   "Stop the ping timer for SESSION."
-  (when-let ((timer (claude-code-ide-mcp-session-ping-timer session)))
+  (when-let* ((timer (claude-code-ide-mcp-session-ping-timer session)))
     (cancel-timer timer)
     (setf (claude-code-ide-mcp-session-ping-timer session) nil)))
 
 (defun claude-code-ide-mcp--send-ping (session)
   "Send a ping frame to keep connection alive for SESSION."
-  (when-let ((client (claude-code-ide-mcp-session-client session)))
+  (when-let* ((client (claude-code-ide-mcp-session-client session)))
     (condition-case err
         (websocket-send client
                         (make-websocket-frame :opcode 'ping
@@ -723,7 +723,7 @@ This should be called when the buffer's context might have changed."
       (when (claude-code-ide-mcp--sessions-for-project project-dir)
         ;; One debounce timer per project; when it fires the selection is
         ;; fanned out to every session of the project.
-        (when-let ((timer (gethash project-dir claude-code-ide-mcp--selection-timers)))
+        (when-let* ((timer (gethash project-dir claude-code-ide-mcp--selection-timers)))
           (cancel-timer timer))
         (let ((current-buffer (current-buffer)))
           (puthash project-dir
@@ -887,15 +887,15 @@ phantom session wedged in the registry with the global hooks alive."
           (setf (claude-code-ide-mcp-session-client session) nil)
 
           ;; Close server and client (best effort)
-          (when-let ((server (claude-code-ide-mcp-session-server session)))
+          (when-let* ((server (claude-code-ide-mcp-session-server session)))
             (ignore-errors (websocket-server-close server)))
 
           ;; Stop timers
-          (when-let ((ping-timer (claude-code-ide-mcp-session-ping-timer session)))
+          (when-let* ((ping-timer (claude-code-ide-mcp-session-ping-timer session)))
             (ignore-errors (cancel-timer ping-timer)))
 
           ;; Remove lockfile
-          (when-let ((port (claude-code-ide-mcp-session-port session)))
+          (when-let* ((port (claude-code-ide-mcp-session-port session)))
             (claude-code-ide-debug "Removing lockfile for port %d" port)
             (claude-code-ide-mcp--remove-lockfile port)))
 
@@ -905,7 +905,7 @@ phantom session wedged in the registry with the global hooks alive."
 
       ;; Drop the project's selection timer when its last session is gone
       (unless (claude-code-ide-mcp--sessions-for-project project-dir)
-        (when-let ((timer (gethash project-dir claude-code-ide-mcp--selection-timers)))
+        (when-let* ((timer (gethash project-dir claude-code-ide-mcp--selection-timers)))
           (ignore-errors (cancel-timer timer)))
         (remhash project-dir claude-code-ide-mcp--selection-timers))
 

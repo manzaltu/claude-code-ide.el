@@ -166,7 +166,7 @@
             (princ (format "  Port: %d\n" (claude-code-ide-mcp-session-port session)))
             (princ (format "  Connected: %s\n"
                            (if (claude-code-ide-mcp-session-client session)
-                               (if-let ((pid (claude-code-ide-mcp-session-cli-pid session)))
+                               (if-let* ((pid (claude-code-ide-mcp-session-cli-pid session)))
                                    (format "Yes (CLI PID %s)" pid)
                                  "Yes")
                              "No")))

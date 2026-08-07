@@ -73,6 +73,7 @@
 (defvar vterm-environment)
 (defvar eat-term-name)
 (defvar vterm--process)
+(defvar vterm-copy-mode)
 (defvar ghostel-set-title-function)
 (defvar ghostel-enable-title-tracking)
 (defvar ghostel-kill-buffer-on-exit)
@@ -143,7 +144,7 @@ Set to nil to disable (default)."
 (defcustom claude-code-ide-mcp-allowed-tools 'auto
   "Configuration for allowed MCP tools when MCP server is enabled.
 Can be one of:
-  'auto - Automatically allow all configured emacs-tools (default)
+  \\='auto - Automatically allow all configured emacs-tools (default)
   nil - Disable the --allowedTools flag
   A string - Custom pattern/tools passed directly to --allowedTools
   A list of strings - List of specific tool names to allow"
@@ -307,6 +308,11 @@ with imperceptible latency."
   :type 'number
   :group 'claude-code-ide)
 
+(define-obsolete-variable-alias
+  'claude-code-ide-eat-initialization-delay
+  'claude-code-ide-terminal-initialization-delay
+  "0.2.6")
+
 (defcustom claude-code-ide-terminal-initialization-delay 0.1
   "Initialization delay for terminal stability.
 Provides a brief stabilization period when launching terminals
@@ -326,11 +332,6 @@ when you switch focus to other windows and return.  This provides
 a more stable viewing experience when working with multiple windows."
   :type 'boolean
   :group 'claude-code-ide)
-
-(define-obsolete-variable-alias
-  'claude-code-ide-eat-initialization-delay
-  'claude-code-ide-terminal-initialization-delay
-  "0.2.6")
 
 ;;; Constants
 
@@ -480,7 +481,7 @@ cursor management, and process buffering for superior user experience."
   ;; Register hook for copy-mode cursor visibility
   (add-hook 'vterm-copy-mode-hook #'claude-code-ide--vterm-copy-mode-hook nil t)
   ;; Increase process read buffering to batch more updates together
-  (when-let ((proc (get-buffer-process (current-buffer))))
+  (when-let* ((proc (get-buffer-process (current-buffer))))
     (set-process-query-on-exit-flag proc nil)
     ;; Try to make vterm read larger chunks at once
     (when (fboundp 'process-put)
@@ -546,7 +547,7 @@ unless `evil-ghostel-mode' is active in this buffer."
    ((eq claude-code-ide-terminal-backend 'ghostel)
     (if (fboundp 'ghostel-send-string)
         (ghostel-send-string string)
-      (when-let ((process (get-buffer-process (current-buffer))))
+      (when-let* ((process (get-buffer-process (current-buffer))))
         (process-send-string process string))))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
@@ -584,7 +585,7 @@ the buffer has been displayed in its final window, which may differ
 from the window where it was initially created."
   (when (and buffer window (buffer-live-p buffer) (window-live-p window))
     (with-current-buffer buffer
-      (when-let ((proc (get-buffer-process buffer)))
+      (when-let* ((proc (get-buffer-process buffer)))
         (let ((height (window-body-height window))
               (width (window-body-width window)))
           (if (eq claude-code-ide-terminal-backend 'ghostel)
@@ -688,7 +689,7 @@ width has actually changed, working around the scrolling glitch."
 
 (defun claude-code-ide--get-working-directory ()
   "Get the current working directory (project root or current directory)."
-  (if-let ((project (project-current)))
+  (if-let* ((project (project-current)))
       (expand-file-name (project-root project))
     (expand-file-name default-directory)))
 
@@ -738,13 +739,13 @@ INSTANCE-NAME always yields the plain single-instance name."
 (defun claude-code-ide--touch-session (session)
   "Record SESSION as the most recently used instance."
   (setf (claude-code-ide-mcp-session-last-used session) (float-time))
-  (when-let ((buffer (claude-code-ide-mcp-session-buffer session)))
+  (when-let* ((buffer (claude-code-ide-mcp-session-buffer session)))
     (when (buffer-live-p buffer)
       (setq claude-code-ide--last-accessed-buffer buffer))))
 
 (defun claude-code-ide--session-visible-p (session)
   "Return non-nil when SESSION's terminal has a window in the selected frame."
-  (when-let ((buffer (claude-code-ide-mcp-session-buffer session)))
+  (when-let* ((buffer (claude-code-ide-mcp-session-buffer session)))
     (and (buffer-live-p buffer)
          (get-buffer-window buffer))))
 
@@ -923,9 +924,9 @@ most recently used one — only displaying or hiding windows would."
     (when (boundp 'tab-bar-tab-post-open-functions)
       (add-hook 'tab-bar-tab-post-open-functions
                 #'claude-code-ide--strip-new-tab-claude-windows))
-    (when-let ((resize-handler
-                (and claude-code-ide-prevent-reflow-glitch
-                     (claude-code-ide--terminal-resize-handler))))
+    (when-let* ((resize-handler
+                 (and claude-code-ide-prevent-reflow-glitch
+                      (claude-code-ide--terminal-resize-handler))))
       (advice-add resize-handler
                   :around #'claude-code-ide--terminal-reflow-filter))))
 
@@ -956,7 +957,7 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
              (let* ((side claude-code-ide-window-side)
                     ;; Each instance owns a slot, so several instances can
                     ;; be visible side by side instead of evicting each other
-                    (slot (or (when-let ((session (claude-code-ide--buffer-session buffer)))
+                    (slot (or (when-let* ((session (claude-code-ide--buffer-session buffer)))
                                 (claude-code-ide-mcp-session-window-slot session))
                               0))
                     (window-parameters '((no-delete-other-windows . t)))
@@ -980,7 +981,7 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
            (display-buffer buffer))))
     ;; Update last accessed buffer whenever we display a Claude buffer
     (setq claude-code-ide--last-accessed-buffer buffer)
-    (when-let ((session (claude-code-ide--buffer-session buffer)))
+    (when-let* ((session (claude-code-ide--buffer-session buffer)))
       (setf (claude-code-ide-mcp-session-last-used session) (float-time)))
     ;; Select the window to give it focus if configured to do so
     (when (and window claude-code-ide-focus-on-open)
@@ -1019,7 +1020,7 @@ hook signals wrong-type-argument that way)."
     ;; Close this session's open diffs first; their deferred verdicts can
     ;; never be delivered once the instance is gone, and the ediff
     ;; buffers/window configs would otherwise be orphaned
-    (when-let ((active-diffs (claude-code-ide-mcp-session-active-diffs session)))
+    (when-let* ((active-diffs (claude-code-ide-mcp-session-active-diffs session)))
       (let (tab-names)
         (maphash (lambda (tab-name _diff-info) (push tab-name tab-names))
                  active-diffs)
@@ -1120,7 +1121,8 @@ If CONTINUE is non-nil, add the -c flag.
 If RESUME is non-nil, add the -r flag.
 If SESSION-ID is provided, it's included in the MCP server URL path.
 If `claude-code-ide-cli-debug' is non-nil, add the -d flag.
-If `claude-code-ide-system-prompt' is non-nil, add the --append-system-prompt flag.
+If `claude-code-ide-system-prompt' is non-nil, add the
+--append-system-prompt flag.
 Additional flags from `claude-code-ide-cli-extra-flags' are also included."
   (let ((claude-cmd claude-code-ide-cli-path))
     ;; Add debug flag if enabled
@@ -1149,7 +1151,7 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
       (setq claude-cmd (concat claude-cmd " " claude-code-ide-cli-extra-flags)))
     ;; Add MCP tools config if enabled
     (when (claude-code-ide-mcp-server-ensure-server)
-      (when-let ((config (claude-code-ide-mcp-server-get-config session-id)))
+      (when-let* ((config (claude-code-ide-mcp-server-get-config session-id)))
         (let ((json-str (json-encode config)))
           (claude-code-ide-debug "MCP tools config JSON: %s" json-str)
           ;; For vterm, we need to escape for sh -c context
@@ -1316,7 +1318,7 @@ Signals an error if terminal fails to initialize."
                    (program (claude-code-ide--resolve-program (car cmd-parts)))
                    (args (cdr cmd-parts))
                    (buffer nil))
-              (when-let ((stale-buffer (get-buffer buffer-name)))
+              (when-let* ((stale-buffer (get-buffer buffer-name)))
                 ;; A buffer with a live session backpointer is a running sibling
                 ;; instance, not a stale leftover — never kill it.
                 (when (claude-code-ide--buffer-session stale-buffer)
@@ -1359,7 +1361,7 @@ Signals an error if terminal fails to initialize."
             (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend)))
         ((error quit)
          (when (and created-buffer (buffer-live-p created-buffer))
-           (when-let ((process (get-buffer-process created-buffer)))
+           (when-let* ((process (get-buffer-process created-buffer)))
              (ignore-errors (delete-process process)))
            (let ((kill-buffer-hook nil)
                  (kill-buffer-query-functions nil))
@@ -1621,7 +1623,7 @@ Empty input converts the instance to the lowest free auto number."
                       (format "Rename %s to (empty for auto number): " old-name)
                       session)))
       (setf (claude-code-ide-mcp-session-instance-name session) new-name)
-      (when-let ((buffer (claude-code-ide-mcp-session-buffer session)))
+      (when-let* ((buffer (claude-code-ide-mcp-session-buffer session)))
         (when (buffer-live-p buffer)
           (with-current-buffer buffer
             (rename-buffer (claude-code-ide--instance-buffer-name project-dir new-name) t))))
@@ -1640,11 +1642,11 @@ navigation overrides `claude-code-ide-focus-on-open'."
     (unless session
       (user-error "No Claude Code session for this project.  Use M-x claude-code-ide to start one"))
     (let ((buffer (claude-code-ide-mcp-session-buffer session)))
-      (if-let ((window (and buffer (get-buffer-window buffer))))
+      (if-let* ((window (and buffer (get-buffer-window buffer))))
           ;; Buffer is visible, just focus it
           (select-window window)
         ;; Buffer exists but not visible, display it and focus it
-        (when-let ((window (claude-code-ide--display-buffer-in-side-window buffer)))
+        (when-let* ((window (claude-code-ide--display-buffer-in-side-window buffer)))
           (select-window window))))))
 
 ;;;###autoload
@@ -1673,7 +1675,7 @@ navigation overrides `claude-code-ide-focus-on-open'."
           (when session
             (let ((buffer (claude-code-ide-mcp-session-buffer session)))
               (if (and buffer (buffer-live-p buffer))
-                  (when-let ((window (claude-code-ide--display-buffer-in-side-window buffer)))
+                  (when-let* ((window (claude-code-ide--display-buffer-in-side-window buffer)))
                     (select-window window))
                 (user-error "Buffer for session %s no longer exists" choice)))))
       (claude-code-ide-log "No active Claude Code sessions"))))
@@ -1697,7 +1699,7 @@ instance, else the most recently used one (prefix argument picks)."
 Inside a Claude terminal buffer it always targets that instance."
   (interactive)
   (let ((session (claude-code-ide--resolve-session 'auto "Send ESC to Claude instance: ")))
-    (if-let ((buffer (and session (claude-code-ide-mcp-session-buffer session))))
+    (if-let* ((buffer (and session (claude-code-ide-mcp-session-buffer session))))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-escape))
       (user-error "No Claude Code session for this project"))))
@@ -1710,7 +1712,7 @@ interprets as a newline.  Inside a Claude terminal buffer it always
 targets that instance."
   (interactive)
   (let ((session (claude-code-ide--resolve-session 'auto "Send newline to Claude instance: ")))
-    (if-let ((buffer (and session (claude-code-ide-mcp-session-buffer session))))
+    (if-let* ((buffer (and session (claude-code-ide-mcp-session-buffer session))))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-string "\\")
           ;; Small delay to ensure prompt text is processed before sending return
@@ -1740,7 +1742,7 @@ overrides the automatic instance resolution."
   (interactive)
   (let ((session (or session
                      (claude-code-ide--resolve-session 'auto "Send prompt to Claude instance: "))))
-    (if-let ((buffer (and session (claude-code-ide-mcp-session-buffer session))))
+    (if-let* ((buffer (and session (claude-code-ide-mcp-session-buffer session))))
         (let ((prompt-to-send (or prompt (read-string "Claude prompt: "))))
           (when (not (string-empty-p prompt-to-send))
             (with-current-buffer buffer
@@ -1800,8 +1802,8 @@ apply to the current tab only."
     (unless sessions
       (user-error "No Claude Code session for this project"))
     (if pick
-        (when-let ((session (claude-code-ide--read-project-session
-                             "Toggle Claude instance: " project-dir)))
+        (when-let* ((session (claude-code-ide--read-project-session
+                              "Toggle Claude instance: " project-dir)))
           (claude-code-ide--toggle-existing-window session))
       (let ((visible (claude-code-ide--visible-project-sessions project-dir)))
         (if visible

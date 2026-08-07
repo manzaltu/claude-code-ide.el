@@ -299,7 +299,7 @@ ARGUMENTS should contain `path' or `tab_name' of the file to close."
         (if found-diff-info
             (progn
               ;; Check if ediff is still active and quit it using stored control buffer
-              (when-let ((control-buf (alist-get 'control-buffer found-diff-info)))
+              (when-let* ((control-buf (alist-get 'control-buffer found-diff-info)))
                 (when (buffer-live-p control-buf)
                   ;; Set a flag in diff-info to indicate this quit is from Claude
                   (setf (alist-get 'quit-from-claude found-diff-info) t)
@@ -373,7 +373,7 @@ ARGUMENTS should contain:
     ;; Get the active diffs for this specific session
     (let ((active-diffs (claude-code-ide-mcp--get-active-diffs session)))
       ;; Check if there's already a diff with this tab_name
-      (when-let ((existing-diff (gethash tab-name active-diffs)))
+      (when-let* ((existing-diff (gethash tab-name active-diffs)))
         ;; Clean up existing diff
         (claude-code-ide-mcp--cleanup-diff tab-name session)))
 
@@ -526,7 +526,7 @@ lexically, and diff-info's stored session serves as a backstop."
 (defun claude-code-ide-mcp--cleanup-diff (tab-name session)
   "Clean up the diff state of TAB-NAME owned by SESSION."
   (let ((active-diffs (claude-code-ide-mcp--get-active-diffs session)))
-    (when-let ((diff-info (and active-diffs (gethash tab-name active-diffs))))
+    (when-let* ((diff-info (and active-diffs (gethash tab-name active-diffs))))
       (let ((buffer-A (alist-get 'buffer-A diff-info))
             (buffer-B (alist-get 'buffer-B diff-info))
             (control-buf (alist-get 'control-buffer diff-info))
