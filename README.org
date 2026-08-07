@@ -337,6 +337,27 @@ Claude Code IDE adds custom keybindings to the terminal for easier interaction:
 
 These keybindings are automatically set up for =vterm=, =eat=, and =ghostel= backends and only apply within Claude Code terminal buffers.
 
+**** C-g Opening an External Editor (ghostel)
+
+The =ghostel= backend forwards =C-g= to the terminal, where Claude Code binds =Ctrl+G= to its "edit prompt in external editor" action — so =C-g= opens a prompt-editing buffer instead of quitting. To move the action to another key, rebind it in =~/.claude/keybindings.json= (applies to newly started sessions):
+
+#+begin_src json
+{
+  "$schema": "https://www.schemastore.org/claude-code-keybindings.json",
+  "bindings": [
+    {
+      "context": "Chat",
+      "bindings": {
+        "ctrl+g": null,
+        "alt+e": "chat:externalEditor"
+      }
+    }
+  ]
+}
+#+end_src
+
+=alt+e= is a good replacement because ghostel forwards it to the terminal, unlike the action's other default binding =Ctrl+X Ctrl+E= (=C-x= is kept by Emacs).
+
 **** Terminal Reflow Glitch Prevention (Temporary)
 
 Claude Code IDE includes a temporary workaround for a known Claude Code bug ([[https://github.com/anthropics/claude-code/issues/1422][#1422]]) where terminal reflows during window resizes can cause uncontrollable scrolling. This workaround is enabled by default but can be disabled if needed:
