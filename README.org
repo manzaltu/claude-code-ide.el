@@ -285,18 +285,21 @@ To switch to another backend:
 
 The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. The =ghostel= backend uses Ghostel's terminal integration and requires a version that provides =ghostel-exec=. All backends provide full terminal functionality including color support and special key handling.
 
-**** Flicker-Free Renderer (Experimental)
+**** Inline Renderer (Recommended)
 
-Claude Code includes an experimental alternative terminal renderer that eliminates flickering. To enable it:
+Claude Code can render its interface either inline or in fullscreen mode, the latter drawing on the terminal's alternate screen buffer the way =vim= or =htop= do. Inside Emacs — especially with the recommended =ghostel= backend — the inline renderer is the better choice: the transcript lives in the terminal buffer as ordinary text, so you can scroll through the whole conversation and search it with isearch (=C-s= / =C-r=) like in any other buffer. With fullscreen rendering, only the currently visible screen exists in the buffer, and scrolling and searching have to go through Claude Code's own transcript view.
 
-#+begin_src emacs-lisp
-(setq claude-code-ide-no-flicker t)
+To make sure Claude Code always uses the inline renderer, set =tui= to =default= in its user settings (=~/.claude/settings.json=):
+
+#+begin_src json
+{
+  "tui": "default"
+}
 #+end_src
 
-Note that with this renderer, normal Emacs buffer scrolling and search (=C-s=, =C-r=) will not work in the terminal buffer. Instead, use Claude Code's built-in keybindings:
+Running =/tui default= inside a session switches the renderer immediately and saves the same setting.
 
-- =C-o j= / =C-o k= - Scroll up/down through the transcript
-- =C-o /= - Search the transcript
+Relatedly, the =claude-code-ide-no-flicker= option sets =CLAUDE_CODE_NO_FLICKER=1=, which enables the fullscreen renderer as a workaround for flickering in =vterm= and =eat=. With the =ghostel= backend flickering is not an issue, so it is best left at its default =nil=.
 
 **** vterm Rendering Optimization
 
