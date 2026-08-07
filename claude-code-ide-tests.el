@@ -214,6 +214,7 @@ routing tests depend on the carried text, not a placeholder."
 (define-error 'mcp-error "MCP Error" 'error)
 (require 'claude-code-ide-mcp-handlers)
 (require 'claude-code-ide)
+(require 'claude-code-ide-status)
 
 ;;; Test Helper Functions
 
@@ -3712,6 +3713,747 @@ and pruning drops entries whose tab no longer exists."
             (should (= 3 (length cleaned)))
             (should (memq other cleaned))))
       (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-status-loads ()
+  "The status feature loads and exposes its `buffer-name' constant."
+  (should (featurep 'claude-code-ide-status))
+  (should (stringp claude-code-ide-status-buffer-name)))
+
+(ert-deftest claude-code-ide-test-status-mark-waiting-and-active ()
+  "`mark-waiting' flags every instance of a project; `mark-active' clears them.
+The hooks report a directory rather than an instance, so both commands
+fan out over the project's instances and key the flag by session ID."
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--attention)
+  (unwind-protect
+      (let* ((dir "/tmp/proj/")
+             (one (claude-code-ide-tests--make-session dir))
+             (two (claude-code-ide-tests--make-session dir :instance-name "second"))
+             (other (claude-code-ide-tests--make-session "/tmp/elsewhere/"))
+             (id-of #'claude-code-ide-mcp-session-session-id))
+        (claude-code-ide-status-mark-waiting dir)
+        ;; Both instances of the project are flagged...
+        (should (gethash (funcall id-of one) claude-code-ide-status--attention))
+        (should (gethash (funcall id-of two) claude-code-ide-status--attention))
+        ;; ...and no instance of any other project is.
+        (should-not (gethash (funcall id-of other) claude-code-ide-status--attention))
+        ;; A directory without a trailing slash still matches.
+        (claude-code-ide-status-mark-active "/tmp/proj")
+        (should-not (gethash (funcall id-of one) claude-code-ide-status--attention))
+        (should-not (gethash (funcall id-of two) claude-code-ide-status--attention)))
+    (claude-code-ide-tests--clear-processes)
+    (clrhash claude-code-ide-status--attention)))
+
+(ert-deftest claude-code-ide-test-status-state-for ()
+  "`state-for' returns the right symbol, honouring precedence."
+  (require 'claude-code-ide-mcp)
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--attention)
+  (unwind-protect
+      (let* ((dir "/tmp/proj/")
+             (deferred (make-hash-table :test 'equal))
+             (session (claude-code-ide-tests--make-session
+                       dir :client nil :deferred deferred)))
+        ;; No client, nothing pending -> disconnected.
+        (should (eq (claude-code-ide-status--state-for session) 'disconnected))
+        ;; A live client -> idle.
+        (setf (claude-code-ide-mcp-session-client session) '(:mock-client t))
+        (should (eq (claude-code-ide-status--state-for session) 'idle))
+        ;; Attention flag beats idle -> waiting.
+        (puthash (claude-code-ide-mcp-session-session-id session) t claude-code-ide-status--attention)
+        (should (eq (claude-code-ide-status--state-for session) 'waiting))
+        ;; A pending permission beats waiting -> permission.
+        (puthash "some-tool" 123 deferred)
+        (should (eq (claude-code-ide-status--state-for session) 'permission)))
+    (claude-code-ide-tests--clear-processes)
+    (clrhash claude-code-ide-status--attention)))
+
+(ert-deftest claude-code-ide-test-status-live-entries ()
+  "`live-entries' produces one row per instance, tagged as live.
+Two instances of one project get two rows, each keyed by its own session
+ID, since the directory no longer identifies an instance."
+  (require 'claude-code-ide-mcp)
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--attention)
+  (unwind-protect
+      (let* ((dir "/tmp/proj-live/")
+             (one (claude-code-ide-tests--make-session dir))
+             (two (claude-code-ide-tests--make-session dir :instance-name "second")))
+        ;; Cleanup would prune these fixtures, which own no real process.
+        (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-sessions)
+                   (lambda () nil)))
+          (let* ((entries (claude-code-ide-status--live-entries))
+                 (ids (mapcar #'car entries)))
+            (should (= (length entries) 2))
+            ;; Both rows are live, and keyed by session ID rather than by
+            ;; directory.
+            (should (seq-every-p (lambda (id) (eq (cdr id) 'live)) ids))
+            (should (member (cons (claude-code-ide-mcp-session-session-id one) 'live) ids))
+            (should (member (cons (claude-code-ide-mcp-session-session-id two) 'live) ids))
+            (let ((cols (cadr (car entries))))
+              ;; State, Instance, Project, Branch, Uptime, Activity.
+              (should (= (length cols)
+                         (length claude-code-ide-status--columns)))
+              (should (string-match-p "proj-live" (aref cols 2))))
+            ;; The named instance is distinguishable in the Instance column.
+            (should (seq-find (lambda (entry)
+                                (equal (aref (cadr entry) 1) "proj-live:second"))
+                              entries)))))
+    (claude-code-ide-tests--clear-processes)))
+
+(ert-deftest claude-code-ide-test-status-state-label ()
+  "`state-label' renders known states and falls back for unknown ones."
+  (should (string-match-p "permission" (claude-code-ide-status--state-label 'permission)))
+  (should (string-match-p "waiting" (claude-code-ide-status--state-label 'waiting)))
+  (should (string-match-p "idle" (claude-code-ide-status--state-label 'idle)))
+  (should (string-match-p "resume" (claude-code-ide-status--state-label 'resume)))
+  ;; Known states are propertized with their face.
+  (should (eq (get-text-property 0 'face (claude-code-ide-status--state-label 'permission))
+              'claude-code-ide-status-permission-face))
+  ;; An unknown state degrades to a plain string rather than erroring.
+  (should (equal (claude-code-ide-status--state-label 'bogus) "bogus")))
+
+(ert-deftest claude-code-ide-test-status-project-cwd ()
+  "`project-cwd' recovers the recorded cwd from the newest transcript."
+  (let ((sub (make-temp-file "claude-status-proj" t)))
+    (unwind-protect
+        (progn
+          ;; The directory name is deliberately not the real cwd, proving we
+          ;; read the path from the file contents rather than decoding it.
+          (with-temp-file (expand-file-name "session.jsonl" sub)
+            (insert "{\"type\":\"summary\",\"leafUuid\":\"x\"}\n")
+            (insert "{\"type\":\"user\",\"cwd\":\"/Users/someone/code\"}\n"))
+          (should (equal (claude-code-ide-status--project-cwd sub)
+                         "/Users/someone/code/")))
+      (delete-directory sub t))))
+
+(ert-deftest claude-code-ide-test-status-resume-entries-excludes-live ()
+  "`resume-entries' skips directories already present in the exclude table."
+  (let ((root (make-temp-file "claude-status-projects" t)))
+    (unwind-protect
+        (let ((claude-code-ide-status-projects-directory root)
+              (live-dir "/Users/someone/live/")
+              (resume-dir "/Users/someone/resume/"))
+          ;; Two on-disk projects, one of which is a live session.
+          (dolist (pair (list (cons "live" live-dir) (cons "resume" resume-dir)))
+            (let ((sub (expand-file-name (car pair) root)))
+              (make-directory sub)
+              (with-temp-file (expand-file-name "s.jsonl" sub)
+                (insert (format "{\"cwd\":\"%s\"}\n"
+                                (directory-file-name (cdr pair)))))))
+          (let* ((exclude (make-hash-table :test 'equal))
+                 (_ (puthash live-dir t exclude))
+                 (entries (claude-code-ide-status--resume-entries exclude)))
+            (should (= (length entries) 1))
+            (should (equal (car (car (car entries))) resume-dir))
+            (should (eq (cdr (car (car entries))) 'resume))))
+      (delete-directory root t))))
+
+(ert-deftest claude-code-ide-test-status-session-for-buffer ()
+  "`session-for-buffer' finds the instance owning a terminal buffer.
+Matching is by buffer identity rather than by name, so two instances of
+one project are told apart."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (let ((buffer-one (get-buffer-create "*ccide-revmap-1*"))
+            (buffer-two (get-buffer-create "*ccide-revmap-2*")))
+        (unwind-protect
+            (let ((one (claude-code-ide-tests--make-session
+                        "/tmp/proj-revmap/" :buffer buffer-one))
+                  (two (claude-code-ide-tests--make-session
+                        "/tmp/proj-revmap/" :instance-name "second"
+                        :buffer buffer-two)))
+              (should (eq (claude-code-ide-status--session-for-buffer buffer-one) one))
+              (should (eq (claude-code-ide-status--session-for-buffer buffer-two) two))
+              ;; An unrelated buffer maps to nothing.
+              (should-not (claude-code-ide-status--session-for-buffer
+                           (current-buffer))))
+          (kill-buffer buffer-one)
+          (kill-buffer buffer-two)))
+    (claude-code-ide-tests--clear-processes)))
+
+(ert-deftest claude-code-ide-test-status-clear-on-select ()
+  "Selecting a session's terminal buffer clears its waiting flag."
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--attention)
+  (unwind-protect
+      (let ((buffer (get-buffer-create "*ccide-select-test*")))
+        (unwind-protect
+            (let* ((session (claude-code-ide-tests--make-session
+                             "/tmp/proj-select/" :buffer buffer))
+                   (sibling (claude-code-ide-tests--make-session
+                             "/tmp/proj-select/" :instance-name "second"))
+                   (id (claude-code-ide-mcp-session-session-id session))
+                   (sibling-id (claude-code-ide-mcp-session-session-id sibling)))
+              (puthash id t claude-code-ide-status--attention)
+              (puthash sibling-id t claude-code-ide-status--attention)
+              ;; Simulate the terminal buffer becoming the selected one.
+              (with-current-buffer buffer
+                (claude-code-ide-status--clear-on-select))
+              (should-not (gethash id claude-code-ide-status--attention))
+              ;; Visiting one instance must not clear its sibling's flag.
+              (should (gethash sibling-id claude-code-ide-status--attention)))
+          (kill-buffer buffer)))
+    (claude-code-ide-tests--clear-processes)
+    (clrhash claude-code-ide-status--attention)))
+
+(ert-deftest claude-code-ide-test-pop-to-session-buffer ()
+  "`pop-to-session-buffer' focuses a visible window, else displays."
+  (let ((buf (get-buffer-create "*ccide-pop-test*"))
+        (displayed nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+                   (lambda (b) (setq displayed b) nil)))
+          ;; Not visible anywhere -> falls back to the side-window display.
+          (claude-code-ide-pop-to-session-buffer buf)
+          (should (eq displayed buf))
+          ;; Already visible -> selects its window, no fresh display.
+          (setq displayed nil)
+          (save-window-excursion
+            (switch-to-buffer buf)
+            (claude-code-ide-pop-to-session-buffer buf)
+            (should (eq (window-buffer (selected-window)) buf))
+            (should (null displayed))))
+      (kill-buffer buf))))
+
+(ert-deftest claude-code-ide-test-status-busy-poll-and-p ()
+  "`poll-activity' stamps output changes; `busy-p' honours the timeout."
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--activity)
+  (unwind-protect
+      (let ((buffer (get-buffer-create "*ccide-busy-test*")))
+        (unwind-protect
+            (let* ((session (claude-code-ide-tests--make-session
+                             "/tmp/proj-busy/" :buffer buffer))
+                   (id (claude-code-ide-mcp-session-session-id session)))
+              ;; First poll only records a baseline -> not yet busy.
+              (claude-code-ide-status--poll-activity)
+              (should-not (claude-code-ide-status--busy-p session))
+              ;; Terminal produces output -> next poll stamps activity -> busy.
+              (with-current-buffer buffer (insert "claude output\n"))
+              (claude-code-ide-status--poll-activity)
+              (should (claude-code-ide-status--busy-p session))
+              ;; Backdate the stamp past the timeout -> no longer busy.
+              (puthash id (cons (buffer-chars-modified-tick buffer)
+                                (- (float-time)
+                                   claude-code-ide-status-busy-timeout 1))
+                       claude-code-ide-status--activity)
+              (should-not (claude-code-ide-status--busy-p session)))
+          (kill-buffer buffer)))
+    (claude-code-ide-tests--clear-processes)
+    (clrhash claude-code-ide-status--activity)))
+
+(ert-deftest claude-code-ide-test-status-state-for-working ()
+  "A live session with recent output reports `working', below `permission'."
+  (require 'claude-code-ide-mcp)
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--attention)
+  (clrhash claude-code-ide-status--activity)
+  (unwind-protect
+      (let* ((dir "/tmp/proj-working/")
+             (buffer (get-buffer-create "*ccide-working-test*"))
+             (deferred (make-hash-table :test 'equal))
+             ;; `working' requires a live instance, so the fixture needs a
+             ;; real process for `claude-code-ide-session-live-p'.
+             (process (make-process :name "ccide-working"
+                                    :command '("sleep" "10")
+                                    :buffer nil))
+             (session (claude-code-ide-tests--make-session
+                       dir :client '(:mock t) :deferred deferred
+                       :buffer buffer :process process)))
+        (unwind-protect
+            (progn
+              ;; Mark it as having produced output just now.
+              (puthash (claude-code-ide-mcp-session-session-id session)
+                       (cons 1 (float-time)) claude-code-ide-status--activity)
+              (should (eq (claude-code-ide-status--state-for session) 'working))
+              ;; Even flagged waiting, live output wins (the turn resumed).
+              (puthash (claude-code-ide-mcp-session-session-id session) t claude-code-ide-status--attention)
+              (should (eq (claude-code-ide-status--state-for session) 'working))
+              ;; A pending permission still outranks working.
+              (puthash "tool" 1 deferred)
+              (should (eq (claude-code-ide-status--state-for session) 'permission)))
+          (delete-process process)
+          (kill-buffer buffer)))
+    (claude-code-ide-tests--clear-processes)
+    (clrhash claude-code-ide-status--attention)
+    (clrhash claude-code-ide-status--activity)))
+
+(ert-deftest claude-code-ide-test-status-input-state ()
+  "The `input' reason yields the `input' state, above working, below permission."
+  (require 'claude-code-ide-mcp)
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--attention)
+  (clrhash claude-code-ide-status--activity)
+  (unwind-protect
+      (let* ((dir "/tmp/proj-input/")
+             (buffer (get-buffer-create "*ccide-input-test*"))
+             (deferred (make-hash-table :test 'equal))
+             (session (claude-code-ide-tests--make-session
+                       dir :client '(:mock t) :deferred deferred
+                       :buffer buffer)))
+        (unwind-protect
+            (progn
+              ;; `mark-waiting' with reason `input' stores that reason...
+              (claude-code-ide-status-mark-waiting dir 'input)
+              (should (eq (gethash (claude-code-ide-mcp-session-session-id session)
+                                   claude-code-ide-status--attention)
+                          'input))
+              ;; ...and yields the `input' state even with recent output.
+              (puthash (claude-code-ide-mcp-session-session-id session)
+                       (cons 1 (float-time)) claude-code-ide-status--activity)
+              (should (eq (claude-code-ide-status--state-for session) 'input))
+              ;; A pending permission still outranks input.
+              (puthash "tool" 1 deferred)
+              (should (eq (claude-code-ide-status--state-for session) 'permission)))
+          (kill-buffer buffer)))
+    (claude-code-ide-tests--clear-processes)
+    (clrhash claude-code-ide-status--attention)
+    (clrhash claude-code-ide-status--activity)))
+
+(ert-deftest claude-code-ide-test-status-state-rank ()
+  "`state-rank' orders states from most to least urgent."
+  (should (< (claude-code-ide-status--state-rank 'permission)
+             (claude-code-ide-status--state-rank 'input)))
+  (should (< (claude-code-ide-status--state-rank 'input)
+             (claude-code-ide-status--state-rank 'working)))
+  (should (< (claude-code-ide-status--state-rank 'permission)
+             (claude-code-ide-status--state-rank 'working)))
+  (should (< (claude-code-ide-status--state-rank 'working)
+             (claude-code-ide-status--state-rank 'waiting)))
+  (should (< (claude-code-ide-status--state-rank 'waiting)
+             (claude-code-ide-status--state-rank 'idle)))
+  (should (< (claude-code-ide-status--state-rank 'idle)
+             (claude-code-ide-status--state-rank 'disconnected)))
+  ;; An unknown state sorts last, not first.
+  (should (>= (claude-code-ide-status--state-rank 'bogus)
+              (claude-code-ide-status--state-rank 'disconnected))))
+
+(ert-deftest claude-code-ide-test-status-header ()
+  "`header' counts live sessions and cached resumable projects."
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--attention)
+  (let ((claude-code-ide-status--resume-cache
+         (list (list (cons "/tmp/r1/" 'resume) (vector "" "" "" "" "" ""))
+               (list (cons "/tmp/r2/" 'resume) (vector "" "" "" "" "" "")))))
+    (unwind-protect
+        (progn
+          (claude-code-ide-tests--make-session "/tmp/live/")
+          (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-sessions)
+                     (lambda () nil)))
+            (let ((header (claude-code-ide-status--header)))
+              (should (string-match-p "1 live" header))
+              (should (string-match-p "2 resumable" header))))
+          ;; A second instance of the same project counts as two live rows,
+          ;; and its project is still not resumable.
+          (claude-code-ide-tests--make-session "/tmp/live/" :instance-name "second")
+          (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-sessions)
+                     (lambda () nil)))
+            (should (string-match-p "2 live" (claude-code-ide-status--header)))))
+      (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-status-stop-rejects-resume ()
+  "`stop' refuses a resume row and requires confirmation for a live one."
+  ;; Put the row id in the buffer as the real `tabulated-list-id' text
+  ;; property rather than stubbing `tabulated-list-get-id', which is a
+  ;; defsubst and gets inlined past `cl-letf' when byte-compiled.
+  (with-temp-buffer
+    (insert "row\n")
+    (put-text-property (point-min) (point-max)
+                       'tabulated-list-id (cons "/tmp/proj/" 'resume))
+    (goto-char (point-min))
+    (should-error (claude-code-ide-status-stop) :type 'user-error))
+  ;; Declining the confirmation leaves the live instance untouched.
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (let ((buffer (get-buffer-create "*ccide-keep-test*"))
+            (prompt nil))
+        (unwind-protect
+            (let* ((session (claude-code-ide-tests--make-session
+                             "/tmp/proj-keep/" :instance-name "keep"
+                             :buffer buffer))
+                   (id (claude-code-ide-mcp-session-session-id session)))
+              (with-temp-buffer
+                (insert "row\n")
+                (put-text-property (point-min) (point-max)
+                                   'tabulated-list-id (cons id 'live))
+                (goto-char (point-min))
+                (cl-letf (((symbol-function 'yes-or-no-p)
+                           (lambda (fmt &rest _) (setq prompt fmt) nil)))
+                  (claude-code-ide-status-stop)
+                  ;; The instance survives, buffer and registry entry intact.
+                  (should (buffer-live-p buffer))
+                  (should (gethash id claude-code-ide-mcp--sessions))
+                  ;; The prompt names the instance, not just the project.
+                  (should (string-match-p "proj-keep:keep" prompt)))))
+          (when (buffer-live-p buffer) (kill-buffer buffer))))
+    (claude-code-ide-tests--clear-processes)))
+
+(ert-deftest claude-code-ide-test-status-attention-lighter-string ()
+  "`attention-lighter-string' builds a coloured per-state breakdown."
+  ;; No live sessions -> empty.
+  (should (equal (claude-code-ide-status--attention-lighter-string nil 0) ""))
+  ;; A calm fleet still shows working/idle counts, each in its own face.
+  (let ((s (claude-code-ide-status--attention-lighter-string
+            '((working . 2) (idle . 3)) 5)))
+    (should (string-match-p "▶2" s))
+    (should (string-match-p "○3" s))
+    (should (text-property-any 0 (length s) 'face
+                               'claude-code-ide-status-working-face s)))
+  ;; Attention states show their coloured counts, urgent first.
+  (let ((s (claude-code-ide-status--attention-lighter-string
+            '((permission . 1) (waiting . 2)) 3)))
+    (should (string-match-p "●1" s))
+    (should (string-match-p "●2" s))
+    (should (text-property-any 0 (length s) 'face
+                               'claude-code-ide-status-permission-face s))))
+
+(ert-deftest claude-code-ide-test-status-attention-notify ()
+  "`poll-attention' counts states and notifies once per entry into one."
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--attention-seen)
+  (unwind-protect
+      (let* ((notified '())
+             (claude-code-ide-status-notify t)
+             (claude-code-ide-status-notify-function
+              (lambda (dir state) (push (cons dir state) notified))))
+        (let* ((session (claude-code-ide-tests--make-session "/tmp/att/"))
+               (id (claude-code-ide-mcp-session-session-id session)))
+          (cl-letf (((symbol-function 'claude-code-ide-status--state-for)
+                     (lambda (_session) 'permission)))
+            ;; Entering `permission' fires exactly one notification, and the
+            ;; notify function still receives the project directory.
+            (claude-code-ide-status--poll-attention)
+            (should (equal notified '(("/tmp/att/" . permission))))
+            (should (string-match-p "●1" claude-code-ide-status--attention-lighter))
+            ;; Staying in `permission' does not re-notify.
+            (claude-code-ide-status--poll-attention)
+            (should (= (length notified) 1)))
+          ;; Leaving the attention state (now idle) clears the seen entry,
+          ;; which is keyed per instance.
+          (cl-letf (((symbol-function 'claude-code-ide-status--state-for)
+                     (lambda (_session) 'idle)))
+            (claude-code-ide-status--poll-attention)
+            (should-not (gethash id claude-code-ide-status--attention-seen))))
+        ;; With no live sessions at all, the lighter is empty.
+        (claude-code-ide-tests--clear-processes)
+        (claude-code-ide-status--poll-attention)
+        (should (equal claude-code-ide-status--attention-lighter "")))
+    (claude-code-ide-tests--clear-processes)
+    (clrhash claude-code-ide-status--attention-seen)))
+
+(ert-deftest claude-code-ide-test-status-attention-mode-toggle ()
+  "Enabling the mode registers the lighter; disabling removes it."
+  (cl-letf (((symbol-function 'claude-code-ide-status--start-attention-timer) #'ignore)
+            ((symbol-function 'claude-code-ide-status--stop-attention-timer) #'ignore))
+    (let ((global-mode-string (list "")))
+      (claude-code-ide-status-attention-mode 1)
+      (unwind-protect
+          (should (member claude-code-ide-status--mode-line-construct global-mode-string))
+        (claude-code-ide-status-attention-mode -1))
+      (should-not (member claude-code-ide-status--mode-line-construct global-mode-string)))))
+
+(ert-deftest claude-code-ide-test-status-empty-state ()
+  "`redraw' shows a placeholder when nothing is live or resumable."
+  (claude-code-ide-tests--clear-processes)
+  (with-temp-buffer
+    (claude-code-ide-status-mode)
+    (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-processes)
+               (lambda () nil)))
+      (let ((claude-code-ide-status-projects-directory "/nonexistent-ccide/")
+            (claude-code-ide-status--resume-cache nil)
+            (claude-code-ide-status--resume-cache-time (float-time)))
+        (claude-code-ide-status--redraw)
+        (should (string-match-p "No Claude sessions" (buffer-string)))))))
+
+(ert-deftest claude-code-ide-test-status-sort-cycles ()
+  "`sort' cycles each column ascending then reversed, then to the default."
+  (claude-code-ide-tests--clear-processes)
+  (with-temp-buffer
+    (claude-code-ide-status-mode)
+    (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-processes)
+               (lambda () nil))
+              ;; Avoid a disk scan; the sort key is all we assert on.
+              ((symbol-function 'claude-code-ide-status--redraw) #'ignore))
+      (let ((columns (mapcar #'car (append tabulated-list-format nil))))
+        (should (null tabulated-list-sort-key))
+        ;; Each column is visited ascending (nil) then reversed (t).
+        (dolist (name columns)
+          (claude-code-ide-status-sort)
+          (should (equal tabulated-list-sort-key (cons name nil)))
+          (claude-code-ide-status-sort)
+          (should (equal tabulated-list-sort-key (cons name t))))
+        ;; After the last column's reversed sort, back to the default order.
+        (claude-code-ide-status-sort)
+        (should (null tabulated-list-sort-key))))))
+
+(ert-deftest claude-code-ide-test-status-apply-filter ()
+  "`apply-filter' keeps rows matching every token, case-insensitively."
+  (let ((entries
+         (list (list (cons "/a/" 'live) (vector "○ idle" "~/work/alpha/" "main" "" ""))
+               (list (cons "/b/" 'live) (vector "○ idle" "~/work/beta/" "dev" "" "")))))
+    (unwind-protect
+        (progn
+          ;; No filter keeps every row.
+          (setq claude-code-ide-status--filter nil)
+          (should (= (length (claude-code-ide-status--apply-filter entries)) 2))
+          ;; Case-insensitive substring match.
+          (setq claude-code-ide-status--filter "ALPHA")
+          (should (equal (mapcar (lambda (e) (car (car e)))
+                                 (claude-code-ide-status--apply-filter entries))
+                         '("/a/")))
+          ;; Every whitespace-separated token must match (project + branch).
+          (setq claude-code-ide-status--filter "beta dev")
+          (should (= (length (claude-code-ide-status--apply-filter entries)) 1))
+          (setq claude-code-ide-status--filter "beta main")
+          (should (= (length (claude-code-ide-status--apply-filter entries)) 0)))
+      (setq claude-code-ide-status--filter nil))))
+
+(ert-deftest claude-code-ide-test-status-refresh-clears-sort ()
+  "`refresh' clears the column sort so the list returns to urgency order."
+  (claude-code-ide-tests--clear-processes)
+  (with-temp-buffer
+    (claude-code-ide-status-mode)
+    (setq tabulated-list-sort-key '("Project"))
+    (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-processes)
+               (lambda () nil)))
+      (let ((claude-code-ide-status-projects-directory "/nonexistent-ccide/")
+            (claude-code-ide-status--resume-cache-time (float-time)))
+        (claude-code-ide-status-refresh)
+        (should (null tabulated-list-sort-key))))))
+
+(ert-deftest claude-code-ide-test-status-display-in-split-fallback ()
+  "`display-in-split' returns nil (not an error) when the split is too small."
+  (let ((window-min-width 10000))       ; force `split-window' to fail
+    (should (null (claude-code-ide-status--display-in-split (current-buffer))))))
+
+(ert-deftest claude-code-ide-test-status-project-label ()
+  "`project-label' compacts worktree paths and leaves plain projects alone."
+  (let ((claude-code-ide-status-worktree-directories '(".worktrees" "worktrees")))
+    ;; A plain checkout keeps its directory name.
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/Develop/kycsystems/kycsitescan/"))
+                   "kycsitescan"))
+    ;; A worktree inside the repository shows repository and worktree.
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/Develop/kycsystems/kycsitescan/.worktrees/3919-ip-api/"))
+                   "kycsitescan/3919-ip-api"))
+    ;; A worktree in a container beside the repositories names that container.
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/Develop/kycsystems/.worktrees/kycsitescan_434-crawls/"))
+                   "kycsystems/kycsitescan_434-crawls"))
+    ;; A trailing slash is not required.
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/Develop/kycsystems/mtbeacon"))
+                   "mtbeacon"))
+    ;; Claude Code's own `--worktree' nests the container inside .claude/,
+    ;; so the repository is two levels above, not one.
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/src/myrepo/.claude/worktrees/feat-x/"))
+                   "myrepo/feat-x"))
+    ;; The full path stays reachable, so shortening loses nothing.
+    (should (equal (get-text-property
+                    0 'help-echo
+                    (claude-code-ide-status--project-label
+                     "/Users/x/Develop/kycsystems/kycsitescan/.worktrees/3919-ip-api/"))
+                   (abbreviate-file-name
+                    "/Users/x/Develop/kycsystems/kycsitescan/.worktrees/3919-ip-api/"))))
+  ;; Opting out restores the plain directory name.
+  (let ((claude-code-ide-status-worktree-directories nil))
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/Develop/kycsystems/kycsitescan/.worktrees/3919-ip-api/"))
+                   "3919-ip-api"))))
+
+(ert-deftest claude-code-ide-test-status-numeric-columns-sort-numerically ()
+  "Rendered numbers sort by value, not by their text.
+Sorted as strings these columns misorder outright: \"1.3M\" lands before
+\"195.8k\" and \"9s\" after \"45m\".  Each cell carries the underlying number
+as a `sort-key', and a cell without one sorts last so unknowns do not
+crowd the head of the list."
+  ;; Token counts.
+  (let* ((cells (mapcar #'claude-code-ide-status--format-tokens
+                        '(1300000 195800 392600 818800)))
+         (entries (mapcar (lambda (c) (list nil (vector c))) cells))
+         (sorted (sort (copy-sequence entries)
+                       (claude-code-ide-status--sort-by-key 0))))
+    ;; Text order would have put 1.3M first; value order puts it last.
+    (should (equal (mapcar (lambda (e) (substring-no-properties (aref (cadr e) 0))) sorted)
+                   '("195.8k" "392.6k" "818.8k" "1.3M"))))
+  ;; Durations, including the "now" case and an unknown.
+  (let* ((cells (list (propertize "45m" 'sort-key 2700)
+                      (propertize "9s" 'sort-key 9)
+                      (propertize "3d02h" 'sort-key 266400)
+                      "—"))
+         (entries (mapcar (lambda (c) (list nil (vector c))) cells))
+         (sorted (sort (copy-sequence entries)
+                       (claude-code-ide-status--sort-by-key 0))))
+    (should (equal (mapcar (lambda (e) (substring-no-properties (aref (cadr e) 0))) sorted)
+                   '("9s" "45m" "3d02h" "—"))))
+  ;; A session producing output right now is zero seconds ago.
+  (should (= (claude-code-ide-status--sort-key (propertize "now" 'sort-key 0)) 0))
+  ;; No tokens is a known zero, not an unknown.
+  (should (= (claude-code-ide-status--sort-key
+              (claude-code-ide-status--format-tokens 0))
+             0)))
+
+(ert-deftest claude-code-ide-test-status-format-tokens ()
+  "Token counts render compactly, and nothing renders as a dash."
+  (should (equal (claude-code-ide-status--format-tokens nil) "—"))
+  (should (equal (claude-code-ide-status--format-tokens 0) "—"))
+  (should (equal (claude-code-ide-status--format-tokens 411) "411"))
+  (should (equal (claude-code-ide-status--format-tokens 12400) "12.4k"))
+  (should (equal (claude-code-ide-status--format-tokens 1200000) "1.2M")))
+
+(ert-deftest claude-code-ide-test-status-scan-output-tokens ()
+  "Output tokens accumulate, reading only bytes appended since last scan.
+Transcripts reach several megabytes, so a re-read on every refresh would
+be too costly; the scan keeps a byte cursor.  A partial trailing line,
+which occurs while Claude is mid-write, must not be consumed twice."
+  (let ((file (make-temp-file "ccide-tokens-" nil ".jsonl")))
+    (unwind-protect
+        (progn
+          (clrhash claude-code-ide-status--output-tokens)
+          ;; Cache reads dwarf output and must not be counted.
+          (with-temp-file file
+            (insert "{\"usage\":{\"output_tokens\":100,\"cache_read_input_tokens\":99999}}\n"
+                    "{\"usage\":{\"output_tokens\":50,\"input_tokens\":7}}\n"))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 150))
+          ;; Re-scanning without new bytes must not double-count.
+          (should (= (claude-code-ide-status--scan-output-tokens file) 150))
+          ;; Only the appended record is added.
+          (with-temp-buffer
+            (insert "{\"usage\":{\"output_tokens\":25}}\n")
+            (append-to-file (point-min) (point-max) file))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 175))
+          ;; A partial line is left for the next scan, then counted once.
+          (with-temp-buffer
+            (insert "{\"usage\":{\"output_tokens\":9")
+            (append-to-file (point-min) (point-max) file))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 175))
+          (with-temp-buffer
+            (insert "99}}\n")
+            (append-to-file (point-min) (point-max) file))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 1174))
+          ;; A shorter file is a different session; the total restarts.
+          (with-temp-file file
+            (insert "{\"usage\":{\"output_tokens\":5}}\n"))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 5)))
+      (delete-file file)
+      (clrhash claude-code-ide-status--output-tokens))))
+
+(ert-deftest claude-code-ide-test-status-column-arity-agrees ()
+  "The header list and every row producer agree on the column count.
+`claude-code-ide-status--refresh-columns' rebuilds `tabulated-list-format'
+from `claude-code-ide-status--columns' on every refresh, so a header list
+shorter than the rows silently shifts each value one column left and drops
+the last.  It also defeats the resume cache, whose staleness check compares
+these same lengths."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (let ((width (length claude-code-ide-status--columns)))
+        ;; A live row.
+        (claude-code-ide-tests--make-session "/tmp/arity/")
+        (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-sessions)
+                   (lambda () nil)))
+          (let ((row (car (claude-code-ide-status--live-entries))))
+            (should row)
+            (should (= (length (cadr row)) width))))
+        ;; A resume row, built by the other producer.
+        (let ((claude-code-ide-status-projects-directory
+               (make-temp-file "ccide-arity-" t)))
+          (unwind-protect
+              (let ((sub (expand-file-name "proj" claude-code-ide-status-projects-directory)))
+                (make-directory sub t)
+                (with-temp-file (expand-file-name "s.jsonl" sub)
+                  (insert "{\"type\":\"user\",\"cwd\":\"/tmp/arity-resume/\"}\n"))
+                (when-let* ((row (car (claude-code-ide-status--build-resume-rows))))
+                  (should (= (length (cadr row)) width))))
+            (delete-directory claude-code-ide-status-projects-directory t))))
+    (claude-code-ide-tests--clear-processes)))
+
+(ert-deftest claude-code-ide-test-status-resume-cache-arity ()
+  "A cached resume row with a stale column count is rebuilt, not printed."
+  (let ((claude-code-ide-status-projects-directory "/nonexistent-ccide/")
+        ;; A stale 3-column cache row while the mode now has more columns.
+        (claude-code-ide-status--resume-cache
+         (list (list (cons "/tmp/stale/" 'resume) (vector "" "" ""))))
+        ;; Fresh time — only the arity mismatch should force the rebuild.
+        (claude-code-ide-status--resume-cache-time (float-time)))
+    (should (< (length (vector "" "" ""))
+               (length claude-code-ide-status--columns)))
+    (should (null (claude-code-ide-status--resume-entries
+                   (make-hash-table :test 'equal))))))
+
+(ert-deftest claude-code-ide-test-status-wrap-navigation ()
+  "Row movement wraps at both ends and never lands on a non-row line."
+  (with-temp-buffer
+    ;; Three rows, each a line carrying a `tabulated-list-id', followed by the
+    ;; trailing empty line `tabulated-list' leaves after the last row (no id).
+    (dolist (n '("1" "2" "3"))
+      (let ((start (point)))
+        (insert "row" n "\n")
+        (put-text-property start (1- (point))
+                           'tabulated-list-id (cons n 'live))))
+    (goto-char (point-min))
+    (should (equal (car (tabulated-list-get-id)) "1"))
+    ;; Down through the rows.
+    (claude-code-ide-status-next-line)
+    (should (equal (car (tabulated-list-get-id)) "2"))
+    (claude-code-ide-status-next-line)
+    (should (equal (car (tabulated-list-get-id)) "3"))
+    ;; Down from the last row wraps to the first (never the empty line).
+    (claude-code-ide-status-next-line)
+    (should (equal (car (tabulated-list-get-id)) "1"))
+    ;; Up from the first row wraps to the last.
+    (claude-code-ide-status-previous-line)
+    (should (equal (car (tabulated-list-get-id)) "3"))
+    ;; And back up one more, staying on a real row.
+    (claude-code-ide-status-previous-line)
+    (should (equal (car (tabulated-list-get-id)) "2"))))
+
+(ert-deftest claude-code-ide-test-status-header-intangible-no-bleed ()
+  "`redraw' marks the header `cursor-intangible' without bleeding onto row 1.
+Text properties are rear-sticky by default, so the first row's start would
+otherwise inherit the header's `cursor-intangible' via `get-pos-property'
+and make `cursor-sensor' try to move point off a fresh window (signalling
+`wrong-type-argument number-or-marker-p nil' on the first redisplay)."
+  (claude-code-ide-tests--clear-processes)
+  (with-temp-buffer
+    (claude-code-ide-status-mode)
+    (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-sessions)
+               (lambda () nil))
+              ;; One live row so there is a first data row to inspect.  Its
+              ;; width tracks the header list, so this fixture cannot drift
+              ;; out of arity the way a hand-counted vector would.
+              ((symbol-function 'claude-code-ide-status--entries)
+               (lambda ()
+                 (list (list (cons "/tmp/x/" 'live)
+                             (vconcat
+                              (vector (claude-code-ide-status--state-label 'idle))
+                              (make-vector
+                               (1- (length claude-code-ide-status--columns))
+                               "")))))))
+      (claude-code-ide-status--redraw)
+      (let ((row1 (save-excursion (goto-char (point-min))
+                                  (forward-line 1) (point))))
+        ;; The header line itself carries the property (so point is repelled
+        ;; from it — `cursor-sensor' checks `get-pos-property', which sees it
+        ;; on interior header positions via rear-stickiness).
+        (should (get-char-property (point-min) 'cursor-intangible))
+        (should (get-pos-property (1+ (point-min)) 'cursor-intangible))
+        ;; The first row's start does not — the property is stopped at the
+        ;; boundary, so `cursor-sensor' leaves the row tangible.
+        (should-not (get-pos-property row1 'cursor-intangible))
+        (should (equal (car (get-text-property (1- row1) 'rear-nonsticky))
+                       'cursor-intangible))))))
+
+;;; Public session API
 
 (provide 'claude-code-ide-tests)
 

@@ -754,6 +754,53 @@ INSTANCE-NAME always yields the plain single-instance name."
   (cl-remove-if-not #'claude-code-ide--session-visible-p
                     (claude-code-ide-mcp--sessions-for-project project-dir)))
 
+;;; Public session API
+;; A small, stable surface over the session registry, so overviews and
+;; extensions (such as `claude-code-ide-status') can enumerate and reach
+;; instances without depending on internal `--' symbols.  The session struct's
+;; own accessors (`claude-code-ide-mcp-session-port', `-buffer', `-project-dir',
+;; `-session-id', `-instance-name') are already public; only what is missing is
+;; added here.
+
+(defun claude-code-ide-sessions ()
+  "Return every live Claude Code session, most recently used first.
+The list is a snapshot; it may include a session whose process has just
+exited until `claude-code-ide-cleanup-dead-sessions' prunes it."
+  (sort (claude-code-ide-mcp--active-sessions)
+        (lambda (a b)
+          (> (or (claude-code-ide-mcp-session-last-used a) 0)
+             (or (claude-code-ide-mcp-session-last-used b) 0)))))
+
+(defun claude-code-ide-session-live-p (session)
+  "Return non-nil when SESSION's CLI process is still running."
+  (let ((process (claude-code-ide-mcp-session-process session)))
+    (and process (process-live-p process) t)))
+
+(defun claude-code-ide-session-name (session)
+  "Return SESSION's user-facing name, e.g. \"proj\" or \"proj:refactor\"."
+  (claude-code-ide--session-display-name session))
+
+(defun claude-code-ide-session-visible-p (session)
+  "Return non-nil when SESSION's terminal has a window in the selected frame."
+  (and (claude-code-ide--session-visible-p session) t))
+
+(defun claude-code-ide-current-working-directory ()
+  "Return the working directory of the current buffer's session context.
+This is the project root when in a project, else `default-directory'."
+  (claude-code-ide--get-working-directory))
+
+(defun claude-code-ide-cleanup-dead-sessions ()
+  "Prune registry entries whose Claude process has exited."
+  (claude-code-ide--cleanup-dead-sessions))
+
+(defun claude-code-ide-pop-to-session-buffer (buffer)
+  "Navigate to the Claude Code session shown in BUFFER.
+Selects BUFFER's window if visible, else displays it via the configured
+side window — the shared navigation path used across the package."
+  (if-let* ((window (get-buffer-window buffer)))
+      (select-window window)
+    (claude-code-ide--display-buffer-in-side-window buffer)))
+
 (defun claude-code-ide--read-project-session (prompt project-dir)
   "Pick one of PROJECT-DIR's sessions with PROMPT via `completing-read'."
   (let* ((sessions (claude-code-ide-mcp--sessions-for-project project-dir))

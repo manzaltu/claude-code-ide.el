@@ -201,6 +201,23 @@ used session."
              claude-code-ide-mcp--sessions)
     sessions))
 
+;;; Public session-query API
+;; Predicates over a session's MCP state, so overviews and extensions (such as
+;; `claude-code-ide-status') can inspect an instance without reading the struct
+;; fields that carry protocol internals.
+
+(defun claude-code-ide-mcp-session-connected-p (session)
+  "Return non-nil when SESSION has a connected WebSocket client."
+  (and session (claude-code-ide-mcp-session-client session) t))
+
+(defun claude-code-ide-mcp-session-pending-permissions (session)
+  "Return how many requests SESSION has deferred, or nil when it has none.
+These are tool or diff requests Claude has blocked on; a positive count
+means the instance needs the user."
+  (when-let* ((deferred (and session
+                             (claude-code-ide-mcp-session-deferred session))))
+    (hash-table-count deferred)))
+
 ;;; Backward Compatibility Layer
 
 ;;; Lockfile Management
