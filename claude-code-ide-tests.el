@@ -3713,6 +3713,64 @@ and pruning drops entries whose tab no longer exists."
             (should (memq other cleaned))))
       (claude-code-ide-tests--clear-processes))))
 
+(defun claude-code-ide-tests--transient-groups (layout)
+  "Return LAYOUT's groups as a list of (ARGS-PLIST . CHILDREN) pairs.
+Transient changed how it stores a parsed layout, so reading it by fixed
+index breaks across versions.  Before transient 0.9 a layout was a bare
+list of [LEVEL CLASS ARGS CHILDREN] groups; since then it is a
+[LEVEL _ GROUPS] vector holding [CLASS ARGS CHILDREN] groups.  Normalize
+both, so the caller can assert the invariant rather than the encoding."
+  (let ((groups (if (and (vectorp layout)
+                         (integerp (aref layout 0)))
+                    (aref layout 2)
+                  layout)))
+    (mapcar (lambda (group)
+              (pcase (length group)
+                (4 (cons (aref group 2) (aref group 3)))
+                (3 (cons (aref group 1) (aref group 2)))
+                (_ (cons nil nil))))
+            groups)))
+
+(ert-deftest claude-code-ide-test-transient-groups-normalizer ()
+  "The layout normalizer reads both transient encodings.
+Pins the helper the header test depends on, so a transient upgrade that
+changes the encoding fails here with a clear cause rather than as a
+puzzling assertion in the test below."
+  ;; Pre-0.9: bare list of [LEVEL CLASS ARGS CHILDREN] groups.
+  (should (equal (claude-code-ide-tests--transient-groups
+                  (list (vector 1 'transient-column '(:description foo) '(a b))))
+                 '(((:description foo) . (a b)))))
+  ;; 0.9 and later: [LEVEL _ GROUPS] holding [CLASS ARGS CHILDREN] groups.
+  (should (equal (claude-code-ide-tests--transient-groups
+                  (vector 2 nil (list (vector 'transient-column '(:description foo) '(a b)))))
+                 '(((:description foo) . (a b))))))
+
+(ert-deftest claude-code-ide-test-transient-descriptions-have-children ()
+  "Every menu group that carries a description also owns children.
+`transient--init-group' binds a group's children inside `and-let*', so a
+childless group is dropped whole and its description never reaches the
+buffer.  The session-status header was invisible for exactly this reason.
+The header is checked by name because it is the one that regressed."
+  (require 'claude-code-ide-transient)
+  (dolist (prefix '(claude-code-ide-menu
+                    claude-code-ide-config-menu
+                    claude-code-ide-debug-menu))
+    (let ((groups (claude-code-ide-tests--transient-groups
+                   (get prefix 'transient--layout))))
+      (should groups)
+      (pcase-dolist (`(,args . ,children) groups)
+        (when (plist-get args :description)
+          (should children)))))
+  ;; The status header specifically must still be attached, and attached to
+  ;; a group that survives initialization.
+  (let ((header (seq-find (lambda (group)
+                            (eq (plist-get (car group) :description)
+                                'claude-code-ide--session-status))
+                          (claude-code-ide-tests--transient-groups
+                           (get 'claude-code-ide-menu 'transient--layout)))))
+    (should header)
+    (should (cdr header))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

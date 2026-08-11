@@ -319,29 +319,32 @@
 ;;;###autoload (autoload 'claude-code-ide-menu "claude-code-ide-transient" "Claude Code IDE main menu." t)
 (transient-define-prefix claude-code-ide-menu ()
   "Claude Code IDE main menu."
-  [:description claude-code-ide--session-status]
-  ["Claude Code IDE"
-   ["Session Management"
-    ("s" claude-code-ide :description claude-code-ide--start-description)
-    ("c" "Continue in new instance" claude-code-ide-continue)
-    ("r" "Resume in new instance" claude-code-ide-resume)
-    ("q" "Stop instance" claude-code-ide-stop)
-    ("Q" "Stop all instances" claude-code-ide-stop-all)
-    ("R" "Rename instance" claude-code-ide-rename-session)
-    ("l" "List all sessions" claude-code-ide-list-sessions)]
-   ["Navigation"
-    ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
-    ("w" "Toggle project windows" claude-code-ide-toggle)
-    ("W" "Toggle all windows" claude-code-ide-toggle-recent)
-    ("a" "Show all instances" claude-code-ide-show-all)]
-   ["Interaction"
-    ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
-    ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)
-    ("e" "Send escape key" claude-code-ide-send-escape)
-    ("n" "Insert newline" claude-code-ide-insert-newline)]
-   ["Submenus"
-    ("C" "Configuration" claude-code-ide-config-menu)
-    ("d" "Debugging" claude-code-ide-debug-menu)]])
+  ;; The description rides on the group that owns the columns rather than a
+  ;; group of its own.  `transient--init-group' binds a group's children
+  ;; inside `and-let*', so a childless group is dropped whole and its
+  ;; description never reaches the buffer.
+  [:description claude-code-ide--session-status
+                ["Session Management"
+                 ("s" claude-code-ide :description claude-code-ide--start-description)
+                 ("c" "Continue in new instance" claude-code-ide-continue)
+                 ("r" "Resume in new instance" claude-code-ide-resume)
+                 ("q" "Stop instance" claude-code-ide-stop)
+                 ("Q" "Stop all instances" claude-code-ide-stop-all)
+                 ("R" "Rename instance" claude-code-ide-rename-session)
+                 ("l" "List all sessions" claude-code-ide-list-sessions)]
+                ["Navigation"
+                 ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
+                 ("w" "Toggle project windows" claude-code-ide-toggle)
+                 ("W" "Toggle all windows" claude-code-ide-toggle-recent)
+                 ("a" "Show all instances" claude-code-ide-show-all)]
+                ["Interaction"
+                 ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
+                 ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)
+                 ("e" "Send escape key" claude-code-ide-send-escape)
+                 ("n" "Insert newline" claude-code-ide-insert-newline)]
+                ["Submenus"
+                 ("C" "Configuration" claude-code-ide-config-menu)
+                 ("d" "Debugging" claude-code-ide-debug-menu)]])
 
 (transient-define-prefix claude-code-ide-config-menu ()
   "Claude Code configuration menu."
