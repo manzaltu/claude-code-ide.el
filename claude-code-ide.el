@@ -133,6 +133,15 @@ This should be a string of space-separated flags, e.g. \"--model opus\"."
   :type 'string
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-auto-name-instances nil
+  "When non-nil, never prompt for an instance name on launch.
+Additional instances in a project silently take the lowest free auto
+number (the same name empty input at the prompt would produce).  A
+prefix argument to `claude-code-ide' still prompts, and commands that
+pass an explicit PROMPT (e.g. rename) still prompt."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-system-prompt nil
   "System prompt to append to Claude's default system prompt.
 When non-nil, the --append-system-prompt flag will be added with this value.
@@ -813,7 +822,15 @@ EXCLUDE-SESSION's own name is treated as free (used while renaming)."
   "Read and validate an instance name for PROJECT-DIR.
 Empty input auto-numbers (nil = the plain unnamed slot).  PROMPT
 overrides the default prompt; EXCLUDE-SESSION is ignored in collision
-checks (used while renaming).  Returns the name string or nil."
+checks (used while renaming).  Returns the name string or nil.
+
+When `claude-code-ide-auto-name-instances' is non-nil and no PROMPT is
+given (i.e. a plain launch, not a rename), skip the prompt entirely and
+return the auto name, unless a prefix argument forces the prompt."
+  (if (and claude-code-ide-auto-name-instances
+           (null prompt)
+           (not current-prefix-arg))
+      (claude-code-ide--auto-instance-name project-dir exclude-session)
   (let (name done)
     (while (not done)
       (setq name (string-trim
@@ -835,7 +852,7 @@ checks (used while renaming).  Returns the name string or nil."
         (message "Name already used in this project: %s" name)
         (sit-for 1))
        (t (setq done t))))
-    name))
+    name)))
 
 (defconst claude-code-ide--window-slot-block 16
   "Side-window slots reserved per project.
