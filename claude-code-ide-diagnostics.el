@@ -209,7 +209,7 @@ Optional SESSION contains the MCP session context."
       (let ((buffer-count 0)
             (checked-count 0))
         (dolist (buffer (buffer-list))
-          (when-let ((file (buffer-file-name buffer)))
+          (when-let* ((file (buffer-file-name buffer)))
             (setq buffer-count (1+ buffer-count))
             ;; Filter by project directory if session is available
             (when (or (not project-dir)

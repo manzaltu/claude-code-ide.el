@@ -100,7 +100,7 @@ Returns a cons cell of (server . port)."
           (claude-code-ide-debug "MCP server started on port %d" actual-port)
           ;; Set up process sentinel to detect crashes
           (set-process-sentinel process
-                                (lambda (proc event)
+                                (lambda (_proc event)
                                   (claude-code-ide-debug "MCP server process event: %s" event)
                                   (when (string-match-p "\\(exited\\|killed\\|terminated\\)" event)
                                     (claude-code-ide-debug "MCP server died unexpectedly"))))
