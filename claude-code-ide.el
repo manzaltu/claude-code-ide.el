@@ -329,7 +329,10 @@ without noticeable latency."
   "Maintain terminal scroll position when switching windows.
 When enabled, prevents the eat terminal from jumping to the top
 when you switch focus to other windows and return.  This provides
-a more stable viewing experience when working with multiple windows."
+a more stable viewing experience when working with multiple windows.
+When disabled, only the cursor position is synchronized without
+recentering, allowing free scrolling through the terminal buffer
+with the mouse wheel or scrollbar without the view snapping back."
   :type 'boolean
   :group 'claude-code-ide)
 
@@ -650,9 +653,11 @@ its name, so custom naming schemes are recognized as well."
        (buffer-local-value 'claude-code-ide--session buffer)))
 
 (defun claude-code-ide--terminal-reflow-filter (original-fn &rest args)
-  "Filter terminal reflows to prevent height-only resize triggers.
-This wraps ORIGINAL-FN to suppress reflow signals unless the terminal
-width has actually changed, working around the scrolling glitch."
+  "Filter terminal reflows to suppress redundant resize signals.
+This wraps ORIGINAL-FN to suppress reflow signals when neither width
+nor height has actually changed, working around the scrolling glitch
+from upstream bug #1422 while still allowing height-only resizes
+needed by top/bottom side windows."
   (let* ((base-result (apply original-fn args))
          (dimensions-stable t))
     ;; Examine each window showing a Claude session
@@ -660,11 +665,15 @@ width has actually changed, working around the scrolling glitch."
       (when-let* ((buf (window-buffer win))
                   ((claude-code-ide--session-buffer-p buf)))
         (let* ((new-width (window-width win))
-               (cached-width (window-parameter win 'claude-code-ide-cached-width)))
-          ;; Width change detected
-          (unless (eql new-width cached-width)
+               (new-height (window-body-height win))
+               (cached-width (window-parameter win 'claude-code-ide-cached-width))
+               (cached-height (window-parameter win 'claude-code-ide-cached-height)))
+          ;; Dimension change detected
+          (unless (and (eql new-width cached-width)
+                       (eql new-height cached-height))
             (setq dimensions-stable nil)
-            (set-window-parameter win 'claude-code-ide-cached-width new-width)))))
+            (set-window-parameter win 'claude-code-ide-cached-width new-width)
+            (set-window-parameter win 'claude-code-ide-cached-height new-height)))))
     ;; Decide whether to allow reflow
     (cond
      ;; Not in a Claude buffer - pass through
@@ -676,7 +685,7 @@ width has actually changed, working around the scrolling glitch."
      ;; Dimensions changed - allow reflow
      ((not dimensions-stable)
       base-result)
-     ;; No width change - suppress reflow
+     ;; No change - suppress reflow
      (t nil))))
 
 
@@ -1174,6 +1183,21 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
               (setq claude-cmd (concat claude-cmd " --allowedTools " allowed-tools)))))))
     claude-cmd))
 
+(defvar-local claude-code-ide--cursor-overlay nil
+  "Overlay used to display the terminal cursor without moving point.")
+
+(defun claude-code-ide--terminal-cursor-sync (window-list)
+  "Synchronize cursor display without moving point or window scroll.
+WINDOW-LIST is accepted for API compatibility but not used.
+Instead of moving point (which forces Emacs to scroll), this
+renders the cursor as an overlay at the terminal cursor position."
+  (ignore window-list)
+  (let ((cursor (eat-term-display-cursor eat-terminal)))
+    (if claude-code-ide--cursor-overlay
+        (move-overlay claude-code-ide--cursor-overlay cursor (1+ cursor))
+      (setq claude-code-ide--cursor-overlay (make-overlay cursor (1+ cursor)))
+      (overlay-put claude-code-ide--cursor-overlay 'face 'cursor))))
+
 (defun claude-code-ide--terminal-position-keeper (window-list)
   "Maintain stable terminal view position across window switches.
 WINDOW-LIST contains windows requiring position synchronization.
@@ -1298,14 +1322,37 @@ Signals an error if terminal fails to initialize."
                 ;; Set up eat mode
                 (unless (eq major-mode 'eat-mode)
                   (eat-mode))
-                ;; Configure position preservation if enabled
-                (when claude-code-ide-eat-preserve-position
-                  (setq-local eat--synchronize-scroll-function
-                              #'claude-code-ide--terminal-position-keeper))
+                ;; Configure scroll synchronization.
+                ;; When preserve-position is enabled, use the custom
+                ;; position keeper.  When disabled, use cursor-sync
+                ;; which updates point without recentering, so that
+                ;; eat's default synchronize-scroll (which snaps the
+                ;; window to the cursor) does not prevent manual
+                ;; scrolling through the buffer.
+                (setq-local eat--synchronize-scroll-function
+                            (if claude-code-ide-eat-preserve-position
+                                #'claude-code-ide--terminal-position-keeper
+                              #'claude-code-ide--terminal-cursor-sync))
+                ;; When using overlay cursor sync (preserve-position off),
+                ;; hide the native Emacs cursor completely.  We must also
+                ;; stop eat's cursor-blink timer and override eat's
+                ;; set-cursor callback — both of which would otherwise
+                ;; keep resetting `cursor-type' to a visible value.
+                (unless claude-code-ide-eat-preserve-position
+                  (setq-local cursor-type nil)
+                  (when (bound-and-true-p eat--cursor-blink-mode)
+                    (eat--cursor-blink-mode -1)))
                 ;; Prepend our env vars to the buffer-local process-environment
                 (setq-local process-environment
                             (append env-vars process-environment))
                 (eat-exec buffer buffer-name program nil args)
+                ;; After eat-exec, eat-terminal exists.  Prevent the
+                ;; TUI from switching cursor-type back to visible.
+                (when (and (not claude-code-ide-eat-preserve-position)
+                           (bound-and-true-p eat-terminal))
+                  (eat-term-set-parameter eat-terminal
+                                          'set-cursor-function
+                                          #'ignore))
                 ;; Get the process
                 (let ((process (get-buffer-process buffer)))
                   (unless process
