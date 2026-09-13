@@ -1457,6 +1457,9 @@ This function handles:
                                            ((= exit-code 126)
                                             (message "Claude Code CLI '%s' was found but is not executable (exit 126).  Check file permissions"
                                                      cli-path))
+                                           ((and (= exit-code 1) (or continue resume))
+                                            (message "Claude could not %s (exit 1).  That conversation may already be running in the background.  Use M-x claude-code-ide for a new session, M-x claude-code-ide-resume to pick another, or run `claude agents' in a terminal to attach to the running one"
+                                                     (if continue "continue" "resume")))
                                            (t
                                             (message "Claude exited with error code %d" exit-code)))))
                                       (when (or (string-match "finished" event)
