@@ -599,20 +599,24 @@ from the window where it was initially created."
   "Set up keybindings for the Claude Code terminal buffer.
 This function binds:
 - M-RET (Alt-Return) to insert a newline
-- C-<escape> to send escape"
+- C-<escape> to send escape
+- C-c C-x to drop the file or selection shown in the prompt"
   (cond
    ((eq claude-code-ide-terminal-backend 'vterm)
     ;; For vterm, we set up local keybindings in vterm-mode-map
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
+    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape)
+    (local-set-key (kbd "C-c C-x") #'claude-code-ide-clear-selection))
    ((eq claude-code-ide-terminal-backend 'eat)
     ;; For eat, we need to modify the semi-char mode map which is the default
     ;; We use local-set-key to make it buffer-local
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
+    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape)
+    (local-set-key (kbd "C-c C-x") #'claude-code-ide-clear-selection))
    ((eq claude-code-ide-terminal-backend 'ghostel)
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
+    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape)
+    (local-set-key (kbd "C-c C-x") #'claude-code-ide-clear-selection))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
@@ -1691,6 +1695,24 @@ instance, else the most recently used one (prefix argument picks)."
         (progn
           (claude-code-ide-mcp-send-at-mentioned session)
           (claude-code-ide-debug "Sent selection to Claude Code"))
+      (user-error "Claude Code is not connected.  Please start Claude Code first"))))
+
+;;;###autoload
+(defun claude-code-ide-clear-selection ()
+  "Drop the file or selection Claude shows in its prompt.
+The prompt's \"In <file>\" or \"N lines selected\" label disappears and
+the next prompt carries no opened-file or selection reminder.  The file
+stays dismissed while the cursor moves inside it; selecting a region or
+visiting another file shares editor context again.
+Targets one instance: the current terminal, the sole or sole-visible
+instance, else the most recently used one (prefix argument picks)."
+  (interactive)
+  (let ((session (claude-code-ide--resolve-session
+                  'auto "Clear editor context of Claude instance: ")))
+    (if (and session (claude-code-ide-mcp-session-client session))
+        (progn
+          (claude-code-ide-mcp-clear-selection session)
+          (claude-code-ide-debug "Cleared editor context"))
       (user-error "Claude Code is not connected.  Please start Claude Code first"))))
 
 ;;;###autoload

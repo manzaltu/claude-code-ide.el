@@ -41,6 +41,7 @@
 (declare-function claude-code-ide-list-sessions "claude-code-ide" ())
 (declare-function claude-code-ide-switch-to-buffer "claude-code-ide" ())
 (declare-function claude-code-ide-insert-at-mentioned "claude-code-ide" ())
+(declare-function claude-code-ide-clear-selection "claude-code-ide" ())
 (declare-function claude-code-ide-send-prompt "claude-code-ide" (&optional prompt session))
 (declare-function claude-code-ide-send-escape "claude-code-ide" ())
 (declare-function claude-code-ide-insert-newline "claude-code-ide" ())
@@ -336,6 +337,7 @@
     ("a" "Show all instances" claude-code-ide-show-all)]
    ["Interaction"
     ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
+    ("x" "Clear editor context" claude-code-ide-clear-selection)
     ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)
     ("e" "Send escape key" claude-code-ide-send-escape)
     ("n" "Insert newline" claude-code-ide-insert-newline)]

@@ -143,6 +143,7 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-list-sessions=       | List all active Claude Code instances and switch  |
 | =M-x claude-code-ide-check-status=        | Check if Claude Code CLI is installed and working |
 | =M-x claude-code-ide-insert-at-mentioned= | Send selected text to Claude prompt               |
+| =M-x claude-code-ide-clear-selection=     | Drop the file/selection shown in Claude's prompt  |
 | =M-x claude-code-ide-send-escape=         | Send escape key to Claude terminal                |
 | =M-x claude-code-ide-insert-newline=      | Insert newline in Claude prompt (sends \ + Enter) |
 | =M-x claude-code-ide-toggle=              | Show/hide the project's Claude windows            |
@@ -151,7 +152,7 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-show-debug=          | Show the debug buffer with WebSocket messages     |
 | =M-x claude-code-ide-clear-debug=         | Clear the debug buffer                            |
 
-Commands that target one instance (stop, switch, send-prompt, insert-at-mentioned, escape, newline) resolve their target automatically: the Claude terminal you are in, the project's only instance, or its only visible one; beyond that, send-type commands use the most recently used instance (echoing the choice) while =claude-code-ide-stop= asks. A prefix argument (=C-u=) always lets you pick the instance explicitly.
+Commands that target one instance (stop, switch, send-prompt, insert-at-mentioned, clear-selection, escape, newline) resolve their target automatically: the Claude terminal you are in, the project's only instance, or its only visible one; beyond that, send-type commands use the most recently used instance (echoing the choice) while =claude-code-ide-stop= asks. A prefix argument (=C-u=) always lets you pick the instance explicitly.
 
 ** Multiple Projects and Instances
 
@@ -164,6 +165,12 @@ Claude Code IDE automatically detects your project using Emacs' built-in =projec
 - Use =claude-code-ide-list-sessions= to see all instances across all projects and switch between them.
 
 Note for =claude-code-ide-continue=: starting a second continued instance in the same directory forks the same "most recent" conversation — that is CLI behavior.
+
+** Editor Context
+
+Every instance of a project is told which file you are looking at and which text you have selected. The Claude prompt shows this as an =⧉ In file.el= or =⧉ 3 lines selected= label, and the prompt you submit next carries a short reminder ("The user opened the file … in the IDE" or the selected lines). The file's content itself is not sent.
+
+- =M-x claude-code-ide-clear-selection= (=x= in the menu, =C-c C-x= in the Claude terminal) drops that context from one instance, like the =x= next to the file name in the VS Code extension. The dismissed file stays out of the prompt while you move around in it; selecting a region or visiting another file shares context again.
 
 ** Window Management
 
@@ -333,10 +340,11 @@ This delay prevents display artifacts such as misaligned prompts and incorrect c
 
 Claude Code IDE adds custom keybindings to the terminal for easier interaction:
 
-| Keybinding | Command                        | Description                          |
-|------------+--------------------------------+--------------------------------------|
-| =M-RET=      | =claude-code-ide-insert-newline= | Insert a newline in the prompt       |
-| =C-<escape>= | =claude-code-ide-send-escape=    | Send escape key to cancel operations |
+| Keybinding   | Command                           | Description                                 |
+|--------------+-----------------------------------+---------------------------------------------|
+| =M-RET=      | =claude-code-ide-insert-newline=  | Insert a newline in the prompt              |
+| =C-<escape>= | =claude-code-ide-send-escape=     | Send escape key to cancel operations        |
+| =C-c C-x=    | =claude-code-ide-clear-selection= | Drop the file/selection shown in the prompt |
 
 These keybindings are automatically set up for =vterm=, =eat=, and =ghostel= backends and only apply within Claude Code terminal buffers.
 

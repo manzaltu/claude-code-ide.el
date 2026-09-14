@@ -3034,6 +3034,116 @@ sibling instance."
               (setq buffer-file-name nil))))
       (claude-code-ide-tests--clear-processes))))
 
+(ert-deftest claude-code-ide-test-clear-selection-dismisses-file ()
+  "Clearing makes the instance forget its file and keeps that file dismissed."
+  (claude-code-ide-tests--clear-processes)
+  (let* ((project-dir "/tmp/claude-clear-selection/")
+         (file (expand-file-name "file.txt" project-dir))
+         (other (expand-file-name "other.txt" project-dir))
+         (client (claude-code-ide-tests--make-websocket "ws://127.0.0.1:10012"))
+         (sent '()))
+    (unwind-protect
+        (let ((session (claude-code-ide-tests--make-session project-dir
+                                                            :client client)))
+          (cl-letf (((symbol-function 'websocket-send-text)
+                     (lambda (_ws text)
+                       (push (json-parse-string text :object-type 'alist) sent))))
+            (with-temp-buffer
+              (insert "line 1\nline 2\n")
+              (setq buffer-file-name file)
+              (goto-char (point-min))
+              (claude-code-ide-mcp--send-selection-for-project project-dir)
+              (should (equal file (alist-get 'filePath
+                                             (alist-get 'params (car sent)))))
+
+              ;; Clearing sends a selection that names no file and no text
+              (setq sent '())
+              (claude-code-ide-mcp-clear-selection session)
+              (should (= 1 (length sent)))
+              (let ((params (alist-get 'params (car sent))))
+                (should (equal "selection_changed" (alist-get 'method (car sent))))
+                (should-not (assq 'filePath params))
+                (should-not (assq 'text params))
+                (should (alist-get 'start (alist-get 'selection params)))
+                (should (alist-get 'end (alist-get 'selection params))))
+              (should-not (claude-code-ide-mcp-session-last-selection session))
+              (should (equal file (claude-code-ide-mcp-session-dismissed-file session)))
+
+              ;; Cursor movement inside the dismissed file stays silent
+              (setq sent '())
+              (forward-line 1)
+              (claude-code-ide-mcp--send-selection-for-project project-dir)
+              (should-not sent)
+
+              ;; Selecting a region ends the dismissal
+              (set-mark (point-min))
+              (goto-char (point-max))
+              (let ((transient-mark-mode t))
+                (activate-mark)
+                (claude-code-ide-mcp--send-selection-for-project project-dir)
+                (deactivate-mark))
+              (should (= 1 (length sent)))
+              (should (equal "line 1\nline 2\n"
+                             (alist-get 'text (alist-get 'params (car sent)))))
+              (should-not (claude-code-ide-mcp-session-dismissed-file session))
+
+              ;; Visiting another file ends it as well
+              (claude-code-ide-mcp-clear-selection session)
+              (should (equal file (claude-code-ide-mcp-session-dismissed-file session)))
+              (setq sent '())
+              (setq buffer-file-name other)
+              (claude-code-ide-mcp--send-selection-for-project project-dir)
+              (should (= 1 (length sent)))
+              (should (equal other (alist-get 'filePath
+                                              (alist-get 'params (car sent)))))
+              (should-not (claude-code-ide-mcp-session-dismissed-file session))
+
+              ;; A file outside the project ends it too
+              (claude-code-ide-mcp-clear-selection session)
+              (setq buffer-file-name "/tmp/elsewhere/file.txt")
+              (claude-code-ide-mcp--send-selection-for-project project-dir)
+              (should-not (claude-code-ide-mcp-session-dismissed-file session))
+
+              (set-buffer-modified-p nil)
+              (setq buffer-file-name nil))))
+      (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-terminal-keybindings-bind-clear-selection ()
+  "Every terminal backend binds C-c C-x to clearing the editor context."
+  (dolist (backend '(vterm eat ghostel))
+    (with-temp-buffer
+      (use-local-map (make-sparse-keymap))
+      (let ((claude-code-ide-terminal-backend backend))
+        (claude-code-ide--setup-terminal-keybindings))
+      (should (eq #'claude-code-ide-clear-selection
+                  (lookup-key (current-local-map) (kbd "C-c C-x"))))
+      (should (eq #'claude-code-ide-send-escape
+                  (lookup-key (current-local-map) (kbd "C-<escape>")))))))
+
+(ert-deftest claude-code-ide-test-clear-selection-command ()
+  "The command clears the resolved instance and refuses a disconnected one."
+  (claude-code-ide-tests--clear-processes)
+  (let ((project-dir "/tmp/claude-clear-command/")
+        (cleared '()))
+    (unwind-protect
+        (let ((connected (claude-code-ide-tests--make-session
+                          project-dir
+                          :client (claude-code-ide-tests--make-websocket
+                                   "ws://127.0.0.1:10013")))
+              (idle (claude-code-ide-tests--make-session project-dir
+                                                         :instance-name "b")))
+          (cl-letf (((symbol-function 'claude-code-ide-mcp-clear-selection)
+                     (lambda (session) (push session cleared))))
+            (cl-letf (((symbol-function 'claude-code-ide--resolve-session)
+                       (lambda (&rest _) connected)))
+              (claude-code-ide-clear-selection)
+              (should (equal cleared (list connected))))
+            (cl-letf (((symbol-function 'claude-code-ide--resolve-session)
+                       (lambda (&rest _) idle)))
+              (should-error (claude-code-ide-clear-selection) :type 'user-error))
+            (should (equal cleared (list connected)))))
+      (claude-code-ide-tests--clear-processes))))
+
 (ert-deftest claude-code-ide-test-track-selection-debounces-per-project ()
   "Selection tracking arms one debounce timer per project, not per instance."
   (claude-code-ide-tests--clear-processes)
