@@ -171,6 +171,7 @@ Note for =claude-code-ide-continue=: starting a second continued instance in the
 Every instance of a project is told which file you are looking at and which text you have selected. The Claude prompt shows this as an =⧉ In file.el= or =⧉ 3 lines selected= label, and the prompt you submit next carries a short reminder ("The user opened the file … in the IDE" or the selected lines). The file's content itself is not sent.
 
 - =M-x claude-code-ide-clear-selection= (=x= in the menu, =C-c C-x= in the Claude terminal) drops that context from one instance, like the =x= next to the file name in the VS Code extension. The dismissed file stays out of the prompt while you move around in it; selecting a region or visiting another file shares context again.
+- Set ~claude-code-ide-share-opened-file~ to =nil= (or toggle it under =o= in the configuration menu) to report only selected regions. The file you are in is then never mentioned; a region is shared while it is active and dropped when it is deactivated.
 
 ** Window Management
 
@@ -234,6 +235,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-no-flicker~                    | Enable flicker-free terminal renderer       | ~nil~                                  |
 | ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
 | ~claude-code-ide-enable-execute-code~           | Allow model to evaluate Elisp in Emacs      | ~t~                                    |
+| ~claude-code-ide-share-opened-file~             | Report the open file even without a region  | ~t~                                    |
 
 *** Side Window Configuration
 
