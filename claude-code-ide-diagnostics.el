@@ -98,6 +98,10 @@ Returns: 1 (Error), 2 (Warning), 3 (Information), 4 (Hint)."
     (':warning "Warning")
     ('flymake-note "Information")
     (':note "Information")
+    ;; Eglot severities (eglot wraps flymake types with eglot- prefix)
+    ('eglot-error "Error")
+    ('eglot-warning "Warning")
+    ('eglot-note "Information")
     ;; Default
     (_ "Information")))
 
