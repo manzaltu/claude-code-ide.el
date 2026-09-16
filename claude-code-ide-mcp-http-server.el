@@ -39,6 +39,8 @@
 
 (defvar claude-code-ide-mcp-server--current-session-id)
 
+(define-error 'json-rpc-error "JSON-RPC Error" 'error)
+
 ;; Require web-server at runtime to avoid batch mode issues
 (unless (featurep 'web-server)
   (condition-case err
@@ -169,6 +171,11 @@ with the appropriate session context."
      (claude-code-ide-debug "Request cancelled by user (C-<escape>)")
      (claude-code-ide-mcp-http-server--send-json-error
       request nil -32001 "Operation cancelled by user"))
+
+    (json-rpc-error
+     (claude-code-ide-debug "JSON-RPC error: %S" (cdr err))
+     (claude-code-ide-mcp-http-server--send-json-error
+      request nil (nth 1 err) (nth 2 err)))
 
     (error
      (claude-code-ide-debug "Error handling request: %s"
