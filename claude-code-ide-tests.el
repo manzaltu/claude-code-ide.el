@@ -2420,6 +2420,30 @@ sibling instance."
       (claude-code-ide-mcp-http-server--handle-get mock-request)
       (should (equal claude-code-ide-mcp-server-tests--last-response-status 404)))))
 
+(ert-deftest claude-code-ide-mcp-server-test-dispatch-unknown-method ()
+  "Unknown methods signal a JSON-RPC error that is a regular `error'."
+  (require 'claude-code-ide-mcp-http-server)
+  (let ((err (should-error
+              (claude-code-ide-mcp-http-server--dispatch "ping" nil)
+              :type 'json-rpc-error)))
+    (should (equal (cadr err) -32601))
+    (should (string-match-p "ping" (nth 2 err)))
+    (should (memq 'error (get 'json-rpc-error 'error-conditions)))))
+
+(ert-deftest claude-code-ide-mcp-server-test-handle-post-unknown-method ()
+  "An unknown method gets a -32601 response carrying the request id."
+  (require 'claude-code-ide-mcp-http-server)
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'ws-headers) (lambda (_r) '((:POST . "/mcp/s1"))))
+              ((symbol-function 'ws-body)
+               (lambda (_r) "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"}"))
+              ((symbol-function 'claude-code-ide-mcp-http-server--send-json-response)
+               (lambda (_r status body) (setq sent (cons status body)))))
+      (claude-code-ide-mcp-http-server--handle-post 'request)
+      (should (equal (car sent) 200))
+      (should (equal (alist-get 'id (cdr sent)) 7))
+      (should (equal (alist-get 'code (alist-get 'error (cdr sent))) -32601)))))
+
 ;;; MCP Server Session Context Tests
 
 (ert-deftest claude-code-ide-mcp-server-test-session-registration ()
