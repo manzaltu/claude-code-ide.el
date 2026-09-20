@@ -211,6 +211,44 @@ display diffs in the terminal instead."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defconst claude-code-ide--auto-accept-mode-line
+  '(:eval (when (and claude-code-ide--session
+                     (claude-code-ide-mcp-session-auto-accept
+                      claude-code-ide--session))
+            (propertize " AUTO-ACCEPT" 'face 'warning)))
+  "Mode line construct marking an instance whose edits skip review.")
+
+(defun claude-code-ide--show-auto-accept (session)
+  "Make SESSION's terminal buffer mode line reflect its auto-accept state."
+  (when-let* ((buffer (claude-code-ide-mcp-session-buffer session)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (unless (member claude-code-ide--auto-accept-mode-line mode-line-misc-info)
+          (setq-local mode-line-misc-info
+                      (cons claude-code-ide--auto-accept-mode-line
+                            mode-line-misc-info)))
+        (force-mode-line-update)))))
+
+;;;###autoload
+(defun claude-code-ide-toggle-auto-accept ()
+  "Toggle automatic acceptance of file edits for one Claude Code instance.
+When enabled, that instance's edits are accepted immediately without
+opening ediff; other instances keep showing ediff as usual.  The setting
+lasts as long as the instance does.
+Targets one instance: the current terminal, the sole or sole-visible
+instance, else asks (a wrong guess would silently skip review)."
+  (interactive)
+  (let ((session (claude-code-ide--resolve-session
+                  'prompt "Toggle auto-accept for Claude instance: ")))
+    (unless session
+      (user-error "No Claude Code session for this project"))
+    (let ((state (not (claude-code-ide-mcp-session-auto-accept session))))
+      (setf (claude-code-ide-mcp-session-auto-accept session) state)
+      (claude-code-ide--show-auto-accept session)
+      (message "Claude Code auto-accept edits [%s]: %s"
+               (claude-code-ide--session-display-name session)
+               (if state "ON" "OFF")))))
+
 (defcustom claude-code-ide-switch-tab-on-ediff t
   "Whether to switch back to Claude's original tab when opening ediff.
 When non-nil (default), Claude Code will switch back to the tab

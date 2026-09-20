@@ -1815,6 +1815,73 @@ next toggle, independent of which project the instances belong to."
       (kill-buffer "*test-buffer*")
       (kill-buffer "*test-sidebar*"))))
 
+(ert-deftest claude-code-ide-test-toggle-auto-accept-per-session ()
+  "Toggling auto-accept flips only the resolved instance."
+  (let* ((claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+         (session-a (claude-code-ide-tests--make-session "/tmp/proj-a/"))
+         (session-b (claude-code-ide-tests--make-session "/tmp/proj-b/")))
+    (cl-letf (((symbol-function 'claude-code-ide--resolve-session)
+               (lambda (&rest _) session-a)))
+      (claude-code-ide-toggle-auto-accept)
+      (should (claude-code-ide-mcp-session-auto-accept session-a))
+      (should-not (claude-code-ide-mcp-session-auto-accept session-b))
+      (claude-code-ide-toggle-auto-accept)
+      (should-not (claude-code-ide-mcp-session-auto-accept session-a)))))
+
+(ert-deftest claude-code-ide-test-toggle-auto-accept-no-session ()
+  "Toggling auto-accept without any instance is a user error."
+  (cl-letf (((symbol-function 'claude-code-ide--resolve-session)
+             (lambda (&rest _) nil)))
+    (should-error (claude-code-ide-toggle-auto-accept) :type 'user-error)))
+
+(ert-deftest claude-code-ide-test-auto-accept-mode-line ()
+  "The session buffer's mode line shows auto-accept only while it is on.
+`format-mode-line' returns an empty string in batch mode, so the
+construct's `:eval' form is evaluated directly in the session buffer."
+  (let* ((claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+         (buffer (generate-new-buffer " *test-claude-session*"))
+         (session (claude-code-ide-tests--make-session
+                   "/tmp/proj-a/" :buffer buffer))
+         (indicator (lambda ()
+                      (with-current-buffer buffer
+                        (eval (cadr claude-code-ide--auto-accept-mode-line) t)))))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq-local claude-code-ide--session session))
+          (should-not (funcall indicator))
+          (cl-letf (((symbol-function 'claude-code-ide--resolve-session)
+                     (lambda (&rest _) session)))
+            (claude-code-ide-toggle-auto-accept)
+            (should (string-match-p "AUTO-ACCEPT" (funcall indicator)))
+            (claude-code-ide-toggle-auto-accept)
+            (should-not (funcall indicator))
+            ;; The construct is installed once, however often it is toggled.
+            (should (= 1 (cl-count claude-code-ide--auto-accept-mode-line
+                                   (buffer-local-value 'mode-line-misc-info buffer)
+                                   :test #'equal)))))
+      (kill-buffer buffer))))
+
+(ert-deftest claude-code-ide-test-open-diff-auto-accept-per-session ()
+  "openDiff skips ediff and completes the session that has auto-accept on."
+  (let* ((claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+         (auto (claude-code-ide-tests--make-session "/tmp/proj-a/"))
+         (completed nil)
+         (args `((old_file_path . "/tmp/x")
+                 (new_file_path . "/tmp/x")
+                 (new_file_contents . "new\n")
+                 (tab_name . "auto-diff"))))
+    (setf (claude-code-ide-mcp-session-auto-accept auto) t)
+    (cl-letf (((symbol-function 'run-with-idle-timer)
+               (lambda (_secs _repeat fn &rest _) (funcall fn)))
+              ((symbol-function 'claude-code-ide-mcp-complete-deferred)
+               (lambda (session &rest _) (push session completed)))
+              ((symbol-function 'ediff-buffers)
+               (lambda (&rest _) (ert-fail "ediff opened for auto-accepted session"))))
+      (let ((result (claude-code-ide-mcp-handle-open-diff args auto)))
+        (should (eq (alist-get 'deferred result) t))
+        (should (equal completed (list auto)))))))
+
 ;;; Tests for Diagnostics
 
 (ert-deftest claude-code-ide-test-diagnostics-severity-mapping ()
