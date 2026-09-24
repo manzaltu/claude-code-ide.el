@@ -236,6 +236,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
 | ~claude-code-ide-enable-execute-code~           | Allow model to evaluate Elisp in Emacs      | ~t~                                    |
 | ~claude-code-ide-share-opened-file~             | Report the open file even without a region  | ~t~                                    |
+| ~claude-code-ide-mcp-require-auth-token~        | Accept only clients with the lockfile token | ~t~                                    |
 
 *** Side Window Configuration
 
@@ -403,6 +404,16 @@ To disable it:
 
 #+begin_src emacs-lisp
 (setq claude-code-ide-enable-execute-code nil)
+#+end_src
+
+*** Connection Security
+
+Each session's WebSocket server listens on =127.0.0.1= only, but that address is reachable by every program on the machine, including web pages open in a browser. The server therefore writes a random token to its lockfile in =~/.claude/ide/= (readable only by you) and accepts a connection only if it presents that token, as the Claude Code CLI does. Connections from web browsers, recognized by their =Origin= header, are refused outright.
+
+If you use a Claude Code CLI version that does not send the token, you can turn the check off:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-mcp-require-auth-token nil)
 #+end_src
 
 *** Custom Buffer Naming

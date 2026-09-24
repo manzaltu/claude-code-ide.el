@@ -100,6 +100,22 @@ is deactivated, and the file itself is never mentioned."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-mcp-require-auth-token t
+  "Non-nil makes the WebSocket server accept only authenticated clients.
+Each session then writes a random token to its lockfile in
+`~/.claude/ide/', readable only by the current user, and accepts a
+connection only if it presents that token in the
+`x-claude-code-ide-authorization' header, as the Claude Code CLI does.
+Connections that send an `Origin' header are refused as well: only web
+browsers send one.  Without this check any web page open in a browser,
+and any other user of the machine, can connect to the server on
+127.0.0.1 and use the tools it exposes.
+
+Set to nil only for Claude Code CLI versions that do not send the
+token."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 ;;; Variables
 
 ;; Only keep the global sessions table
@@ -154,7 +170,8 @@ Set to nil when cache needs to be invalidated.")
   last-buffer      ; Last active buffer
   active-diffs     ; Hash table of active diffs
   original-tab     ; Original tab-bar tab where Claude was opened
-  cli-pid)         ; PID of the connected CLI process
+  cli-pid          ; PID of the connected CLI process
+  auth-token)      ; Secret a client must present to connect
 
 (defun claude-code-ide-mcp--get-buffer-project ()
   "Get the project directory for the current buffer.
@@ -234,21 +251,31 @@ used session."
   "Return the lockfile path for PORT."
   (format "%s%d.lock" (claude-code-ide-mcp--lockfile-directory) port))
 
-(defun claude-code-ide-mcp--create-lockfile (port project-dir)
-  "Create a lockfile for PORT with server information for PROJECT-DIR."
+(defun claude-code-ide-mcp--create-lockfile (port project-dir &optional auth-token)
+  "Create a lockfile for PORT with server information for PROJECT-DIR.
+AUTH-TOKEN, when non-nil, is recorded as the token clients must present.
+The lockfile is readable only by the current user, since it may hold
+that secret."
   (let* ((lockfile-dir (claude-code-ide-mcp--lockfile-directory))
          (lockfile-path (claude-code-ide-mcp--lockfile-path port))
          (workspace-folders (vector project-dir))
          (lockfile-content `((pid . ,(emacs-pid))
                              (workspaceFolders . ,workspace-folders)
                              (ideName . "Emacs")
-                             (transport . "ws"))))
+                             (transport . "ws")
+                             ,@(when auth-token
+                                 `((authToken . ,auth-token))))))
     ;; Ensure directory exists
-    (make-directory lockfile-dir t)
+    (with-file-modes #o700
+      (make-directory lockfile-dir t))
     ;; Write lockfile directly without temp file
     (condition-case err
-        (with-temp-file lockfile-path
-          (insert (json-encode lockfile-content)))
+        (with-file-modes #o600
+          (with-temp-file lockfile-path
+            (insert (json-encode lockfile-content)))
+          ;; A lockfile left over from an earlier session keeps its old
+          ;; modes, so set them explicitly
+          (set-file-modes lockfile-path #o600))
       (error
        (claude-code-ide-debug "Failed to create lockfile: %s" err)
        (signal 'mcp-error (list (format "Failed to create lockfile: %s" (error-message-string err))))))))
@@ -528,6 +555,109 @@ socket that sent the request — or be dropped, never to its successor."
        (t
         (claude-code-ide-debug "No response needed for notification: %s" method))))))
 
+;;; Authentication
+
+(defconst claude-code-ide-mcp--max-handshake-size 16384
+  "Largest opening handshake accepted from a WebSocket client, in bytes.")
+
+(defun claude-code-ide-mcp--random-bytes (n)
+  "Return a unibyte string of N random bytes.
+Reads the system CSPRNG when available, otherwise derives the bytes
+from a freshly seeded `random'."
+  (or (ignore-errors
+        (with-temp-buffer
+          (set-buffer-multibyte nil)
+          (let ((coding-system-for-read 'binary))
+            (insert-file-contents-literally "/dev/urandom" nil 0 n))
+          (when (= (buffer-size) n)
+            (buffer-string))))
+      (progn
+        (random t)
+        (let ((bytes (secure-hash
+                      'sha256
+                      (format "%S" (list (current-time) (emacs-pid)
+                                         (random) (random) (random) (random)))
+                      nil nil t)))
+          (substring bytes 0 (min n (length bytes)))))))
+
+(defun claude-code-ide-mcp--generate-auth-token ()
+  "Return a new random authentication token (128 bits, hex encoded)."
+  (mapconcat (lambda (byte) (format "%02x" byte))
+             (claude-code-ide-mcp--random-bytes 16) ""))
+
+(defun claude-code-ide-mcp--token-equal-p (a b)
+  "Return non-nil if the strings A and B are equal.
+Takes the same time wherever the first difference is, so a client
+cannot find the token one character at a time."
+  (and (stringp a) (stringp b)
+       (= (length a) (length b))
+       (let ((diff 0))
+         (dotimes (i (length a))
+           (setq diff (logior diff (logxor (aref a i) (aref b i)))))
+         (zerop diff))))
+
+(defun claude-code-ide-mcp--handshake-header (headers name)
+  "Return the value of header NAME in the HTTP HEADERS string, or nil."
+  (let ((case-fold-search t))
+    (when (string-match (concat "^" (regexp-quote name) ":[ \t]*\\([^\r\n]*\\)")
+                        headers)
+      (string-trim (match-string 1 headers)))))
+
+(defun claude-code-ide-mcp--handshake-rejection (session headers)
+  "Return why the opening handshake HEADERS must be refused for SESSION.
+The value is an HTTP status line, or nil if the client may connect."
+  (let ((token (claude-code-ide-mcp-session-auth-token session)))
+    (cond
+     ;; Browsers always send an Origin; the CLI never does
+     ((claude-code-ide-mcp--handshake-header headers "Origin")
+      "403 Forbidden")
+     ((not (claude-code-ide-mcp--token-equal-p
+            token
+            (claude-code-ide-mcp--handshake-header
+             headers "x-claude-code-ide-authorization")))
+      "401 Unauthorized"))))
+
+(defun claude-code-ide-mcp--reject-connection (proc status)
+  "Answer the client connection PROC with the HTTP STATUS line and close it."
+  (message "Claude Code IDE: refused a WebSocket connection (%s)" status)
+  ;; The close is reported to the session too, but
+  ;; `claude-code-ide-mcp--on-close' ignores sockets that are not its
+  ;; client, so the connected CLI is unaffected
+  (ignore-errors
+    (process-send-string
+     proc (format "HTTP/1.1 %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                  status)))
+  (delete-process proc))
+
+(defun claude-code-ide-mcp--server-filter (session proc string)
+  "Process filter for client connection PROC of SESSION's server.
+STRING is the data received.  The opening handshake of a connection is
+held back until it is complete and only handed to
+`websocket-server-filter' once `claude-code-ide-mcp--handshake-rejection'
+accepts it; everything after that goes straight through."
+  (when claude-code-ide-debug
+    (if (string-match-p "^[[:print:][:space:]]+$" string)
+        (claude-code-ide-debug "Server received text data: %S" string)
+      (claude-code-ide-debug "Server received binary frame (%d bytes)" (length string))))
+  (if (or (not claude-code-ide-mcp-require-auth-token)
+          (process-get proc 'claude-code-ide-authorized))
+      (websocket-server-filter proc string)
+    (let* ((pending (concat (process-get proc 'claude-code-ide-handshake) string))
+           (end (string-search "\r\n\r\n" pending)))
+      (cond
+       (end
+        (process-put proc 'claude-code-ide-handshake nil)
+        (if-let* ((status (claude-code-ide-mcp--handshake-rejection
+                           session (substring pending 0 end))))
+            (claude-code-ide-mcp--reject-connection proc status)
+          (process-put proc 'claude-code-ide-authorized t)
+          (websocket-server-filter proc pending)))
+       ((> (length pending) claude-code-ide-mcp--max-handshake-size)
+        (claude-code-ide-mcp--reject-connection
+         proc "431 Request Header Fields Too Large"))
+       (t
+        (process-put proc 'claude-code-ide-handshake pending))))))
+
 ;;; WebSocket Server
 
 
@@ -560,15 +690,14 @@ Returns a cons cell (SERVER . PORT)."
                                                          (claude-code-ide-mcp--on-close session ws))
                                              :on-ping #'claude-code-ide-mcp--on-ping
                                              :protocol '("mcp"))))
-                             ;; Add debug filter to see raw data (only if debugging)
-                             (when (and ws-server claude-code-ide-debug)
+                             ;; Client connections inherit the server's
+                             ;; filter: authenticate them before
+                             ;; websocket.el completes the handshake
+                             (when (processp ws-server)
                                (set-process-filter ws-server
                                                    (lambda (proc string)
-                                                     ;; Only log if it looks like text (not binary WebSocket frames)
-                                                     (if (string-match-p "^[[:print:][:space:]]+$" string)
-                                                         (claude-code-ide-debug "Server received text data: %S" string)
-                                                       (claude-code-ide-debug "Server received binary frame (%d bytes)" (length string)))
-                                                     (websocket-server-filter proc string))))
+                                                     (claude-code-ide-mcp--server-filter
+                                                      session proc string))))
                              ws-server))
                        (error
                         (claude-code-ide-debug "Failed to bind to port %d: %s" port err)
@@ -887,7 +1016,9 @@ concurrent sessions.  Returns the session object."
                    :deferred (make-hash-table :test 'equal)
                    :active-diffs (make-hash-table :test 'equal)
                    :original-tab (when (fboundp 'tab-bar--current-tab)
-                                   (tab-bar--current-tab))))
+                                   (tab-bar--current-tab))
+                   :auth-token (when claude-code-ide-mcp-require-auth-token
+                                 (claude-code-ide-mcp--generate-auth-token))))
          (server-and-port (claude-code-ide-mcp--find-free-port session))
          (server (car server-and-port))
          (port (cdr server-and-port)))
@@ -902,7 +1033,8 @@ concurrent sessions.  Returns the session object."
     (claude-code-ide-debug "Project directory: %s" project-dir)
     (claude-code-ide-debug "Creating lockfile for port %d" port)
     (condition-case err
-        (claude-code-ide-mcp--create-lockfile port project-dir)
+        (claude-code-ide-mcp--create-lockfile
+         port project-dir (claude-code-ide-mcp-session-auth-token session))
       ((error quit)
        (ignore-errors (websocket-server-close server))
        (signal (car err) (cdr err))))
