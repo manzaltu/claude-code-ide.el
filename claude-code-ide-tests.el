@@ -3874,6 +3874,226 @@ and pruning drops entries whose tab no longer exists."
             (should (memq other cleaned))))
       (claude-code-ide-tests--clear-processes))))
 
+;;; Authentication Tests
+
+(defmacro claude-code-ide-tests--with-temp-lockfile-dir (&rest body)
+  "Run BODY with lockfiles written to a fresh temporary directory."
+  (declare (indent 0))
+  (let ((dir (make-symbol "dir")))
+    `(let ((,dir (file-name-as-directory (make-temp-file "claude-ide-lock" t))))
+       (cl-letf (((symbol-function 'claude-code-ide-mcp--lockfile-directory)
+                  (lambda () ,dir)))
+         (unwind-protect
+             (progn ,@body)
+           (delete-directory ,dir t))))))
+
+(defconst claude-code-ide-tests--handshake
+  (concat "GET / HTTP/1.1\r\n"
+          "Host: 127.0.0.1\r\n"
+          "Upgrade: websocket\r\n"
+          "Connection: Upgrade\r\n"
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+          "Sec-WebSocket-Version: 13\r\n"
+          "Sec-WebSocket-Protocol: mcp\r\n")
+  "Opening handshake of a WebSocket client, without the final blank line.")
+
+(ert-deftest claude-code-ide-test-auth-token-generation ()
+  "Tokens are 128-bit hex strings, fresh on every call."
+  (require 'claude-code-ide-mcp)
+  (let ((a (claude-code-ide-mcp--generate-auth-token))
+        (b (claude-code-ide-mcp--generate-auth-token)))
+    (should (string-match-p "\\`[0-9a-f]\\{32\\}\\'" a))
+    (should (string-match-p "\\`[0-9a-f]\\{32\\}\\'" b))
+    (should-not (equal a b)))
+  ;; Without /dev/urandom the fallback still yields a full token
+  (cl-letf (((symbol-function 'insert-file-contents-literally)
+             (lambda (&rest _) (error "No such file"))))
+    (let ((a (claude-code-ide-mcp--generate-auth-token))
+          (b (claude-code-ide-mcp--generate-auth-token)))
+      (should (string-match-p "\\`[0-9a-f]\\{32\\}\\'" a))
+      (should-not (equal a b)))))
+
+(ert-deftest claude-code-ide-test-auth-token-equal ()
+  "Token comparison matches only identical strings."
+  (require 'claude-code-ide-mcp)
+  (should (claude-code-ide-mcp--token-equal-p "abc123" "abc123"))
+  (should-not (claude-code-ide-mcp--token-equal-p "abc123" "abc124"))
+  (should-not (claude-code-ide-mcp--token-equal-p "abc123" "abc12"))
+  (should-not (claude-code-ide-mcp--token-equal-p "abc123" nil))
+  (should-not (claude-code-ide-mcp--token-equal-p nil nil)))
+
+(ert-deftest claude-code-ide-test-handshake-header ()
+  "Header lookup is case-insensitive and trims the value."
+  (require 'claude-code-ide-mcp)
+  (let ((headers (concat claude-code-ide-tests--handshake
+                         "X-Claude-Code-IDE-Authorization:   secret  ")))
+    (should (equal (claude-code-ide-mcp--handshake-header
+                    headers "x-claude-code-ide-authorization")
+                   "secret"))
+    (should (equal (claude-code-ide-mcp--handshake-header headers "upgrade")
+                   "websocket"))
+    (should-not (claude-code-ide-mcp--handshake-header headers "Origin"))))
+
+(ert-deftest claude-code-ide-test-handshake-rejection ()
+  "Only a handshake with the session token and no Origin is accepted."
+  (require 'claude-code-ide-mcp)
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (let ((session (claude-code-ide-tests--make-session
+                      "/tmp/claude-auth/" :auth-token "secret"))
+            (base claude-code-ide-tests--handshake))
+        (should-not (claude-code-ide-mcp--handshake-rejection
+                     session (concat base "x-claude-code-ide-authorization: secret")))
+        (should (equal (claude-code-ide-mcp--handshake-rejection session base)
+                       "401 Unauthorized"))
+        (should (equal (claude-code-ide-mcp--handshake-rejection
+                        session (concat base "x-claude-code-ide-authorization: wrong"))
+                       "401 Unauthorized"))
+        ;; A browser page can never pass, even with the right token
+        (should (equal (claude-code-ide-mcp--handshake-rejection
+                        session (concat base "x-claude-code-ide-authorization: secret\r\n"
+                                        "Origin: https://example.com"))
+                       "403 Forbidden")))
+    (claude-code-ide-tests--clear-processes)))
+
+(ert-deftest claude-code-ide-test-lockfile-auth-token ()
+  "The lockfile carries the token and is readable only by its owner."
+  (require 'claude-code-ide-mcp)
+  (claude-code-ide-tests--with-temp-lockfile-dir
+   (claude-code-ide-mcp--create-lockfile 12345 "/tmp/claude-auth/" "secret")
+   (let ((path (claude-code-ide-mcp--lockfile-path 12345)))
+     (should (equal (alist-get 'authToken (json-read-file path)) "secret"))
+     (should (equal (alist-get 'ideName (json-read-file path)) "Emacs"))
+     (should (= (file-modes path) #o600)))
+   ;; A leftover lockfile with looser modes is tightened
+   (let ((path (claude-code-ide-mcp--lockfile-path 12346)))
+     (with-temp-file path (insert "{}"))
+     (set-file-modes path #o644)
+     (claude-code-ide-mcp--create-lockfile 12346 "/tmp/claude-auth/" "secret")
+     (should (= (file-modes path) #o600)))
+   ;; Without a token the field is left out
+   (claude-code-ide-mcp--create-lockfile 12347 "/tmp/claude-auth/")
+   (should-not (alist-get 'authToken (json-read-file
+                                      (claude-code-ide-mcp--lockfile-path 12347))))))
+
+(ert-deftest claude-code-ide-test-server-filter-authentication ()
+  "The server filter passes on only authenticated handshakes."
+  (require 'claude-code-ide-mcp)
+  (claude-code-ide-tests--clear-processes)
+  (let* ((session (claude-code-ide-tests--make-session
+                   "/tmp/claude-auth/" :auth-token "secret"))
+         (claude-code-ide-mcp-require-auth-token t)
+         (passed nil)
+         (make-client (lambda ()
+                        (make-pipe-process :name "claude-auth-test" :noquery t))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'websocket-server-filter)
+                   (lambda (_proc string) (push string passed)))
+                  ((symbol-function 'message) #'ignore))
+          ;; Authorized, with the handshake split over two chunks
+          (let ((proc (funcall make-client))
+                (handshake (concat claude-code-ide-tests--handshake
+                                   "x-claude-code-ide-authorization: secret\r\n\r\n")))
+            (claude-code-ide-mcp--server-filter session proc (substring handshake 0 40))
+            (should-not passed)
+            (claude-code-ide-mcp--server-filter session proc (substring handshake 40))
+            (should (equal passed (list handshake)))
+            ;; Frames after the handshake go straight through
+            (claude-code-ide-mcp--server-filter session proc "frame")
+            (should (equal passed (list "frame" handshake)))
+            (should (process-live-p proc))
+            (delete-process proc))
+          ;; Wrong token, browser origin, oversized handshake: closed unseen
+          (dolist (data (list (concat claude-code-ide-tests--handshake
+                                      "x-claude-code-ide-authorization: wrong\r\n\r\n")
+                              (concat claude-code-ide-tests--handshake
+                                      "x-claude-code-ide-authorization: secret\r\n"
+                                      "Origin: https://example.com\r\n\r\n")
+                              (make-string (1+ claude-code-ide-mcp--max-handshake-size) ?a)))
+            (setq passed nil)
+            (let ((proc (funcall make-client)))
+              (claude-code-ide-mcp--server-filter session proc data)
+              (should-not passed)
+              (should-not (process-live-p proc))))
+          ;; With the check disabled everything goes through
+          (let ((claude-code-ide-mcp-require-auth-token nil)
+                (proc (funcall make-client)))
+            (setq passed nil)
+            (claude-code-ide-mcp--server-filter session proc claude-code-ide-tests--handshake)
+            (should (equal passed (list claude-code-ide-tests--handshake)))
+            (delete-process proc)))
+      (claude-code-ide-tests--clear-processes))))
+
+(defun claude-code-ide-tests--raw-handshake (port extra-headers &optional keep)
+  "Send a WebSocket handshake with EXTRA-HEADERS to 127.0.0.1:PORT.
+Return the status line of the server's answer, or nil if none came.
+With KEEP, leave the connection open and return (STATUS . PROCESS)."
+  (let* ((reply "")
+         (proc (make-network-process
+                :name "claude-auth-client" :host "127.0.0.1" :service port
+                :coding 'binary :noquery t
+                :filter (lambda (_proc string) (setq reply (concat reply string)))))
+         (status nil))
+    (unwind-protect
+        (progn
+          (process-send-string proc (concat claude-code-ide-tests--handshake
+                                            extra-headers "\r\n"))
+          (with-timeout (5 nil)
+            (while (not (string-search "\r\n" reply))
+              (accept-process-output nil 0.05)))
+          ;; Let the server finish handling the connection
+          (accept-process-output nil 0.1)
+          (setq status (car (split-string reply "\r\n" t))))
+      (unless keep
+        (delete-process proc)))
+    (if keep (cons status proc) status)))
+
+(ert-deftest claude-code-ide-test-server-rejects-unauthenticated-clients ()
+  "Over a real socket only a client with the lockfile token connects."
+  (skip-unless (fboundp 'websocket-server-accept)) ; needs the real websocket.el
+  (require 'claude-code-ide-mcp)
+  (claude-code-ide-tests--clear-processes)
+  (let ((claude-code-ide-mcp-require-auth-token t)
+        (session nil))
+    (claude-code-ide-tests--with-temp-lockfile-dir
+     (unwind-protect
+         (cl-letf (((symbol-function 'message) #'ignore))
+           (setq session (claude-code-ide-mcp-create-session "/tmp/claude-auth/" "auth-1"))
+           (let* ((port (claude-code-ide-mcp-session-port session))
+                  (token (alist-get 'authToken (json-read-file
+                                                (claude-code-ide-mcp--lockfile-path port))))
+                  (good nil))
+             (should (equal token (claude-code-ide-mcp-session-auth-token session)))
+             (should (string-prefix-p "HTTP/1.1 401"
+                                      (claude-code-ide-tests--raw-handshake port "")))
+             (should (string-prefix-p "HTTP/1.1 401"
+                                      (claude-code-ide-tests--raw-handshake
+                                       port "x-claude-code-ide-authorization: wrong\r\n")))
+             (should (string-prefix-p "HTTP/1.1 403"
+                                      (claude-code-ide-tests--raw-handshake
+                                       port (format "x-claude-code-ide-authorization: %s\r\nOrigin: https://example.com\r\n"
+                                                    token))))
+             ;; None of them became the session's client
+             (should-not (claude-code-ide-mcp-session-client session))
+             (unwind-protect
+                 (let ((client nil))
+                   (setq good (claude-code-ide-tests--raw-handshake
+                               port (format "x-claude-code-ide-authorization: %s\r\n" token)
+                               t))
+                   (should (string-prefix-p "HTTP/1.1 101" (car good)))
+                   (setq client (claude-code-ide-mcp-session-client session))
+                   (should client)
+                   ;; A refused connection leaves the connected client alone
+                   (should (string-prefix-p "HTTP/1.1 401"
+                                            (claude-code-ide-tests--raw-handshake port "")))
+                   (should (eq (claude-code-ide-mcp-session-client session) client)))
+               (when good
+                 (delete-process (cdr good))))))
+       (when session
+         (claude-code-ide-mcp--stop-session session))
+       (claude-code-ide-tests--stop-all-sessions)
+       (claude-code-ide-tests--clear-processes)))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
