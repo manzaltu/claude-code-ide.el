@@ -588,6 +588,8 @@ from the window where it was initially created."
       (when-let* ((proc (get-buffer-process buffer)))
         (let ((height (window-body-height window))
               (width (window-body-width window)))
+          ;; Keep the reflow filter's cache in step with this direct resize
+          (process-put proc 'claude-code-ide-reflow-width width)
           (if (eq claude-code-ide-terminal-backend 'ghostel)
               (progn
                 (when (fboundp 'ghostel--window-adjust-process-window-size)
@@ -656,20 +658,13 @@ its name, so custom naming schemes are recognized as well."
 (defun claude-code-ide--terminal-reflow-filter (original-fn &rest args)
   "Filter terminal reflows to prevent height-only resize triggers.
 This wraps ORIGINAL-FN to suppress reflow signals unless the terminal
-width has actually changed, working around the scrolling glitch."
-  (let* ((base-result (apply original-fn args))
-         (dimensions-stable t))
-    ;; Examine each window showing a Claude session
-    (dolist (win (window-list))
-      (when-let* ((buf (window-buffer win))
-                  ((claude-code-ide--session-buffer-p buf)))
-        (let* ((new-width (window-width win))
-               (cached-width (window-parameter win 'claude-code-ide-cached-width)))
-          ;; Width change detected
-          (unless (eql new-width cached-width)
-            (setq dimensions-stable nil)
-            (set-window-parameter win 'claude-code-ide-cached-width new-width)))))
-    ;; Decide whether to allow reflow
+width has actually changed, working around the scrolling glitch.
+
+ARGS are the PROCESS and WINDOWS passed to the resize handler.  The
+last width sent to each process is cached on the process itself, so
+resizing one session never marks another session's width as seen."
+  (let ((base-result (apply original-fn args))
+        (process (car args)))
     (cond
      ;; Not in a Claude buffer - pass through
      ((not (claude-code-ide--session-buffer-p (current-buffer)))
@@ -677,8 +672,13 @@ width has actually changed, working around the scrolling glitch."
      ;; In scroll mode - suppress reflow
      ((claude-code-ide--terminal-scroll-mode-active-p)
       nil)
-     ;; Dimensions changed - allow reflow
-     ((not dimensions-stable)
+     ;; No size to send - nothing to filter
+     ((not (and (processp process) (consp base-result)))
+      base-result)
+     ;; Width changed for this process - allow reflow
+     ((not (eql (car base-result)
+                (process-get process 'claude-code-ide-reflow-width)))
+      (process-put process 'claude-code-ide-reflow-width (car base-result))
       base-result)
      ;; No width change - suppress reflow
      (t nil))))

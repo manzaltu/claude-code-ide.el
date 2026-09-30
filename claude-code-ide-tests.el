@@ -1358,6 +1358,102 @@ next toggle, independent of which project the instances belong to."
         (claude-code-ide--cli-available nil))
     (should-error (claude-code-ide) :type 'user-error)))
 
+;;; Reflow Filter Tests
+
+(defmacro claude-code-ide-tests--with-reflow-sessions (bindings &rest body)
+  "Run BODY with fake session buffers and processes.
+BINDINGS is a list of (BUFFER-VAR PROCESS-VAR) pairs; each buffer is
+marked as a Claude session and owns a pipe process."
+  (declare (indent 1))
+  `(let (,@(mapcan (lambda (b)
+                     (list `(,(car b) (generate-new-buffer "*claude-reflow*"))
+                           (cadr b)))
+                   bindings))
+     (unwind-protect
+         (progn
+           ,@(mapcar (lambda (b)
+                       `(progn
+                          (with-current-buffer ,(car b)
+                            (setq-local claude-code-ide--session 'fake-session))
+                          (setq ,(cadr b)
+                                (make-pipe-process :name "claude-reflow"
+                                                   :buffer ,(car b)
+                                                   :noquery t))))
+                     bindings)
+           ,@body)
+       ,@(mapcan (lambda (b)
+                   (list `(when (process-live-p ,(cadr b))
+                            (delete-process ,(cadr b)))
+                         `(kill-buffer ,(car b))))
+                 bindings))))
+
+(defun claude-code-ide-tests--reflow (buffer process width height)
+  "Run the reflow filter in BUFFER for PROCESS at WIDTH x HEIGHT."
+  (with-current-buffer buffer
+    (claude-code-ide--terminal-reflow-filter
+     (lambda (_process _windows) (cons width height))
+     process nil)))
+
+(ert-deftest claude-code-ide-test-reflow-filter-width-change ()
+  "The reflow filter passes width changes and suppresses height-only ones."
+  (let ((claude-code-ide-terminal-backend 'vterm))
+    (claude-code-ide-tests--with-reflow-sessions ((buf proc))
+                                                 ;; First size is always sent
+                                                 (should (equal (claude-code-ide-tests--reflow buf proc 80 24) '(80 . 24)))
+                                                 ;; Same width - suppressed
+                                                 (should-not (claude-code-ide-tests--reflow buf proc 80 24))
+                                                 ;; Height-only change - suppressed
+                                                 (should-not (claude-code-ide-tests--reflow buf proc 80 40))
+                                                 ;; Width change - sent
+                                                 (should (equal (claude-code-ide-tests--reflow buf proc 120 40) '(120 . 40))))))
+
+(ert-deftest claude-code-ide-test-reflow-filter-sessions-independent ()
+  "Resizing one session does not hide a width change from another.
+Regression test: the cache used to be shared through window
+parameters, so the first session adjusted would record every
+session's new width and the others' resizes were dropped."
+  (let ((claude-code-ide-terminal-backend 'vterm))
+    (claude-code-ide-tests--with-reflow-sessions ((buf-a proc-a) (buf-b proc-b))
+                                                 (should (claude-code-ide-tests--reflow buf-a proc-a 168 58))
+                                                 (should (claude-code-ide-tests--reflow buf-b proc-b 168 58))
+                                                 ;; Both windows narrow; each process must still get its new width
+                                                 (should (equal (claude-code-ide-tests--reflow buf-a proc-a 139 58) '(139 . 58)))
+                                                 (should (equal (claude-code-ide-tests--reflow buf-b proc-b 139 58) '(139 . 58))))))
+
+(ert-deftest claude-code-ide-test-reflow-filter-scroll-mode ()
+  "Resizes in scroll mode are suppressed without updating the cache."
+  (let ((claude-code-ide-terminal-backend 'vterm))
+    (claude-code-ide-tests--with-reflow-sessions ((buf proc))
+                                                 (should (claude-code-ide-tests--reflow buf proc 80 24))
+                                                 (with-current-buffer buf
+                                                   (setq-local vterm-copy-mode t))
+                                                 (should-not (claude-code-ide-tests--reflow buf proc 100 24))
+                                                 (with-current-buffer buf
+                                                   (setq-local vterm-copy-mode nil))
+                                                 ;; The width change seen during scroll mode is still sent afterwards
+                                                 (should (equal (claude-code-ide-tests--reflow buf proc 100 24) '(100 . 24))))))
+
+(ert-deftest claude-code-ide-test-reflow-filter-non-session-buffer ()
+  "Buffers that are not Claude sessions pass through unfiltered."
+  (let ((buf (generate-new-buffer "*not-claude*")))
+    (unwind-protect
+        (progn
+          (should (equal (claude-code-ide-tests--reflow buf nil 80 24) '(80 . 24)))
+          (should (equal (claude-code-ide-tests--reflow buf nil 80 24) '(80 . 24))))
+      (kill-buffer buf))))
+
+(ert-deftest claude-code-ide-test-sync-terminal-dimensions-updates-reflow-cache ()
+  "A direct dimension sync records the width for the reflow filter.
+Otherwise a later resize back to the previously cached width would be
+suppressed while the terminal still has the synced width."
+  (let ((claude-code-ide-terminal-backend 'vterm))
+    (claude-code-ide-tests--with-reflow-sessions ((buf proc))
+                                                 (let ((window (selected-window)))
+                                                   (set-window-buffer window buf)
+                                                   (claude-code-ide--sync-terminal-dimensions buf window)
+                                                   (should (eql (process-get proc 'claude-code-ide-reflow-width)
+                                                                (window-body-width window)))))))
+
 ;;; Run all tests
 
 (ert-deftest claude-code-ide-test-tab-bar-tracking ()
