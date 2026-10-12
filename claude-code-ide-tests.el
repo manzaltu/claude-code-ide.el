@@ -2598,6 +2598,52 @@ sibling instance."
       (delete-file test-file)
       (claude-code-ide-mcp-server-unregister-session session-id))))
 
+(cl-defmethod xref-backend-identifier-at-point
+  ((_backend (eql claude-code-ide-test-point-backend)))
+  "Mimic eglot, which returns a placeholder instead of a name."
+  "identifier at point")
+
+(cl-defmethod xref-backend-references
+  ((_backend (eql claude-code-ide-test-point-backend)) _identifier)
+  "Mimic an LSP backend: ignore the identifier and use the symbol at point."
+  (list (thing-at-point 'symbol t)))
+
+(ert-deftest claude-code-ide-emacs-tools-test-find-identifier ()
+  "Test locating an identifier, skipping comments, strings and substrings."
+  (require 'claude-code-ide-emacs-tools)
+  (with-temp-buffer
+    (c-mode)
+    (insert "/* bar */\n"
+            "char *s = \"bar\";\n"
+            "int barrel(void) { return 0; }\n"
+            "int bar(void) { return 2; }\n")
+    (let ((pos (claude-code-ide-mcp--find-identifier "bar")))
+      (should pos)
+      (should (= (line-number-at-pos pos) 4)))
+    (should-not (claude-code-ide-mcp--find-identifier "baz"))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-xref-references-uses-identifier ()
+  "Test that position-based backends are asked about the requested identifier."
+  (require 'claude-code-ide-emacs-tools)
+  (with-temp-buffer
+    (c-mode)
+    (insert "int foo(void) { return 1; }\n"
+            "int bar(void) { return 2; }\n"
+            "int main(void) { return foo() + bar(); }\n")
+    ;; Point on foo, as when the target buffer was left there.
+    (goto-char (point-min))
+    (search-forward "fo")
+    (let ((start (point)))
+      (should (equal (claude-code-ide-mcp--xref-references
+                      'claude-code-ide-test-point-backend "bar")
+                     '("bar")))
+      ;; Point is restored.
+      (should (= (point) start))
+      ;; An identifier not in the buffer is passed through unchanged.
+      (should (equal (claude-code-ide-mcp--xref-references
+                      'claude-code-ide-test-point-backend "baz")
+                     '("foo"))))))
+
 (ert-deftest claude-code-ide-emacs-tools-test-imenu-nested-symbols ()
   "Test imenu-list-symbols with nested symbol structures."
   (require 'claude-code-ide-emacs-tools)

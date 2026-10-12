@@ -42,6 +42,34 @@
 
 ;;; Tool Functions
 
+(defun claude-code-ide-mcp--find-identifier (identifier)
+  "Return the start of the first code occurrence of IDENTIFIER, or nil.
+Searches the current buffer for IDENTIFIER as a whole symbol,
+skipping occurrences inside strings and comments."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((regexp (concat "\\_<" (regexp-quote identifier) "\\_>"))
+          found)
+      (while (and (not found) (re-search-forward regexp nil t))
+        ;; `syntax-ppss' moves point, so keep the search position.
+        (unless (save-excursion (nth 8 (syntax-ppss (match-beginning 0))))
+          (setq found (match-beginning 0))))
+      found)))
+
+(defun claude-code-ide-mcp--xref-references (backend identifier)
+  "Return BACKEND's references to IDENTIFIER in the current buffer.
+LSP backends such as eglot and lsp-mode answer reference requests for
+the symbol at point and ignore a plain identifier string, so move point
+to an occurrence of IDENTIFIER and ask BACKEND for the identifier there.
+Fall back to IDENTIFIER itself when it does not occur in the buffer."
+  (save-excursion
+    (if-let* ((pos (claude-code-ide-mcp--find-identifier identifier)))
+        (progn
+          (goto-char pos)
+          (xref-backend-references
+           backend (or (xref-backend-identifier-at-point backend) identifier)))
+      (xref-backend-references backend identifier))))
+
 (defun claude-code-ide-mcp-xref-find-references (identifier file-path)
   "Find references to IDENTIFIER in the current session's project.
 FILE-PATH specifies which file's buffer context to use for the search.
@@ -57,7 +85,8 @@ This function uses the session context to operate in the correct project."
               (let ((backend (xref-find-backend)))
                 (if (not backend)
                     (format "No xref backend available for %s" file-path)
-                  (let ((xref-items (xref-backend-references backend identifier-str)))
+                  (let ((xref-items (claude-code-ide-mcp--xref-references
+                                     backend identifier-str)))
                     (if xref-items
                         (mapcar (lambda (item)
                                   (let* ((location (xref-item-location item))
