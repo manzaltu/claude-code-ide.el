@@ -1086,6 +1086,7 @@ windows while the hook runs would call the hook again."
              (eq claude-code-ide-side-window-scope 'project)
              (not claude-code-ide--swapping-side-windows))
     (let* ((buffer (window-buffer (selected-window)))
+           (frame (window-frame (selected-window)))
            (session (claude-code-ide--buffer-session buffer)))
       (when session
         (setq claude-code-ide--swapping-side-windows t)
@@ -1093,7 +1094,8 @@ windows while the hook runs would call the hook again."
          0 nil
          (lambda ()
            (unwind-protect
-               (progn
+               ;; Focus may have moved to another frame before the timer runs.
+               (with-selected-frame (if (frame-live-p frame) frame (selected-frame))
                  (claude-code-ide--hide-foreign-side-windows
                   (claude-code-ide-mcp-session-project-dir session))
                  (let ((window (get-buffer-window buffer)))
