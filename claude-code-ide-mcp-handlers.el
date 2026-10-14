@@ -52,6 +52,7 @@
 (defvar claude-code-ide-show-claude-window-in-ediff)
 (defvar claude-code-ide-focus-claude-after-ediff)
 (defvar claude-code-ide-switch-tab-on-ediff)
+(defvar claude-code-ide-ediff-frame)
 (defvar claude-code-ide-use-ide-diff)
 
 ;;; Tool Registry - Define variables first to ensure they're available
@@ -111,6 +112,29 @@ Returns a cons cell (buffer-A . buffer-B)."
              (fundamental-mode))))))
 
     (cons buffer-A buffer-B)))
+
+(defvar claude-code-ide-mcp--ediff-frame nil
+  "The dedicated diff frame used when `claude-code-ide-ediff-frame' is set.")
+
+(defun claude-code-ide-mcp--ediff-frame ()
+  "Return the dedicated diff frame, creating it if needed."
+  (unless (frame-live-p claude-code-ide-mcp--ediff-frame)
+    ;; A new frame shows the current buffer; a Claude one would pull its side windows in.
+    (with-current-buffer (get-buffer-create "*scratch*")
+      (setq claude-code-ide-mcp--ediff-frame (make-frame '((name . "ediff"))))))
+  claude-code-ide-mcp--ediff-frame)
+
+(defun claude-code-ide-mcp--maybe-delete-ediff-frame ()
+  "Delete the dedicated diff frame once it no longer shows an ediff."
+  (let ((frame claude-code-ide-mcp--ediff-frame))
+    (when (and (frame-live-p frame)
+               (cdr (frame-list))
+               (not (cl-some (lambda (window)
+                               (with-current-buffer (window-buffer window)
+                                 (derived-mode-p 'ediff-mode)))
+                             (window-list frame 'never))))
+      (delete-frame frame)
+      (setq claude-code-ide-mcp--ediff-frame nil))))
 
 (defun claude-code-ide-mcp--setup-diff-hooks (tab-name session saved-winconf)
   "Set up ediff hooks for TAB-NAME with SESSION and SAVED-WINCONF.
@@ -172,7 +196,8 @@ and the hook stays armed for ours."
                             (when saved-winconf
                               (condition-case nil
                                   (set-window-configuration saved-winconf)
-                                (error nil)))))))
+                                (error nil)))
+                            (run-at-time 0 nil #'claude-code-ide-mcp--maybe-delete-ediff-frame)))))
 
       ;; Jump to the first difference if there are any
       (ignore-errors (ediff-next-difference))
@@ -184,13 +209,17 @@ and the hook stays armed for ours."
         (when claude-code-ide-show-claude-window-in-ediff
           (when-let* ((claude-buffer (claude-code-ide-mcp-session-buffer session)))
             (when (buffer-live-p claude-buffer)
-              ;; Display Claude buffer in side window and save the window
-              (setq claude-window (claude-code-ide--display-buffer-in-side-window claude-buffer)))))
+              ;; Display Claude buffer in side window and save the window;
+              ;; with a dedicated diff frame it stays in its own frame instead
+              (setq claude-window (if claude-code-ide-ediff-frame
+                                      (get-buffer-window claude-buffer t)
+                                    (claude-code-ide--display-buffer-in-side-window claude-buffer))))))
 
         ;; Handle focus based on user preference
         (cond
          ;; If user wants Claude window focus and it's visible, select it
          ((and claude-code-ide-focus-claude-after-ediff claude-window)
+          (select-frame-set-input-focus (window-frame claude-window))
           (select-window claude-window))
          ;; Otherwise, restore the original window (which might be one of the ediff windows)
          (t
@@ -379,6 +408,7 @@ ARGUMENTS should contain:
 
     ;; Switch to original tab if we're on a different one (when configured)
     (when (and claude-code-ide-switch-tab-on-ediff
+               (not claude-code-ide-ediff-frame)
                (claude-code-ide-mcp-session-original-tab session))
       (let ((original-tab (claude-code-ide-mcp-session-original-tab session)))
         (when (and (fboundp 'tab-bar-mode)
@@ -394,7 +424,8 @@ ARGUMENTS should contain:
               (tab-bar-select-tab-by-name (alist-get 'name original-tab)))))))
 
     ;; Save current window configuration
-    (let* ((saved-winconf (current-window-configuration))
+    (let* ((saved-winconf (unless claude-code-ide-ediff-frame
+                            (current-window-configuration)))
            (buffers (claude-code-ide-mcp--create-diff-buffers
                      old-file-path new-file-contents tab-name))
            (buffer-A (car buffers))
@@ -426,6 +457,9 @@ ARGUMENTS should contain:
         ;; Start ediff
         (condition-case err
             (progn
+              (when claude-code-ide-ediff-frame
+                (select-frame-set-input-focus (claude-code-ide-mcp--ediff-frame))
+                (delete-other-windows))
               ;; Delete all side windows before starting ediff
               ;; This prevents "Cannot split side window" errors
               (dolist (window (window-list))
@@ -454,6 +488,7 @@ ARGUMENTS should contain:
            ;; Remove the hooks we added
            (remove-hook 'ediff-before-setup-hook before-setup-hook-fn)
            (remove-hook 'ediff-startup-hook startup-hook-fn)
+           (claude-code-ide-mcp--maybe-delete-ediff-frame)
            ;; Re-signal the error
            (signal (car err) (cdr err))))
 
@@ -564,7 +599,8 @@ lexically, and diff-info's stored session serves as a backstop."
           ;; This is a *New file: buffer that we created
           (kill-buffer buffer-A))
         ;; Remove from active diffs
-        (remhash tab-name active-diffs)))))
+        (remhash tab-name active-diffs)
+        (claude-code-ide-mcp--maybe-delete-ediff-frame)))))
 
 (defun claude-code-ide-mcp-handle-close-all-diff-tabs (_arguments &optional session)
   "Close all diff tabs/buffers belonging to SESSION only."

@@ -219,6 +219,14 @@ When nil, the current tab remains active when ediff is opened."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-ediff-frame nil
+  "Whether to show diffs in a dedicated frame named \"ediff\".
+When non-nil, ediff opens in that frame, which is created on demand and
+deleted once no ediff is left in it; the Claude Code window stays in its
+own frame.  When nil (default), ediff uses the selected frame."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-use-side-window t
   "Whether to display Claude Code in a side window.
 When non-nil (default), Claude Code opens in a dedicated side window
