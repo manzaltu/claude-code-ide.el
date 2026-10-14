@@ -340,6 +340,7 @@ If INCLUDE_CHILDREN is non-nil, include child nodes."
 ;; when it is not installed.
 (defvar lsp-mode)
 (defvar lsp-auto-guess-root)
+(defvar lsp--symbols-cache)
 (declare-function lsp "lsp-mode" (&optional arg))
 
 (defvar cci-ensure-lsp-timeout 10
@@ -362,7 +363,8 @@ Two gaps stop the xref tools from using lsp-mode when Claude asks:
 Start lsp-mode for files inside a project, guessing the root so no
 prompt blocks the request, and wait up to
 `cci-ensure-lsp-timeout' seconds for it to attach, since `lsp'
-returns before the server is ready.  Then fill the symbol cache."
+returns before the server is ready.  Then fill the symbol cache.
+Return non-nil when lsp-mode is active in that buffer."
   (let ((file (cadr args)))
     (when (and file (featurep 'lsp-mode))
       (with-current-buffer (or (find-buffer-visiting file)
@@ -377,9 +379,63 @@ returns before the server is ready.  Then fill the symbol cache."
               (accept-process-output nil 0.1))))
         (when (bound-and-true-p lsp-mode)
           (ignore-errors
-            (xref-backend-identifier-completion-table 'xref-lsp)))))))
+            (xref-backend-identifier-completion-table 'xref-lsp))
+          t)))))
 
-(advice-add 'claude-code-ide-mcp-xref-find-references :before #'cci-ensure-lsp)
+(defun cci--symbol-occurrence (name)
+  "Return the position of the first code occurrence of NAME, or nil.
+Matches NAME as a whole symbol in the current buffer and skips
+occurrences inside strings and comments."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((case-fold-search nil)
+          (regexp (concat "\\_<" (regexp-quote name) "\\_>"))
+          found)
+      (while (and (not found) (re-search-forward regexp nil t))
+        (let ((pos (match-beginning 0)))
+          ;; `syntax-ppss' leaves point at POS; keep the search moving forward.
+          (unless (save-excursion (nth 8 (syntax-ppss pos)))
+            (setq found pos))))
+      found)))
+
+(defun cci--workspace-definition-file (name)
+  "Return the file that defines NAME, according to the language server.
+Asks for workspace symbols matching NAME from the current buffer and
+keeps those whose name is exactly NAME.  Returns nil when there is no
+such symbol."
+  (let ((items (ignore-errors (xref-backend-apropos 'xref-lsp name)))
+        (exact (concat "\\(?:\\`\\|\\] \\)" (regexp-quote name) "\\'")))
+    (cl-some (lambda (item)
+               (when (string-match-p exact (xref-item-summary item))
+                 (xref-location-group (xref-item-location item))))
+             items)))
+
+(defun cci-resolve-reference-args (args)
+  "Prepare the arguments of the references tool, ARGS.
+ARGS are an identifier and the file path to search from.  After
+`cci-ensure-lsp', lsp-mode can resolve the identifier only if the
+file defines it.  For a file that merely uses it, record its first
+occurrence in the file so the lookup starts there; the language
+server follows a use back to its definition.  For a file that does
+not mention it, ask the language server which file defines it and
+search from that file instead.  Return ARGS, possibly with the file
+replaced."
+  (let ((name (car args))
+        (file (cadr args)))
+    (or (when (and (stringp name) (cci-ensure-lsp name file))
+          (with-current-buffer (find-buffer-visiting file)
+            (unless (assoc name lsp--symbols-cache)
+              (let ((pos (cci--symbol-occurrence name)))
+                (if pos
+                    (progn (push (cons name pos) lsp--symbols-cache) nil)
+                  (let ((def (cci--workspace-definition-file name)))
+                    (when (and def
+                               (not (file-equal-p def file))
+                               (cci-ensure-lsp name def))
+                      (cons name (cons def (cddr args))))))))))
+        args)))
+
+(advice-add 'claude-code-ide-mcp-xref-find-references :filter-args #'cci-resolve-reference-args)
 (advice-add 'claude-code-ide-mcp-xref-find-apropos :before #'cci-ensure-lsp)
 
 ;;; Tool Registration
