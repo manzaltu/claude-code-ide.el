@@ -334,6 +334,54 @@ If INCLUDE_CHILDREN is non-nil, include child nodes."
 
 ;;; Tool Configuration
 
+;;; LSP readiness for xref tools
+
+;; lsp-mode is optional.  These declarations keep the byte compiler quiet
+;; when it is not installed.
+(defvar lsp-mode)
+(defvar lsp-auto-guess-root)
+(declare-function lsp "lsp-mode" (&optional arg))
+
+(defvar cci-ensure-lsp-timeout 10
+  "Seconds `cci-ensure-lsp' waits for lsp-mode to attach after starting it.")
+
+(defun cci-ensure-lsp (&rest args)
+  "Make lsp-mode ready in the buffer of the file named in ARGS.
+ARGS are the arguments of an xref tool: an identifier or pattern,
+then the file path.  Does nothing unless lsp-mode is loaded.
+
+Two gaps stop the xref tools from using lsp-mode when Claude asks:
+
+- A buffer opened in the background never starts its language
+  server when the user's mode hook calls `lsp-deferred', because
+  that waits for the buffer to be shown in a window.
+- lsp-mode resolves an identifier passed as a plain string from a
+  per-buffer symbol cache, which only interactive completion fills.
+  Without it, references fail with \"Unable to find symbol\".
+
+Start lsp-mode for files inside a project, guessing the root so no
+prompt blocks the request, and wait up to
+`cci-ensure-lsp-timeout' seconds for it to attach, since `lsp'
+returns before the server is ready.  Then fill the symbol cache."
+  (let ((file (cadr args)))
+    (when (and file (featurep 'lsp-mode))
+      (with-current-buffer (or (find-buffer-visiting file)
+                               (find-file-noselect file))
+        (when (and (project-current nil)
+                   (not (bound-and-true-p lsp-mode)))
+          (let ((lsp-auto-guess-root t))
+            (lsp))
+          (let ((deadline (+ (float-time) cci-ensure-lsp-timeout)))
+            (while (and (not (bound-and-true-p lsp-mode))
+                        (< (float-time) deadline))
+              (accept-process-output nil 0.1))))
+        (when (bound-and-true-p lsp-mode)
+          (ignore-errors
+            (xref-backend-identifier-completion-table 'xref-lsp)))))))
+
+(advice-add 'claude-code-ide-mcp-xref-find-references :before #'cci-ensure-lsp)
+(advice-add 'claude-code-ide-mcp-xref-find-apropos :before #'cci-ensure-lsp)
+
 ;;; Tool Registration
 
 
