@@ -117,11 +117,17 @@ Returns a cons cell (buffer-A . buffer-B)."
   "The dedicated diff frame used when `claude-code-ide-ediff-frame' is set.")
 
 (defun claude-code-ide-mcp--ediff-frame ()
-  "Return the dedicated diff frame, creating it if needed."
+  "Return the dedicated diff frame, creating it if needed.
+A new frame takes the text size of the frame the diff is launched
+from, so the diff gets the same room as the code it came from."
   (unless (frame-live-p claude-code-ide-mcp--ediff-frame)
-    ;; A new frame shows the current buffer; a Claude one would pull its side windows in.
-    (with-current-buffer (get-buffer-create "*scratch*")
-      (setq claude-code-ide-mcp--ediff-frame (make-frame '((name . "ediff"))))))
+    (let ((source (selected-frame)))
+      ;; A new frame shows the current buffer; a Claude one would pull its side windows in.
+      (with-current-buffer (get-buffer-create "*scratch*")
+        (setq claude-code-ide-mcp--ediff-frame
+              (make-frame `((name . "ediff")
+                            (width . (text-pixels . ,(frame-text-width source)))
+                            (height . (text-pixels . ,(frame-text-height source)))))))))
   claude-code-ide-mcp--ediff-frame)
 
 (defun claude-code-ide-mcp--maybe-delete-ediff-frame ()
