@@ -114,33 +114,62 @@ Returns a cons cell (buffer-A . buffer-B)."
     (cons buffer-A buffer-B)))
 
 (defvar claude-code-ide-mcp--ediff-frame nil
-  "The dedicated diff frame used when `claude-code-ide-ediff-frame' is set.")
+  "The dedicated diff frame used last, when `claude-code-ide-ediff-frame' is set.")
 
-(defun claude-code-ide-mcp--ediff-frame ()
-  "Return the dedicated diff frame, creating it if needed.
-A new frame takes the text size of the frame the diff is launched
-from, so the diff gets the same room as the code it came from."
-  (unless (frame-live-p claude-code-ide-mcp--ediff-frame)
-    (let ((source (selected-frame)))
-      ;; A new frame shows the current buffer; a Claude one would pull its side windows in.
-      (with-current-buffer (get-buffer-create "*scratch*")
-        (setq claude-code-ide-mcp--ediff-frame
-              (make-frame `((name . "ediff")
-                            (width . (text-pixels . ,(frame-text-width source)))
-                            (height . (text-pixels . ,(frame-text-height source)))))))))
-  claude-code-ide-mcp--ediff-frame)
+(defvar claude-code-ide-mcp--ediff-frames (make-hash-table :test 'equal)
+  "The dedicated diff frames by label: one frame per project, named \"ediff <label>\".")
+
+(defun claude-code-ide-mcp--ediff-frame-label (dir)
+  "The frame label for the project at DIR.
+A ticket worktree gives its tickets: deal-3565-3568 is \"DEAL-3565 + 3568\",
+deal-2351-1-tests is \"DEAL-2351 1-tests\"; any other directory gives its name."
+  (let ((name (file-name-nondirectory (directory-file-name (expand-file-name dir)))))
+    (if (string-match "\\`deal-\\([0-9]\\{4\\}\\)\\(\\(?:-[0-9]\\{4\\}\\)*\\)\\(.*\\)\\'" name)
+        ;; take the groups before split-string and string-trim-left clobber the match data
+        (let* ((first (match-string 1 name))
+               (others (match-string 2 name))
+               (tail (match-string 3 name))
+               (more (split-string others "-" t))
+               (rest (string-trim-left tail "-")))
+          (concat "DEAL-" first
+                  (mapconcat (lambda (n) (concat " + " n)) more "")
+                  (if (string-empty-p rest) "" (concat " " rest))))
+      name)))
+
+(defun claude-code-ide-mcp--ediff-frame (&optional session label)
+  "Return the dedicated diff frame for SESSION, creating it if needed.
+The frame is named \"ediff <label>\" so that diffs of different tickets
+are told apart; LABEL comes from SESSION's project directory, or from
+`default-directory' when there is no session, unless given.  A new frame
+takes the text size of the frame the diff is launched from."
+  (let* ((dir (or (and session (claude-code-ide-mcp-session-project-dir session))
+                  default-directory))
+         (label (or label (claude-code-ide-mcp--ediff-frame-label dir)))
+         (frame (gethash label claude-code-ide-mcp--ediff-frames)))
+    (unless (frame-live-p frame)
+      (let ((source (selected-frame)))
+        ;; A new frame shows the current buffer; a Claude one would pull its side windows in.
+        (with-current-buffer (get-buffer-create "*scratch*")
+          (setq frame (make-frame `((name . ,(concat "ediff " label))
+                                    (width . (text-pixels . ,(frame-text-width source)))
+                                    (height . (text-pixels . ,(frame-text-height source)))))))
+        (puthash label frame claude-code-ide-mcp--ediff-frames)))
+    (setq claude-code-ide-mcp--ediff-frame frame)))
 
 (defun claude-code-ide-mcp--maybe-delete-ediff-frame ()
-  "Delete the dedicated diff frame once it no longer shows an ediff."
-  (let ((frame claude-code-ide-mcp--ediff-frame))
-    (when (and (frame-live-p frame)
-               (cdr (frame-list))
-               (not (cl-some (lambda (window)
-                               (with-current-buffer (window-buffer window)
-                                 (derived-mode-p 'ediff-mode)))
-                             (window-list frame 'never))))
-      (delete-frame frame)
-      (setq claude-code-ide-mcp--ediff-frame nil))))
+  "Delete every dedicated diff frame that no longer shows an ediff."
+  (maphash (lambda (label frame)
+             (when (and (frame-live-p frame)
+                        (cdr (frame-list))
+                        (not (cl-some (lambda (window)
+                                        (with-current-buffer (window-buffer window)
+                                          (derived-mode-p 'ediff-mode)))
+                                      (window-list frame 'never))))
+               (delete-frame frame)
+               (remhash label claude-code-ide-mcp--ediff-frames)
+               (when (eq frame claude-code-ide-mcp--ediff-frame)
+                 (setq claude-code-ide-mcp--ediff-frame nil))))
+           claude-code-ide-mcp--ediff-frames))
 
 (defun claude-code-ide-mcp--setup-diff-hooks (tab-name session saved-winconf)
   "Set up ediff hooks for TAB-NAME with SESSION and SAVED-WINCONF.
@@ -464,7 +493,7 @@ ARGUMENTS should contain:
         (condition-case err
             (progn
               (when claude-code-ide-ediff-frame
-                (select-frame-set-input-focus (claude-code-ide-mcp--ediff-frame))
+                (select-frame-set-input-focus (claude-code-ide-mcp--ediff-frame session))
                 (delete-other-windows))
               ;; Delete all side windows before starting ediff
               ;; This prevents "Cannot split side window" errors
