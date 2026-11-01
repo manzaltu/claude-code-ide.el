@@ -637,6 +637,38 @@ have completed before cleanup.  Waits up to 5 seconds."
         (kill-buffer terminal-buffer))
       (claude-code-ide-tests--clear-processes))))
 
+(ert-deftest claude-code-ide-test-running-p ()
+  "Test that only a live terminal process of the project counts as running."
+  (claude-code-ide-tests--clear-processes)
+  (let ((project-dir "/tmp/claude-running-p/")
+        (live-process (make-process :name "test-live"
+                                    :command '("sleep" "10")
+                                    :buffer nil))
+        (dead-process (make-process :name "test-dead"
+                                    :command '("true")
+                                    :buffer nil)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--get-working-directory)
+                   (lambda () project-dir)))
+          (while (process-live-p dead-process)
+            (accept-process-output dead-process 0.05))
+          (should-not (claude-code-ide-running-p))
+          ;; An instance whose terminal is not created yet, or has exited
+          (claude-code-ide-tests--make-session project-dir)
+          (claude-code-ide-tests--make-session project-dir
+                                               :process dead-process)
+          (should-not (claude-code-ide-running-p))
+          ;; A live instance of another project
+          (claude-code-ide-tests--make-session "/tmp/claude-running-p-other/"
+                                               :process live-process)
+          (should-not (claude-code-ide-running-p))
+          (claude-code-ide-tests--make-session project-dir
+                                               :process live-process)
+          (should (claude-code-ide-running-p)))
+      (when (process-live-p live-process)
+        (delete-process live-process))
+      (claude-code-ide-tests--clear-processes))))
+
 (ert-deftest claude-code-ide-test-terminal-session-creation ()
   "Test terminal session creation with both backends."
   (let ((mock-vterm-buffer nil)
