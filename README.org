@@ -154,6 +154,8 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 
 Commands that target one instance (stop, switch, send-prompt, insert-at-mentioned, clear-selection, escape, newline) resolve their target automatically: the Claude terminal you are in, the project's only instance, or its only visible one; beyond that, send-type commands use the most recently used instance (echoing the choice) while =claude-code-ide-stop= asks. A prefix argument (=C-u=) always lets you pick the instance explicitly.
 
+From Lisp, =(claude-code-ide-send-prompt PROMPT)= sends =PROMPT= to the instance chosen the same way, and =(claude-code-ide-running-p)= tells whether the current project has a running instance to receive it.  Other packages can use the two to offer Claude Code as one of several destinations for their prompts.
+
 ** Multiple Projects and Instances
 
 Claude Code IDE automatically detects your project using Emacs' built-in =project.el=, and any project can run several Claude Code instances at the same time — for example one instance refactoring while another answers questions.

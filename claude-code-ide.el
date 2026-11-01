@@ -1755,6 +1755,17 @@ Use this to balance between visual smoothness and raw responsiveness."
                "enabled (smoother display with minimal latency)"
              "disabled (direct rendering, maximum responsiveness)")))
 
+(defun claude-code-ide-running-p ()
+  "Return non-nil when the current project has a running Claude Code instance.
+The project is the one `claude-code-ide-send-prompt' sends to: the
+current project root, or `default-directory' outside a project.  An
+instance counts while its terminal process is alive."
+  (cl-some (lambda (session)
+             (let ((process (claude-code-ide-mcp-session-process session)))
+               (and process (process-live-p process))))
+           (claude-code-ide-mcp--sessions-for-project
+            (claude-code-ide--get-working-directory))))
+
 ;;;###autoload
 (defun claude-code-ide-send-prompt (&optional prompt session)
   "Send a prompt to a Claude Code terminal.
