@@ -156,20 +156,54 @@ takes the text size of the frame the diff is launched from."
         (puthash label frame claude-code-ide-mcp--ediff-frames)))
     (setq claude-code-ide-mcp--ediff-frame frame)))
 
-(defun claude-code-ide-mcp--maybe-delete-ediff-frame ()
-  "Delete every dedicated diff frame that no longer shows an ediff."
-  (maphash (lambda (label frame)
-             (when (and (frame-live-p frame)
-                        (cdr (frame-list))
-                        (not (cl-some (lambda (window)
-                                        (with-current-buffer (window-buffer window)
-                                          (derived-mode-p 'ediff-mode)))
-                                      (window-list frame 'never))))
-               (delete-frame frame)
-               (remhash label claude-code-ide-mcp--ediff-frames)
-               (when (eq frame claude-code-ide-mcp--ediff-frame)
-                 (setq claude-code-ide-mcp--ediff-frame nil))))
-           claude-code-ide-mcp--ediff-frames))
+(defvar claude-code-ide-mcp--ediff-generation 0
+  "Bumped every time a diff opens in a dedicated frame.
+A frame cleanup scheduled before a bump does nothing: the quit it answers
+is older than the diff that now shows in the frame.")
+
+(defun claude-code-ide-mcp--frame-shows-ediff-p (frame)
+  "Non-nil when a window of FRAME shows an ediff control panel."
+  (cl-some (lambda (window)
+             (with-current-buffer (window-buffer window)
+               (derived-mode-p 'ediff-mode)))
+           (window-list frame 'never)))
+
+(defun claude-code-ide-mcp--maybe-delete-ediff-frame (&optional generation)
+  "Delete every dedicated diff frame that no longer shows an ediff.
+With GENERATION, do nothing when a diff opened since it was taken."
+  (when (or (null generation)
+            (= generation claude-code-ide-mcp--ediff-generation))
+    (maphash (lambda (label frame)
+               (when (and (frame-live-p frame)
+                          (cdr (frame-list))
+                          (not (claude-code-ide-mcp--frame-shows-ediff-p frame)))
+                 (delete-frame frame)
+                 (remhash label claude-code-ide-mcp--ediff-frames)
+                 (when (eq frame claude-code-ide-mcp--ediff-frame)
+                   (setq claude-code-ide-mcp--ediff-frame nil))))
+             claude-code-ide-mcp--ediff-frames)))
+
+(defun claude-code-ide-mcp--schedule-ediff-frame-cleanup ()
+  "Delete the dedicated diff frames that show no ediff, a moment from now.
+The check runs after a short delay and only when no diff opened meanwhile,
+so a diff that a session opens right after a quit keeps its frame."
+  (let ((generation claude-code-ide-mcp--ediff-generation))
+    (run-at-time 0.3 nil #'claude-code-ide-mcp--maybe-delete-ediff-frame generation)))
+
+;;;###autoload
+(defun claude-code-ide-ediff-files-in-frame (label file-a file-b &optional startup-hooks)
+  "Compare FILE-A with FILE-B in the dedicated diff frame \"ediff LABEL\".
+The frame is created when it is missing, selected and focused before the
+diff starts, and the whole ediff (its control panel and both buffers) stays
+in it.  A cleanup scheduled by an earlier quit cannot delete it.
+STARTUP-HOOKS go to `ediff-files'.  Returns the frame."
+  (let ((frame (claude-code-ide-mcp--ediff-frame nil label)))
+    (cl-incf claude-code-ide-mcp--ediff-generation)
+    (select-frame-set-input-focus frame)
+    (with-selected-frame frame
+      (let ((ediff-window-setup-function #'ediff-setup-windows-plain))
+        (ediff-files (expand-file-name file-a) (expand-file-name file-b) startup-hooks)))
+    frame))
 
 (defun claude-code-ide-mcp--setup-diff-hooks (tab-name session saved-winconf)
   "Set up ediff hooks for TAB-NAME with SESSION and SAVED-WINCONF.
@@ -232,7 +266,7 @@ and the hook stays armed for ours."
                               (condition-case nil
                                   (set-window-configuration saved-winconf)
                                 (error nil)))
-                            (run-at-time 0 nil #'claude-code-ide-mcp--maybe-delete-ediff-frame)))))
+                            (claude-code-ide-mcp--schedule-ediff-frame-cleanup)))))
 
       ;; Jump to the first difference if there are any
       (ignore-errors (ediff-next-difference))
@@ -494,6 +528,7 @@ ARGUMENTS should contain:
             (progn
               (when claude-code-ide-ediff-frame
                 (select-frame-set-input-focus (claude-code-ide-mcp--ediff-frame session))
+                (cl-incf claude-code-ide-mcp--ediff-generation)
                 (delete-other-windows))
               ;; Delete all side windows before starting ediff
               ;; This prevents "Cannot split side window" errors
