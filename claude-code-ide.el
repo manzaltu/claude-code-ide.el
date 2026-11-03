@@ -741,6 +741,73 @@ width has actually changed, working around the scrolling glitch."
   (format "*claude-code[%s]*"
           (file-name-nondirectory (directory-file-name directory))))
 
+;;; Session start specification and lifecycle hooks
+
+(cl-defstruct (claude-code-ide-start-spec
+               (:constructor claude-code-ide-start-spec-create)
+               (:copier nil))
+  "How one Claude Code instance is started.
+A spec passed to `claude-code-ide--start-session' starts the instance
+without prompts: in DIRECTORY, with INSTANCE-NAME (nil for the plain
+unnamed slot)."
+  (directory nil :type string :documentation "Project directory.")
+  (instance-name nil :type (or null string)
+                 :documentation "Instance name, or nil for the plain slot.")
+  (continue nil :type boolean :documentation "Start with -c.")
+  (resume nil :type boolean :documentation "Start with -r (interactive picker).")
+  (resume-id nil :type (or null string)
+             :documentation "CLI session id to resume with --resume.")
+  (extra-flags nil :type (or null string)
+               :documentation "Value of `claude-code-ide-cli-extra-flags' to use.
+nil keeps the current value.")
+  (prompt nil :type (or null string)
+          :documentation "Initial prompt, sent as the first message."))
+
+(defvar claude-code-ide-cli-args-functions nil
+  "Functions that add arguments to the Claude CLI command line.
+Each function is called with SESSION and SPEC (a
+`claude-code-ide-start-spec') before the CLI starts, and returns a
+list of argument strings.  The arguments are shell-quoted and added
+after `claude-code-ide-cli-extra-flags'.")
+
+(defvar claude-code-ide-session-start-functions nil
+  "Functions called after a Claude Code instance started.
+Each function is called with SESSION and SPEC.  Errors are reported
+and do not stop the start.")
+
+(defvar claude-code-ide-session-end-functions nil
+  "Functions called when a Claude Code instance ends.
+Each function is called with SESSION and REASON: `exited' when the
+CLI process ended on its own, `killed' when Emacs ended a CLI that
+still ran (its buffer was killed, or a stop command).  This also runs
+for an instance whose start failed.  Errors are reported and do not
+stop the cleanup.")
+
+(defvar claude-code-ide-session-rename-functions nil
+  "Functions called after a Claude Code instance was renamed.
+Each function is called with SESSION.")
+
+(defun claude-code-ide--run-session-hook (hook &rest args)
+  "Call each function in HOOK with ARGS and report, not raise, errors."
+  (run-hook-wrapped hook
+                    (lambda (fn)
+                      (condition-case err
+                          (apply fn args)
+                        (error
+                         (message "Error in %s (%s): %s"
+                                  hook fn (error-message-string err))))
+                      nil)))
+
+(defun claude-code-ide--collect-cli-args (session spec)
+  "Return the arguments that `claude-code-ide-cli-args-functions' add.
+SESSION and SPEC are passed to each function."
+  (let ((args '()))
+    (run-hook-wrapped 'claude-code-ide-cli-args-functions
+                      (lambda (fn)
+                        (setq args (append args (funcall fn session spec)))
+                        nil))
+    args))
+
 (defun claude-code-ide--get-working-directory ()
   "Get the current working directory (project root or current directory)."
   (if-let* ((project (project-current)))
@@ -862,6 +929,16 @@ EXCLUDE-SESSION's own name is treated as free (used while renaming)."
              (member (number-to-string n) taken))
       (cl-incf n))
     (if (= n 1) nil (number-to-string n))))
+
+(defun claude-code-ide--free-instance-name (project-dir name)
+  "Return NAME, or the lowest free auto name when it is in use.
+NAME is in use when a live instance of PROJECT-DIR has it; nil stands
+for the plain unnamed slot."
+  (if (cl-some (lambda (session)
+                 (equal name (claude-code-ide-mcp-session-instance-name session)))
+               (claude-code-ide-mcp--sessions-for-project project-dir))
+      (claude-code-ide--auto-instance-name project-dir)
+    name))
 
 (defun claude-code-ide--read-instance-name (project-dir &optional prompt exclude-session)
   "Read and validate an instance name for PROJECT-DIR.
@@ -1211,6 +1288,12 @@ hook signals wrong-type-argument that way)."
   (when (and session
              (not (claude-code-ide-mcp-session-cleanup-done session)))
     (setf (claude-code-ide-mcp-session-cleanup-done session) t)
+    ;; A CLI that still runs here is being ended by Emacs (buffer kill,
+    ;; stop command); otherwise it ended on its own
+    (claude-code-ide--run-session-hook
+     'claude-code-ide-session-end-functions session
+     (let ((process (claude-code-ide-mcp-session-process session)))
+       (if (and process (process-live-p process)) 'killed 'exited)))
     ;; Close this session's open diffs first; their deferred verdicts can
     ;; never be delivered once the instance is gone, and the ediff
     ;; buffers/window configs would otherwise be orphaned
@@ -1310,7 +1393,8 @@ If the window is not visible, it will be shown in a side window."
           (setf (claude-code-ide-mcp-session-original-tab session) (tab-bar--current-tab)))
         (claude-code-ide-debug "Claude Code window shown")))))
 
-(defun claude-code-ide--build-claude-command (&optional continue resume session-id)
+(defun claude-code-ide--build-claude-command (&optional continue resume session-id
+                                                        extra-args prompt)
   "Build the Claude command with optional flags.
 If CONTINUE is non-nil, add the -c flag.
 If RESUME is non-nil, add the -r flag.
@@ -1318,7 +1402,10 @@ If SESSION-ID is provided, it's included in the MCP server URL path.
 If `claude-code-ide-cli-debug' is non-nil, add the -d flag.
 If `claude-code-ide-system-prompt' is non-nil, add the
 --append-system-prompt flag.
-Additional flags from `claude-code-ide-cli-extra-flags' are also included."
+Additional flags from `claude-code-ide-cli-extra-flags' are also included,
+followed by EXTRA-ARGS, a list of strings that are shell-quoted here.
+PROMPT, when non-nil, goes last after \"--\", so that no option with
+several values (such as --allowedTools) takes it as a value."
   (let ((claude-cmd claude-code-ide-cli-path))
     ;; Add debug flag if enabled
     (when claude-code-ide-cli-debug
@@ -1344,6 +1431,8 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
     (when (and claude-code-ide-cli-extra-flags
                (not (string-empty-p claude-code-ide-cli-extra-flags)))
       (setq claude-cmd (concat claude-cmd " " claude-code-ide-cli-extra-flags)))
+    (dolist (arg extra-args)
+      (setq claude-cmd (concat claude-cmd " " (shell-quote-argument arg))))
     ;; Add MCP tools config if enabled
     (when (claude-code-ide-mcp-server-ensure-server)
       (when-let* ((config (claude-code-ide-mcp-server-get-config session-id)))
@@ -1367,6 +1456,8 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
                   (t claude-code-ide-mcp-allowed-tools))))
             (when allowed-tools
               (setq claude-cmd (concat claude-cmd " --allowedTools " allowed-tools)))))))
+    (when prompt
+      (setq claude-cmd (concat claude-cmd " -- " (shell-quote-argument prompt))))
     claude-cmd))
 
 (defun claude-code-ide--terminal-position-keeper (window-list)
@@ -1421,7 +1512,8 @@ absolute path sidesteps that lookup."
       program))
 
 
-(defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
+(defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id
+                                                              &optional extra-args prompt)
   "Create a new terminal session for Claude Code.
 BUFFER-NAME is the name for the terminal buffer.
 WORKING-DIR is the working directory.
@@ -1429,12 +1521,14 @@ PORT is the MCP server port.
 CONTINUE is whether to continue the most recent conversation.
 RESUME is whether to resume a previous conversation.
 SESSION-ID is the unique identifier for this session.
+EXTRA-ARGS and PROMPT go to `claude-code-ide--build-claude-command'.
 
 Returns a cons cell of (buffer . process) on success.
 Signals an error if terminal fails to initialize."
   ;; Ensure terminal backend is available before proceeding
   (claude-code-ide--terminal-ensure-backend)
-  (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
+  (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id
+                                                            extra-args prompt))
          (default-directory working-dir)
          (env-vars (append (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
                                  "TERM_PROGRAM=emacs"
@@ -1563,7 +1657,7 @@ Signals an error if terminal fails to initialize."
              (ignore-errors (kill-buffer created-buffer))))
          (signal (car err) (cdr err)))))))
 
-(defun claude-code-ide--start-session (&optional continue resume)
+(defun claude-code-ide--start-session (&optional continue resume spec)
   "Start a new Claude Code instance for the current project.
 If CONTINUE is non-nil, start Claude with the -c (continue) flag.
 If RESUME is non-nil, start Claude with the -r (resume) flag.
@@ -1571,6 +1665,11 @@ If RESUME is non-nil, start Claude with the -r (resume) flag.
 Always creates a new instance; a project may run any number of them
 concurrently.  When the project already has instances (or with a
 prefix argument), prompts for an optional instance name.
+
+SPEC, a `claude-code-ide-start-spec', replaces CONTINUE, RESUME, the
+current project and the prompt: the instance starts in its directory
+with its instance name, or with the lowest free auto name when another
+live instance has that name.
 
 This function handles:
 - CLI availability checking
@@ -1586,12 +1685,31 @@ This function handles:
   ;; Ensure the selected terminal backend is available before starting MCP
   (claude-code-ide--terminal-ensure-backend)
 
-  (let* ((working-dir (claude-code-ide--get-working-directory))
+  (let* ((claude-code-ide-cli-extra-flags
+          (or (and spec (claude-code-ide-start-spec-extra-flags spec))
+              claude-code-ide-cli-extra-flags))
+         (continue (if spec (claude-code-ide-start-spec-continue spec) continue))
+         (resume (if spec (claude-code-ide-start-spec-resume spec) resume))
+         (working-dir (if spec
+                          (expand-file-name (claude-code-ide-start-spec-directory spec))
+                        (claude-code-ide--get-working-directory)))
          ;; Additional instances get an optional name; a prefix argument
          ;; offers the prompt for the first instance too
-         (instance-name (when (or (claude-code-ide-mcp--sessions-for-project working-dir)
-                                  current-prefix-arg)
-                          (claude-code-ide--read-instance-name working-dir)))
+         (instance-name (cond
+                         (spec (claude-code-ide--free-instance-name
+                                working-dir (claude-code-ide-start-spec-instance-name spec)))
+                         ((or (claude-code-ide-mcp--sessions-for-project working-dir)
+                              current-prefix-arg)
+                          (claude-code-ide--read-instance-name working-dir))))
+         (launch (claude-code-ide-start-spec-create
+                  :directory working-dir
+                  :instance-name instance-name
+                  :continue continue
+                  :resume resume
+                  :resume-id (and spec (claude-code-ide-start-spec-resume-id spec))
+                  :extra-flags claude-code-ide-cli-extra-flags
+                  :prompt (and spec (claude-code-ide-start-spec-prompt spec))))
+         (resume-id (claude-code-ide-start-spec-resume-id launch))
          ;; A live instance may already own the base name — e.g. two
          ;; projects sharing a basename both render as *claude-code[proj]*.
          ;; Uniquify instead of clobbering or refusing.
@@ -1614,8 +1732,11 @@ This function handles:
           (claude-code-ide-mcp-server-session-started session-id working-dir nil)
           (setq registered t)
           (let* ((port (claude-code-ide-mcp-session-port session))
+                 (extra-args (append (when resume-id (list "--resume" resume-id))
+                                     (claude-code-ide--collect-cli-args session launch)))
                  (buffer-and-process (claude-code-ide--create-terminal-session
-                                      buffer-name working-dir port continue resume session-id))
+                                      buffer-name working-dir port continue resume session-id
+                                      extra-args (claude-code-ide-start-spec-prompt launch)))
                  (buffer (car buffer-and-process))
                  (process (cdr buffer-and-process)))
             (setf (claude-code-ide-mcp-session-buffer session) buffer
@@ -1694,11 +1815,13 @@ This function handles:
             (claude-code-ide--display-buffer-in-side-window buffer)
             (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"
                                  (cond (continue "continued and ")
-                                       (resume "resumed and ")
+                                       ((or resume resume-id) "resumed and ")
                                        (t ""))
                                  (claude-code-ide--session-display-name session)
                                  port
                                  (if claude-code-ide-cli-debug " (debug mode enabled)" ""))
+            (claude-code-ide--run-session-hook 'claude-code-ide-session-start-functions
+                                               session launch)
             ;; Delayed so the startup message above stays readable first
             (run-with-timer 2 nil #'claude-code-ide--maybe-recommend-ghostel)))
       ((error quit)
@@ -1834,6 +1957,7 @@ Empty input converts the instance to the lowest free auto number."
         (when (buffer-live-p buffer)
           (with-current-buffer buffer
             (rename-buffer (claude-code-ide--instance-buffer-name project-dir new-name) t))))
+      (claude-code-ide--run-session-hook 'claude-code-ide-session-rename-functions session)
       (claude-code-ide-log "Renamed Claude session %s to %s"
                            old-name
                            (claude-code-ide--session-display-name session)))))
@@ -2123,6 +2247,16 @@ window layouts, so each tab hides and restores its own set."
      ;; No recent session available
      (t
       (user-error "No recent Claude Code session to toggle")))))
+
+;; The session registry lives in its own file.  These autoloads make its
+;; commands available also when the package is loaded from a source
+;; directory, where no autoload file is generated.
+(autoload 'claude-code-ide-session-registry-mode "claude-code-ide-session-registry" nil t)
+(autoload 'claude-code-ide-restore-sessions "claude-code-ide-session-registry" nil t)
+(autoload 'claude-code-ide-reopen-session "claude-code-ide-session-registry" nil t)
+(autoload 'claude-code-ide-archive-session "claude-code-ide-session-registry" nil t)
+(autoload 'claude-code-ide-forget-session "claude-code-ide-session-registry" nil t)
+(autoload 'claude-code-ide-list-session-registry "claude-code-ide-session-registry" nil t)
 
 (provide 'claude-code-ide)
 

@@ -214,6 +214,7 @@ routing tests depend on the carried text, not a placeholder."
 (define-error 'mcp-error "MCP Error" 'error)
 (require 'claude-code-ide-mcp-handlers)
 (require 'claude-code-ide)
+(require 'claude-code-ide-session-registry-tests)
 
 ;;; Test Helper Functions
 

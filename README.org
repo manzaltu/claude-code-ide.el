@@ -506,6 +506,89 @@ M-x claude-code-ide
 
 Each worktree is treated as a separate project by =project.el=, giving fully independent sessions with their own buffers (e.g., =*claude-code[myproject]*= and =*claude-code[myproject-worktree]*=).
 
+** Session Registry and Restore
+
+The session registry records each Claude Code instance that Emacs starts. After a crash of Emacs or of the machine, one command starts again every instance that was open, with the same conversation, directory, buffer name, model and flags.
+
+To enable it, put this in your init file:
+
+#+begin_src elisp
+(claude-code-ide-session-registry-mode 1)
+;; Optional; this is the default
+(setq claude-code-ide-state-file "~/.emacs-claude-code-ide-state.json")
+#+end_src
+
+Enable the mode before you start instances. Instances that were started before the mode was enabled are not recorded.
+
+*** States
+
+| State      | Meaning                                                                             |
+|------------+-------------------------------------------------------------------------------------|
+| =open=     | The instance runs, or it ran when its Emacs crashed. =claude-code-ide-restore-sessions= starts these again. |
+| =closed=   | The instance ended, its buffer was killed, or Emacs exited normally. =claude-code-ide-reopen-session= starts it again. |
+| =archived= | The work is done. No command starts it again.                                     |
+
+A normal exit of Emacs marks its running instances =closed=, with =closed_by= set to =emacs-exit=. After a crash this cannot happen, so they stay =open=.
+
+*** Commands
+
+| Command                                   | Description                                                      |
+|-------------------------------------------+------------------------------------------------------------------|
+| =M-x claude-code-ide-restore-sessions=      | Start every =open= instance again (=C-u=: choose which)            |
+| =M-x claude-code-ide-reopen-session=        | Choose an instance that is not running and start it again        |
+| =M-x claude-code-ide-archive-session=       | Mark an instance =archived=                                      |
+| =M-x claude-code-ide-forget-session=        | Remove an instance from the registry (the transcript stays)      |
+| =M-x claude-code-ide-list-session-registry= | List the registry: state, buffer, directory, last activity, title |
+
+In the list, =RET= switches to a running instance or reopens a stopped one, =a= archives, =d= removes, and =R= restores.
+
+*** Restore after a crash
+
+1. Start Emacs. The mode reports how many instances can be restored.
+2. Run =M-x claude-code-ide-restore-sessions=.
+3. Each instance starts in its directory with =claude --resume <id>=, its instance name, its flags, and the model of its last answer.
+4. Each instance gets =claude-code-ide-restore-note= as its first message. The default note says that the session was resumed after a crash, that its background tasks and unread messages from other sessions are gone, and that it must re-read its last state and re-arm its watches. Set the variable to =nil= to send no message.
+
+The registry does not restore an =open= instance that runs in this Emacs, or that belongs to another live Emacs or to another host.
+
+*** The state file
+
+The state file holds only what Emacs knows. The conversation, its title and its model stay in the CLI transcript, =~/.claude/projects/<project>/<session-id>.jsonl=, and the registry reads them from there when it needs them.
+
+#+begin_src json
+{
+  "version": 1,
+  "sessions": [
+    {
+      "key": "5afe576e-88a4-4ecf-b317-1cd4b509ca6d",
+      "session_id": "5afe576e-88a4-4ecf-b317-1cd4b509ca6d",
+      "transcript_path": "/home/me/.claude/projects/-home-me-src-app/5afe576e-88a4-4ecf-b317-1cd4b509ca6d.jsonl",
+      "project_dir": "/home/me/src/app/",
+      "buffer_name": "*claude-code[app:refactor]*",
+      "instance_name": "refactor",
+      "model": "opus",
+      "extra_flags": "--permission-mode plan",
+      "permission_mode": "plan",
+      "state": "open",
+      "started_at": "2026-11-03T09:12:44Z",
+      "last_seen_at": "2026-11-03T09:12:44Z",
+      "closed_at": null,
+      "closed_by": null,
+      "emacs_pid": 41022,
+      "host": "laptop"
+    }
+  ]
+}
+#+end_src
+
+- =key= is the id of the entry and never changes.
+- =session_id= is the current Claude CLI session id. Emacs starts a new conversation with =--session-id <key>=. A SessionStart hook, passed with =--settings=, reports a new id after =/clear=, =/resume=, or a start with =-c= or =-r=. The reports go to a directory next to the state file (=claude-code-ide-session-registry-report-directory=).
+- If =claude-code-ide-cli-extra-flags= has its own =--settings=, the registry does not add its hook, because a second =--settings= replaces the first. Then a new id after =/clear= or =/resume= is not recorded.
+- =model= and =extra_flags= come from =claude-code-ide-cli-extra-flags= at start. Session flags (=-c=, =-r=, =--resume=, =--session-id=, =--fork-session=) are not stored.
+- =closed_by= is =exited= (the CLI ended), =killed= (Emacs ended a running CLI) or =emacs-exit=.
+
+Every change goes through one queue. The queue writes under a lock directory (=<state-file>.lock=), writes a temporary file and renames it over the state file, and keeps the previous version as =<state-file>.bak=. If the state file cannot be read, the registry uses the =.bak= file, shows a warning, and moves the unreadable file aside on the next write.
+
 ** Emacs MCP Tools
 
 Claude Code IDE includes built-in MCP tools that expose Emacs functionality to Claude, enabling powerful code navigation and analysis capabilities:
