@@ -56,6 +56,8 @@
 (declare-function ws-send "web-server" (proc msg))
 (declare-function ws-response-header "web-server" (proc code &rest headers))
 
+(define-error 'json-rpc-error "JSON-RPC error" 'error)
+
 ;;; Server State
 
 (defvar claude-code-ide-mcp-http-server--server nil
@@ -129,15 +131,16 @@ Returns a cons cell of (server . port)."
 Extracts session ID from the URL path and processes the request
 with the appropriate session context."
   (claude-code-ide-debug "MCP server received POST request")
-  (condition-case err
+  (let ((id nil))  ; bound outside the condition-case so error replies can carry it
+    (condition-case err
       (let* ((headers (ws-headers request))
              (body (ws-body request))
              ;; Extract session ID from URL path
              (url-session-id (claude-code-ide-mcp-http-server--extract-session-id-from-path headers))
              (json-object (json-parse-string body :object-type 'alist))
              (method (alist-get 'method json-object))
-             (params (alist-get 'params json-object))
-             (id (alist-get 'id json-object)))
+             (params (alist-get 'params json-object)))
+        (setq id (alist-get 'id json-object))
 
         (claude-code-ide-debug "MCP request - method: %s, id: %s, session-id: %s"
                                method id url-session-id)
@@ -165,16 +168,20 @@ with the appropriate session context."
      (claude-code-ide-mcp-http-server--send-json-error
       request nil -32700 "Parse error"))
 
+    (json-rpc-error
+     (claude-code-ide-mcp-http-server--send-json-error
+      request id (nth 1 err) (nth 2 err)))
+
     (quit
      (claude-code-ide-debug "Request cancelled by user (C-<escape>)")
      (claude-code-ide-mcp-http-server--send-json-error
-      request nil -32001 "Operation cancelled by user"))
+      request id -32001 "Operation cancelled by user"))
 
     (error
      (claude-code-ide-debug "Error handling request: %s"
                             (error-message-string err))
      (claude-code-ide-mcp-http-server--send-json-error
-      request nil -32603 (format "Internal error: %s" (error-message-string err))))))
+      request id -32603 (format "Internal error: %s" (error-message-string err)))))))
 
 ;;; MCP Protocol Implementation
 
