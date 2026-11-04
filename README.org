@@ -589,6 +589,44 @@ The state file holds only what Emacs knows. The conversation, its title and its 
 
 Every change goes through one queue. The queue writes under a lock directory (=<state-file>.lock=), writes a temporary file and renames it over the state file, and keeps the previous version as =<state-file>.bak=. If the state file cannot be read, the registry uses the =.bak= file, shows a warning, and moves the unreadable file aside on the next write.
 
+** Session Status
+
+The status buffer shows what each running instance does, and puts the instances that wait for you first. Keep it open to see at a glance which sessions are blocked, and press =RET= to go to one.
+
+#+begin_src elisp
+(claude-code-ide-session-status-mode 1)   ; also turns on the session registry
+#+end_src
+
+Turn the mode off to close the buffer. =M-x claude-code-ide-show-session-status= shows it again.
+
+| State       | Meaning                                                                  |
+|-------------+--------------------------------------------------------------------------|
+| =WAITING=   | A permission dialog, a question menu, a plan approval or an MCP input form waits for you |
+| =ERROR=     | The turn failed with an API error                                        |
+| =NO EVENTS= | The instance sent nothing since it started, for example at the dialog that asks whether to trust the folder |
+| =your turn= | The turn ended, or you interrupted it                                    |
+| =starting=  | The instance has started and has not reported yet                        |
+| =working=   | Claude works                                                             |
+| =untracked= | The instance started without status hooks                                |
+
+The =For= column shows how long the instance has been in its state, and =Detail= shows the command, the question, or the first line of the last answer.
+
+| Command                                | Description                                              |
+|----------------------------------------+----------------------------------------------------------|
+| =M-x claude-code-ide-show-session-status=  | Show the status buffer                                   |
+| =M-x claude-code-ide-visit-waiting-session= | Go to the first session in the list that needs you        |
+
+In the buffer, =RET= goes to the session on the line, and =w= goes to the first session that needs you: =WAITING= first, then =ERROR= and =NO EVENTS=, then =your turn=; the longest wait first within each state. While the mode is on, the mode line shows =Claude[N need you]= when instances are =WAITING=, =ERROR= or =NO EVENTS=.
+
+*** How it works
+
+The registry passes Claude Code hooks to each instance it starts. Each hook runs a small shell script that writes the hook input to a file, numbered per instance, in a directory next to the state file. Emacs reads the files in order, deletes them, and updates the status. The script prints nothing and always exits with 0, so it never changes what Claude does. Each hook has a timeout of 5 seconds.
+
+- After you approve a command, the status stays =WAITING= until the command ends, because no hook fires on the approval.
+- An interrupt (=Esc=) fires no hook. When a working instance sends no event for =claude-code-ide-session-status-quiet-time= seconds, Emacs checks two things. If the new part of the transcript has an interrupt marker (an interrupt during a tool), the state becomes =your turn= with "Interrupted". If the terminal no longer shows Claude's spinner line (for example "✢ Misting… (3s)"), the state becomes =your turn= with "Interrupted?". If a later version of Claude Code changes the spinner, this check shows a working instance as =your turn=; it never shows a waiting instance as working.
+- A denial with =Esc= fires no hook either. The instance stays =WAITING= until Claude reports, 60 seconds later, that it waits for your input.
+- Set =claude-code-ide-session-status-tracking= to =nil= to start instances without status hooks.
+
 ** Emacs MCP Tools
 
 Claude Code IDE includes built-in MCP tools that expose Emacs functionality to Claude, enabling powerful code navigation and analysis capabilities:

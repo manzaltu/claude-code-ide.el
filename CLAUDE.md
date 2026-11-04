@@ -19,10 +19,12 @@ This package integrates Claude Code CLI with Emacs via WebSocket and the Model C
 - `claude-code-ide-emacs-tools.el` - Emacs tools: xref, project info, imenu
 - `claude-code-ide-diagnostics.el` - Flycheck integration
 - `claude-code-ide-session-registry.el` - Session registry: crash-safe JSON state file of started instances, restore and reopen commands
+- `claude-code-ide-session-status.el` - Live status of each instance from CLI hooks (working, waiting, idle) and the status buffer
 - `claude-code-ide-transient.el` - Transient menu interface
 - `claude-code-ide-debug.el` - Debug logging utilities
 - `claude-code-ide-tests.el` - ERT test suite with mocks
 - `claude-code-ide-session-registry-tests.el` - Session registry tests; loaded by `claude-code-ide-tests.el`
+- `claude-code-ide-session-status-tests.el` - Session status tests; loaded by `claude-code-ide-tests.el`
 
 ## Hooks
 

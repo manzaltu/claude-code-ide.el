@@ -52,6 +52,9 @@
 (require 'tabulated-list)
 (require 'claude-code-ide)
 
+(declare-function claude-code-ide-session-status--set-tracking "claude-code-ide-session-status" (on))
+(declare-function claude-code-ide-session-status--forget "claude-code-ide-session-status" (session))
+
 ;;; Customization
 
 (defcustom claude-code-ide-state-file
@@ -448,23 +451,53 @@ seconds."
                 entry)))
           entries))
 
-(defun claude-code-ide-session-registry--hook-settings (key)
-  "Return the --settings JSON that makes the CLI report its id for KEY.
-The SessionStart hook runs at start, resume, /clear and compaction,
-and writes its input, which holds the session id, to the report file.
-A report that is read while it is written does not parse and is
-ignored until the next read.
+(defvar claude-code-ide-session-registry-hook-functions nil
+  "Functions that add CLI hooks to the --settings of a new instance.
+Each function is called with SESSION and KEY before the CLI starts,
+and returns an alist of (EVENT . COMMANDS): EVENT is a hook event
+name such as \"Stop\", COMMANDS a list of shell command strings.
+The CLI accepts one --settings argument, so all hooks go into it.")
 
-The command has no &, ; or |: `split-string-shell-command', which the
-eat and ghostel backends use, drops the text before these characters
-even when they are quoted."
+(defconst claude-code-ide-session-registry--hook-timeout 5
+  "Seconds after which the CLI stops a hook and goes on.")
+
+(defun claude-code-ide-session-registry--hook-settings (session key)
+  "Return the --settings JSON for SESSION with the entry KEY.
+The registry's SessionStart hook runs at start, resume, /clear and
+compaction, and writes its input, which holds the session id, to the
+report file.  A report that is read while it is written does not
+parse and is ignored until the next read.  The hooks of
+`claude-code-ide-session-registry-hook-functions' are added."
   (let* ((dir (claude-code-ide-session-registry--report-directory))
-         (command (format "cat > %s"
-                          (shell-quote-argument
-                           (claude-code-ide-session-registry--report-file key)))))
+         (events (list (list "SessionStart"
+                             (format "cat > %s"
+                                     (shell-quote-argument
+                                      (claude-code-ide-session-registry--report-file key)))))))
     (make-directory dir t)
-    (json-encode `((hooks . ((SessionStart . [((hooks . [((type . "command")
-                                                           (command . ,command))]))])))))))
+    (run-hook-wrapped 'claude-code-ide-session-registry-hook-functions
+                      (lambda (fn)
+                        (dolist (pair (funcall fn session key))
+                          (if-let* ((known (assoc (car pair) events)))
+                              (setcdr known (append (cdr known) (cdr pair)))
+                            (setq events (append events (list (cons (car pair) (cdr pair)))))))
+                        nil))
+    (json-encode
+     `((hooks . ,(mapcar (lambda (pair)
+                           (cons (intern (car pair))
+                                 (vector
+                                  `((hooks . ,(vconcat
+                                               (mapcar (lambda (command)
+                                                         `((type . "command")
+                                                           (command . ,command)
+                                                           (timeout . ,claude-code-ide-session-registry--hook-timeout)))
+                                                       (cdr pair))))))))
+                         events))))))
+
+(defun claude-code-ide-session-registry--safe-argument-p (argument)
+  "Return non-nil when ARGUMENT survives the command line of every backend.
+`split-string-shell-command', which the eat and ghostel backends use,
+drops the text before &, ; and | even when they are quoted."
+  (not (string-match-p "[&;|]" argument)))
 
 ;;; The queue
 
@@ -679,7 +712,15 @@ the id, unless the flags pass their own --settings, which a second
     (append (when (claude-code-ide-session-registry--own-id-p spec flags)
               (list "--session-id" key))
             (unless (claude-code-ide-session-registry--flags-has-settings flags)
-              (list "--settings" (claude-code-ide-session-registry--hook-settings key))))))
+              (let ((settings (claude-code-ide-session-registry--hook-settings session key)))
+                (if (claude-code-ide-session-registry--safe-argument-p settings)
+                    (list "--settings" settings)
+                  (display-warning 'claude-code-ide
+                                   (format "Session registry: no hooks, because the path %s contains &, ; or |"
+                                           (claude-code-ide-session-registry--report-directory)))
+                  (when (fboundp 'claude-code-ide-session-status--forget)
+                    (claude-code-ide-session-status--forget session))
+                  nil))))))
 
 (defun claude-code-ide-session-registry--on-start (session spec)
   "Record that SESSION started as SPEC describes."
@@ -1157,6 +1198,8 @@ directory, names and flags.  A normal exit of Emacs marks them
         (add-hook 'kill-emacs-hook #'claude-code-ide-session-registry--on-kill-emacs -50)
         (setq claude-code-ide-session-registry--exiting nil)
         (claude-code-ide-session-registry--start-watch)
+        (require 'claude-code-ide-session-status)
+        (claude-code-ide-session-status--set-tracking t)
         (let ((count (cl-count-if #'claude-code-ide-session-registry--restorable-p
                                   (ignore-errors (claude-code-ide-session-registry--entries)))))
           (when (> count 0)
@@ -1167,7 +1210,9 @@ directory, names and flags.  A normal exit of Emacs marks them
     (remove-hook 'claude-code-ide-session-end-functions #'claude-code-ide-session-registry--on-end)
     (remove-hook 'claude-code-ide-session-rename-functions #'claude-code-ide-session-registry--on-rename)
     (remove-hook 'kill-emacs-hook #'claude-code-ide-session-registry--on-kill-emacs)
-    (claude-code-ide-session-registry--stop-watch)))
+    (claude-code-ide-session-registry--stop-watch)
+    (when (fboundp 'claude-code-ide-session-status--set-tracking)
+      (claude-code-ide-session-status--set-tracking nil))))
 
 (provide 'claude-code-ide-session-registry)
 

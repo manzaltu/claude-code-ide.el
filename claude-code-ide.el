@@ -2257,6 +2257,9 @@ window layouts, so each tab hides and restores its own set."
 (autoload 'claude-code-ide-archive-session "claude-code-ide-session-registry" nil t)
 (autoload 'claude-code-ide-forget-session "claude-code-ide-session-registry" nil t)
 (autoload 'claude-code-ide-list-session-registry "claude-code-ide-session-registry" nil t)
+(autoload 'claude-code-ide-session-status-mode "claude-code-ide-session-status" nil t)
+(autoload 'claude-code-ide-show-session-status "claude-code-ide-session-status" nil t)
+(autoload 'claude-code-ide-visit-waiting-session "claude-code-ide-session-status" nil t)
 
 (provide 'claude-code-ide)
 
