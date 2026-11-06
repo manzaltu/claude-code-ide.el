@@ -515,7 +515,13 @@ The event name is only for the reader; the text is the same."
              (alist-get 'idle claude-code-ide-session-status--rank)
              (alist-get 'tasks claude-code-ide-session-status--rank)))
   (should-not (claude-code-ide-session-status--urgent-p 'tasks))
-  (should-not (claude-code-ide-session-status--urgent-p 'idle)))
+  (should-not (claude-code-ide-session-status--urgent-p 'idle))
+  ;; The Status column fits every label
+  (with-temp-buffer
+    (claude-code-ide-session-status-list-mode)
+    (let ((width (nth 1 (aref tabulated-list-format 0))))
+      (dolist (entry claude-code-ide-session-status--labels)
+        (should (<= (string-width (nth 1 entry)) width))))))
 
 (ert-deftest claude-code-ide-test-status-unobserved-and-untracked ()
   "A session without events is unobserved after the timeout."

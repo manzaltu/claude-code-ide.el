@@ -988,6 +988,11 @@ long, `idle' when nothing runs.  Else the phase.  A nil STATUS is
 Each label says who waits for whom: the agent for the user's answer
 or next message, or the agent for its own background tasks.")
 
+(defun claude-code-ide-session-status--label-width ()
+  "Return the width of the longest status label."
+  (apply #'max (mapcar (lambda (entry) (string-width (nth 1 entry)))
+                       claude-code-ide-session-status--labels)))
+
 (defun claude-code-ide-session-status--urgent-p (state)
   "Return non-nil when STATE asks the user to act or look at once."
   (memq state '(waiting error unobserved tasks-quiet)))
@@ -1054,10 +1059,11 @@ oldest first within a state."
 The sessions that wait for you come first.
 
 \\{claude-code-ide-session-status-list-mode-map}"
-  (setq tabulated-list-format [("Status" 14 nil)
-                               ("Session" 30 nil)
-                               ("For" 5 nil :right-align t)
-                               ("Detail" 0 nil)])
+  (setq tabulated-list-format
+        (vector (list "Status" (claude-code-ide-session-status--label-width) nil)
+                '("Session" 30 nil)
+                '("For" 5 nil :right-align t)
+                '("Detail" 0 nil)))
   (setq tabulated-list-sort-key nil)
   (add-hook 'tabulated-list-revert-hook #'claude-code-ide-session-status--refresh nil t)
   (tabulated-list-init-header))
