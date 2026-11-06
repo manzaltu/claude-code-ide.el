@@ -591,7 +591,7 @@ Every change goes through one queue. The queue writes under a lock directory (=<
 
 ** Session Status
 
-The status buffer shows what each running instance does, and puts the instances that wait for you first. Keep it open to see at a glance which sessions are blocked, and press =RET= to go to one.
+The status buffer shows what each running instance does, grouped by project (the directory that Claude Code works in). The projects and instances that need you come first. Keep it open to see at a glance which sessions are blocked, and press =RET= to go to one; on a project line, =RET= goes to the first instance of that project.
 
 #+begin_src elisp
 (claude-code-ide-session-status-mode 1)   ; also turns on the session registry

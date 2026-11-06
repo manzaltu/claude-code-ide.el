@@ -96,7 +96,7 @@ time, which is true: the agent no longer waits on it."
   :type 'sexp
   :group 'claude-code-ide)
 
-(defcustom claude-code-ide-session-status-max-height 12
+(defcustom claude-code-ide-session-status-max-height 20
   "Maximum height in lines of the status window."
   :type 'integer
   :group 'claude-code-ide)
@@ -1034,17 +1034,71 @@ oldest first within a state."
        ((< seconds 3600) (format "%dm" (/ seconds 60)))
        (t (format "%dh" (/ seconds 3600)))))))
 
+(defconst claude-code-ide-session-status--session-width 30
+  "Width of the Session column; longer names are cut.")
+
+(cl-defstruct (claude-code-ide-session-status--group
+               (:constructor claude-code-ide-session-status--group-create)
+               (:copier nil))
+  "A Claude project, its directory, and the rows of its sessions."
+  (directory "" :type string)
+  (rows nil :type list :documentation "Rows of `claude-code-ide-session-status--rows'."))
+
+(defun claude-code-ide-session-status--group-by-project (rows)
+  "Return ROWS grouped by the project directory of their session.
+The groups keep the order of their first row, so the project with the
+session that needs the user most comes first; rows keep their order."
+  (let ((groups '()))
+    (dolist (row rows)
+      (let* ((directory (file-name-as-directory
+                         (expand-file-name (claude-code-ide-mcp-session-project-dir (car row)))))
+             (group (cl-find directory groups
+                             :key #'claude-code-ide-session-status--group-directory
+                             :test #'equal)))
+        (if group
+            (setf (claude-code-ide-session-status--group-rows group)
+                  (append (claude-code-ide-session-status--group-rows group) (list row)))
+          (setq groups (append groups (list (claude-code-ide-session-status--group-create
+                                             :directory directory :rows (list row))))))))
+    groups))
+
+(defun claude-code-ide-session-status--group-header (group)
+  "Return the header line text of GROUP."
+  (let ((count (length (claude-code-ide-session-status--group-rows group)))
+        (directory (claude-code-ide-session-status--group-directory group)))
+    (concat (propertize (file-name-nondirectory (directory-file-name directory)) 'face 'bold)
+            (propertize (format "  %d session%s · %s" count (if (= count 1) "" "s")
+                                (abbreviate-file-name directory))
+                        'face 'shadow))))
+
 (defun claude-code-ide-session-status--entries (rows now)
-  "Return the `tabulated-list-entries' for ROWS at NOW."
-  (mapcar (lambda (row)
-              (pcase-let* ((`(,session ,state ,since ,detail) row)
-                           (`(,label ,face) (alist-get state claude-code-ide-session-status--labels)))
-                (list session
-                      (vector (propertize label 'face face)
-                              (claude-code-ide--session-display-name session)
-                              (claude-code-ide-session-status--age since now)
-                              (or detail "")))))
-          rows))
+  "Return the `tabulated-list-entries' for ROWS at NOW, grouped by project.
+Each group starts with a header entry whose id is the group."
+  (apply #'append
+         (mapcar
+          (lambda (group)
+            (cons (list group (vector (claude-code-ide-session-status--group-header group) "" "" ""))
+                  (mapcar (lambda (row)
+                            (pcase-let* ((`(,session ,state ,since ,detail) row)
+                                         (`(,label ,face) (alist-get state claude-code-ide-session-status--labels)))
+                              (list session
+                                    (vector (propertize label 'face face)
+                                            (truncate-string-to-width
+                                             (concat "  " (claude-code-ide--session-display-name session))
+                                             claude-code-ide-session-status--session-width nil nil "…")
+                                            (claude-code-ide-session-status--age since now)
+                                            (or detail "")))))
+                          (claude-code-ide-session-status--group-rows group))))
+          (claude-code-ide-session-status--group-by-project rows))))
+
+(defun claude-code-ide-session-status--print-entry (id cols)
+  "Print the entry ID with COLS: a project header as one whole line."
+  (if (claude-code-ide-session-status--group-p id)
+      (let ((start (point)))
+        (insert (aref cols 0) "\n")
+        (add-text-properties start (point) (list 'tabulated-list-id id
+                                                 'tabulated-list-entry cols)))
+    (tabulated-list-print-entry id cols)))
 
 (defvar claude-code-ide-session-status-list-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1055,16 +1109,18 @@ oldest first within a state."
 
 (define-derived-mode claude-code-ide-session-status-list-mode tabulated-list-mode
   "Claude Status"
-  "Live status of the Claude Code sessions of this Emacs.
-The sessions that wait for you come first.
+  "Live status of the Claude Code sessions of this Emacs, by project.
+The projects and sessions that need you come first.  RET on a project
+line goes to its first session.
 
 \\{claude-code-ide-session-status-list-mode-map}"
   (setq tabulated-list-format
         (vector (list "Status" (claude-code-ide-session-status--label-width) nil)
-                '("Session" 30 nil)
+                (list "Session" claude-code-ide-session-status--session-width nil)
                 '("For" 5 nil :right-align t)
                 '("Detail" 0 nil)))
   (setq tabulated-list-sort-key nil)
+  (setq-local tabulated-list-printer #'claude-code-ide-session-status--print-entry)
   (add-hook 'tabulated-list-revert-hook #'claude-code-ide-session-status--refresh nil t)
   (tabulated-list-init-header))
 
@@ -1100,10 +1156,13 @@ The sessions that wait for you come first.
         (select-window window)))))
 
 (defun claude-code-ide-session-status-visit ()
-  "Go to the session on this line."
+  "Go to the session on this line, or the first session of a project line."
   (interactive)
-  (claude-code-ide-session-status--visit-session
-   (or (tabulated-list-get-id) (user-error "No session on this line"))))
+  (let ((id (or (tabulated-list-get-id) (user-error "No session on this line"))))
+    (claude-code-ide-session-status--visit-session
+     (if (claude-code-ide-session-status--group-p id)
+         (car (car (claude-code-ide-session-status--group-rows id)))
+       id))))
 
 ;;;###autoload
 (defun claude-code-ide-visit-waiting-session ()

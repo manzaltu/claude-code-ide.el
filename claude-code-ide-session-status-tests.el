@@ -665,15 +665,20 @@ The event name is only for the reader; the text is the same."
           (should (gethash session claude-code-ide-session-status--by-session)))))))
 
 (ert-deftest claude-code-ide-test-status-buffer-order-and-visit ()
-  "Waiting sessions come first; RET goes to the session on the line."
+  "Sessions are grouped by project, the most urgent project first.
+RET goes to the session on the line, or to the first session of a
+project line."
   (claude-code-ide-tests--clear-processes)
   (claude-code-ide-tests--with-status
     (let* ((buffers (list (generate-new-buffer "*cc-work*")
                           (generate-new-buffer "*cc-wait*")
-                          (generate-new-buffer "*cc-plain*")))
+                          (generate-new-buffer "*cc-plain*")
+                          (generate-new-buffer "*cc-wait-2*")))
            (working (claude-code-ide-tests--make-session "/tmp/status-a/" :buffer (nth 0 buffers)))
            (waiting (claude-code-ide-tests--make-session "/tmp/status-b/" :buffer (nth 1 buffers)))
            (plain (claude-code-ide-tests--make-session "/tmp/status-c/" :buffer (nth 2 buffers)))
+           (sibling (claude-code-ide-tests--make-session "/tmp/status-b/" :buffer (nth 3 buffers)
+                                                         :instance-name "docs"))
            (visited nil))
       (unwind-protect
           (progn
@@ -685,10 +690,14 @@ The event name is only for the reader; the text is the same."
                                          (list '("UserPromptSubmit" "{}")
                                                (claude-code-ide-tests--tool "PreToolUse" "t1")
                                                (claude-code-ide-tests--permission)))
-            (should (equal (mapcar (lambda (row) (list (car row) (nth 1 row)))
-                                   (claude-code-ide-session-status--rows))
-                           (list (list waiting 'waiting) (list working 'working)
-                                 (list plain 'untracked))))
+            ;; The two untracked sessions have no time, so their order is open
+            (let ((rows (mapcar (lambda (row) (list (car row) (nth 1 row)))
+                                (claude-code-ide-session-status--rows))))
+              (should (equal (cl-subseq rows 0 2)
+                             (list (list waiting 'waiting) (list working 'working))))
+              (should-not (cl-set-exclusive-or (cl-subseq rows 2)
+                                               (list (list plain 'untracked) (list sibling 'untracked))
+                                               :test #'equal)))
             (cl-letf (((symbol-function 'claude-code-ide--display-buffer-in-side-window)
                        (lambda (buffer) (setq visited buffer) (selected-window)))
                       ((symbol-function 'display-buffer) #'ignore))
@@ -696,10 +705,36 @@ The event name is only for the reader; the text is the same."
               (should (= claude-code-ide-session-status--urgent-count 1))
               (should (string-match-p "1 need you" (claude-code-ide-session-status--lighter)))
               (with-current-buffer claude-code-ide-session-status--buffer-name
+                ;; One header per project, then its sessions
                 (goto-char (point-min))
-                (should (eq (tabulated-list-get-id) waiting))
+                (let ((ids nil))
+                  (while (not (eobp))
+                    (push (tabulated-list-get-id) ids)
+                    (forward-line 1))
+                  (setq ids (nreverse ids))
+                  (should (equal (mapcar (lambda (id)
+                                           (if (claude-code-ide-session-status--group-p id)
+                                               (claude-code-ide-session-status--group-directory id)
+                                             id))
+                                         ids)
+                                 (list "/tmp/status-b/" waiting sibling
+                                       "/tmp/status-a/" working
+                                       "/tmp/status-c/" plain))))
+                (goto-char (point-min))
+                (should (string-prefix-p "status-b  2 sessions"
+                                         (buffer-substring-no-properties
+                                          (point) (line-end-position))))
+                ;; RET on the project line goes to its first session
                 (claude-code-ide-session-status-visit))
               (should (eq visited (nth 1 buffers)))
+              (setq visited nil)
+              ;; Visiting selects a window, which changes the current buffer
+              (with-current-buffer claude-code-ide-session-status--buffer-name
+                (goto-char (point-min))
+                (forward-line 2)
+                (should (eq (tabulated-list-get-id) sibling))
+                (claude-code-ide-session-status-visit))
+              (should (eq visited (nth 3 buffers)))
               (setq visited nil)
               (claude-code-ide-visit-waiting-session)
               (should (eq visited (nth 1 buffers)))))
