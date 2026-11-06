@@ -599,32 +599,37 @@ The status buffer shows what each running instance does, and puts the instances 
 
 Turn the mode off to close the buffer. =M-x claude-code-ide-show-session-status= shows it again.
 
-| State       | Meaning                                                                  |
-|-------------+--------------------------------------------------------------------------|
-| =WAITING=   | A permission dialog, a question menu, a plan approval or an MCP input form waits for you |
-| =ERROR=     | The turn failed with an API error                                        |
-| =NO EVENTS= | The instance sent nothing since it started, for example at the dialog that asks whether to trust the folder |
-| =your turn= | The turn ended, or you interrupted it                                    |
-| =starting=  | The instance has started and has not reported yet                        |
-| =working=   | Claude works                                                             |
-| =untracked= | The instance started without status hooks                                |
+Each state says who waits for whom. They are listed in the order of the buffer: what needs you first.
 
-The =For= column shows how long the instance has been in its state, and =Detail= shows the command, the question, or the first line of the last answer.
+| State            | Meaning                                                                                       |
+|------------------+-----------------------------------------------------------------------------------------------|
+| =NEEDS ANSWER=   | A permission dialog, a question menu, a plan approval or an MCP input form is open. The agent is blocked until you answer |
+| =FAILED=         | The turn ended with an API error                                                              |
+| =NO SIGNAL=      | The instance sent nothing since it started, for example at the dialog that asks whether to trust the folder |
+| =TASKS QUIET=    | The turn ended and a background task shows no activity for a long time. Look at it: it may hang, or the agent may have left a server running |
+| =WAITS FOR YOU=  | The turn ended and nothing runs. The agent waits for your next message                       |
+| =WAITS ON TASKS= | The turn ended, but its subagents or background shells still run. The agent continues by itself when they finish |
+| =STARTING=       | The instance has started and has not reported yet                                             |
+| =WORKING=        | The agent works                                                                               |
+| =UNTRACKED=      | The instance started without status hooks                                                     |
+
+The =For= column shows how long the instance has been in its state. =Detail= shows the command or question that waits for you, the first line of the last reply, or the running tasks (for example "2 agents, 1 shell: Run the tests").
 
 | Command                                | Description                                              |
 |----------------------------------------+----------------------------------------------------------|
 | =M-x claude-code-ide-show-session-status=  | Show the status buffer                                   |
 | =M-x claude-code-ide-visit-waiting-session= | Go to the first session in the list that needs you        |
 
-In the buffer, =RET= goes to the session on the line, and =w= goes to the first session that needs you: =WAITING= first, then =ERROR= and =NO EVENTS=, then =your turn=; the longest wait first within each state. While the mode is on, the mode line shows =Claude[N need you]= when instances are =WAITING=, =ERROR= or =NO EVENTS=.
+In the buffer, =RET= goes to the session on the line, and =w= goes to the first session that needs you, in the order of the table; the longest wait first within each state. While the mode is on, the mode line shows =Claude[N need you]= when instances are in one of the first four states.
 
 *** How it works
 
 The registry passes Claude Code hooks to each instance it starts. Each hook runs a small shell script that writes the hook input to a file, numbered per instance, in a directory next to the state file. Emacs reads the files in order, deletes them, and updates the status. The script prints nothing and always exits with 0, so it never changes what Claude does. Each hook has a timeout of 5 seconds.
 
-- After you approve a command, the status stays =WAITING= until the command ends, because no hook fires on the approval.
-- An interrupt (=Esc=) fires no hook. When a working instance sends no event for =claude-code-ide-session-status-quiet-time= seconds, Emacs checks two things. If the new part of the transcript has an interrupt marker (an interrupt during a tool), the state becomes =your turn= with "Interrupted". If the terminal no longer shows Claude's spinner line (for example "✢ Misting… (3s)"), the state becomes =your turn= with "Interrupted?". If a later version of Claude Code changes the spinner, this check shows a working instance as =your turn=; it never shows a waiting instance as working.
-- A denial with =Esc= fires no hook either. The instance stays =WAITING= until Claude reports, 60 seconds later, that it waits for your input.
+- After you approve a command, the status stays =NEEDS ANSWER= until the command ends, because no hook fires on the approval.
+- Claude Code starts subagents in the background, so the main turn often ends while they work. The list of running tasks comes with the end of each turn, and the subagents report their own steps. A subagent that runs no tool is quiet after =claude-code-ide-session-status-agent-quiet-time= seconds (600) without activity. A background shell, or a subagent inside one long command, is quiet after =claude-code-ide-session-status-task-quiet-time= seconds (900); a shell reports nothing, so its time counts from its start.
+- An interrupt (=Esc=) fires no hook. When a working instance sends no event for =claude-code-ide-session-status-quiet-time= seconds, Emacs checks two things. If the new part of the transcript has an interrupt marker (an interrupt during a tool), the state becomes =WAITS FOR YOU= with "Interrupted". If the terminal no longer shows Claude's spinner line (for example "✢ Misting… (3s)"), the state becomes =WAITS FOR YOU= with "Interrupted?". If a later version of Claude Code changes the spinner, this check shows a working instance as =WAITS FOR YOU=; it never shows a waiting instance as working. When the spinner shows again, or the agent uses a tool, the state is =WORKING= again.
+- A denial with =Esc= fires no hook either. The instance stays =NEEDS ANSWER= until Claude reports, 60 seconds later, that it waits for your input.
 - Set =claude-code-ide-session-status-tracking= to =nil= to start instances without status hooks.
 
 ** Emacs MCP Tools

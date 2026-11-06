@@ -267,6 +267,256 @@ Timers and file watches are not started."
       (should (equal (directory-files dir nil "\\`n3-") '("n3-00000001-Stop.json")))
       (should-not (file-exists-p lock)))))
 
+;;; Background tasks (shapes from traces of CLI 2.1.317)
+
+(defun claude-code-ide-tests--feed-at (status events)
+  "Apply EVENTS to STATUS.  Each is (TIME EVENT JSON-TEXT)."
+  (dolist (event events status)
+    (claude-code-ide-session-status--apply
+     status (nth 1 event)
+     (claude-code-ide-session-registry--json-decode (nth 2 event))
+     (float (car event)))))
+
+(defun claude-code-ide-tests--state-at (status now)
+  "Return the state and detail of STATUS at NOW."
+  (let ((state (claude-code-ide-session-status--state status (float now))))
+    (list state (claude-code-ide-session-status--detail status state (float now)))))
+
+(defun claude-code-ide-tests--agent-task (id &optional description)
+  "Return the background_tasks JSON item of the subagent ID."
+  (format "{\"id\":\"%s\",\"type\":\"subagent\",\"status\":\"running\",\"description\":\"%s\",\"agent_type\":\"general-purpose\"}"
+          id (or description (concat "Task " id))))
+
+(defun claude-code-ide-tests--shell-task (id &optional description)
+  "Return the background_tasks JSON item of the shell ID."
+  (format "{\"id\":\"%s\",\"type\":\"shell\",\"status\":\"running\",\"description\":\"%s\",\"command\":\"pytest\"}"
+          id (or description "Run tests")))
+
+(defun claude-code-ide-tests--stop (reply &rest tasks)
+  "Return a Stop event text with REPLY and the background TASKS items."
+  (format "{\"last_assistant_message\":\"%s\",\"background_tasks\":[%s],\"session_crons\":[]}"
+          reply (string-join tasks ",")))
+
+(defun claude-code-ide-tests--subagent (event id &optional type)
+  "Return the text of a SubagentStart or SubagentStop EVENT for agent ID.
+TYPE is the agent type; the CLI's own helper agents have \"\"."
+  (format "{\"agent_id\":\"%s\",\"agent_type\":\"%s\"%s}"
+          id (or type "general-purpose")
+          (if (equal event "SubagentStop") ",\"background_tasks\":[]" "")))
+
+(defun claude-code-ide-tests--agent-tool (_event agent id)
+  "Return the text of a tool event of subagent AGENT for tool use ID.
+The event name is only for the reader; the text is the same."
+  (format "{\"agent_id\":\"%s\",\"agent_type\":\"general-purpose\",\"tool_name\":\"Bash\",\"tool_use_id\":\"%s\",\"tool_input\":{\"command\":\"ls\"}}"
+          agent id))
+
+(ert-deftest claude-code-ide-test-status-tasks-shell-idle-prompt ()
+  "A background shell keeps the session on its tasks through idle_prompt."
+  (let ((status (claude-code-ide-tests--feed-at
+                 (claude-code-ide-tests--status)
+                 `((1 "UserPromptSubmit" "{}")
+                   (4 "Stop" ,(claude-code-ide-tests--stop
+                               "Started the tests" (claude-code-ide-tests--shell-task "b1")))))))
+    (should (equal (claude-code-ide-tests--state-at status 10) '(tasks "1 shell: Run tests")))
+    ;; F6: idle_prompt fires while the shell runs
+    (claude-code-ide-tests--feed-at
+     status '((64 "Notification" "{\"notification_type\":\"idle_prompt\",\"message\":\"Claude is waiting for your input\"}")))
+    (should (eq (car (claude-code-ide-tests--state-at status 70)) 'tasks))
+    (should (equal (claude-code-ide-session-status-detail status) "Started the tests"))
+    ;; The shell ends: the CLI wakes the agent, which reports
+    (claude-code-ide-tests--feed-at
+     status `((100 "UserPromptSubmit" "{}")
+              (102 "Stop" ,(claude-code-ide-tests--stop "Tests passed"))))
+    (should (equal (claude-code-ide-tests--state-at status 110) '(idle "Tests passed")))
+    ;; idle_prompt keeps the reply
+    (claude-code-ide-tests--feed-at
+     status '((162 "Notification" "{\"notification_type\":\"idle_prompt\"}")))
+    (should (equal (claude-code-ide-tests--state-at status 170) '(idle "Tests passed")))))
+
+(ert-deftest claude-code-ide-test-status-tasks-subagent-lifecycle ()
+  "A background subagent: start, internal helper stops, wake, stop."
+  (let ((status (claude-code-ide-tests--feed-at
+                 (claude-code-ide-tests--status)
+                 `((1 "UserPromptSubmit" "{}")
+                   (2 "PreToolUse" "{\"tool_name\":\"Agent\",\"tool_use_id\":\"m1\",\"tool_input\":{}}")
+                   (3 "PostToolUse" "{\"tool_name\":\"Agent\",\"tool_use_id\":\"m1\",\"tool_input\":{}}")
+                   (3 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+                   (4 "Stop" ,(claude-code-ide-tests--stop "Started an agent"
+                                                           (claude-code-ide-tests--agent-task "a1" "Scan the repo")))
+                   (5 "SubagentStop" ,(claude-code-ide-tests--subagent "SubagentStop" "zz" ""))
+                   (6 "PreToolUse" ,(claude-code-ide-tests--agent-tool "PreToolUse" "a1" "s1"))))))
+    (should (equal (claude-code-ide-tests--state-at status 10) '(tasks "1 agent: Scan the repo")))
+    (claude-code-ide-tests--feed-at
+     status `((40 "PostToolUse" ,(claude-code-ide-tests--agent-tool "PostToolUse" "a1" "s1"))
+              (41 "UserPromptSubmit" "{}")
+              (41 "SubagentStop" ,(claude-code-ide-tests--subagent "SubagentStop" "a1"))))
+    (should (eq (car (claude-code-ide-tests--state-at status 42)) 'working))
+    (claude-code-ide-tests--feed-at
+     status `((43 "Stop" ,(claude-code-ide-tests--stop "The agent found 3 files"))))
+    (should (equal (claude-code-ide-tests--state-at status 50) '(idle "The agent found 3 files")))))
+
+(ert-deftest claude-code-ide-test-status-tasks-terminal-orderings ()
+  "An ended agent never runs again, whatever arrives later."
+  (let ((status (claude-code-ide-tests--feed-at
+                 (claude-code-ide-tests--status)
+                 `((1 "UserPromptSubmit" "{}")
+                   (2 "SubagentStop" ,(claude-code-ide-tests--subagent "SubagentStop" "a1"))
+                   (3 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+                   (4 "Stop" ,(claude-code-ide-tests--stop "Done" (claude-code-ide-tests--agent-task "a1")))))))
+    (should (equal (claude-code-ide-tests--state-at status 10) '(idle "Done")))))
+
+(ert-deftest claude-code-ide-test-status-tasks-snapshot-drops-killed ()
+  "A snapshot that omits a running agent ends it, with its dialog."
+  (let ((status (claude-code-ide-tests--feed-at
+                 (claude-code-ide-tests--status)
+                 `((1 "UserPromptSubmit" "{}")
+                   (2 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+                   (2 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a2"))
+                   (3 "PreToolUse" ,(claude-code-ide-tests--agent-tool "PreToolUse" "a2" "s2"))
+                   (4 "PermissionRequest" "{\"agent_id\":\"a2\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}")
+                   (5 "Stop" ,(claude-code-ide-tests--stop "Waiting" (claude-code-ide-tests--agent-task "a1")))))))
+    (should (equal (mapcar #'claude-code-ide-session-status--task-id
+                           (claude-code-ide-session-status--running-tasks status))
+                   '("a1")))
+    (should (eq (car (claude-code-ide-tests--state-at status 10)) 'tasks))))
+
+(ert-deftest claude-code-ide-test-status-tasks-dialogs-and-wakes ()
+  "A wake is no answer to a subagent's dialog; a user prompt ends a main one."
+  (let ((status (claude-code-ide-tests--feed-at
+                 (claude-code-ide-tests--status)
+                 `((1 "UserPromptSubmit" "{}")
+                   (2 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+                   (3 "Stop" ,(claude-code-ide-tests--stop "Started" (claude-code-ide-tests--agent-task "a1")))
+                   (4 "PreToolUse" ,(claude-code-ide-tests--agent-tool "PreToolUse" "a1" "s1"))
+                   (5 "PermissionRequest" "{\"agent_id\":\"a1\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}")
+                   (6 "UserPromptSubmit" "{}")
+                   (7 "Stop" ,(claude-code-ide-tests--stop "Still waiting" (claude-code-ide-tests--agent-task "a1")))))))
+    (should (equal (claude-code-ide-tests--state-at status 10) '(waiting "Bash: ls")))
+    (claude-code-ide-tests--feed-at
+     status `((20 "PostToolUse" ,(claude-code-ide-tests--agent-tool "PostToolUse" "a1" "s1"))))
+    (should (eq (car (claude-code-ide-tests--state-at status 21)) 'tasks)))
+  ;; Esc denial of a main dialog fires nothing; the next prompt ends it
+  (let ((status (claude-code-ide-tests--feed
+                 (claude-code-ide-tests--status)
+                 (list '("UserPromptSubmit" "{}")
+                       (claude-code-ide-tests--tool "PreToolUse" "t1")
+                       (claude-code-ide-tests--permission)
+                       '("UserPromptSubmit" "{\"prompt\":\"do something else\"}")))))
+    (should (eq (car (claude-code-ide-tests--state status)) 'working))))
+
+(ert-deftest claude-code-ide-test-status-tasks-unmatched-permission ()
+  "A subagent dialog without a known tool survives the main Stop."
+  (let ((status (claude-code-ide-tests--feed-at
+                 (claude-code-ide-tests--status)
+                 `((1 "UserPromptSubmit" "{}")
+                   (2 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+                   (3 "PermissionRequest" "{\"agent_id\":\"a1\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"/tmp/x\"}}")
+                   (4 "Stop" ,(claude-code-ide-tests--stop "Started" (claude-code-ide-tests--agent-task "a1")))))))
+    (should (eq (car (claude-code-ide-tests--state-at status 10)) 'waiting))
+    (claude-code-ide-tests--feed-at
+     status `((30 "SubagentStop" ,(claude-code-ide-tests--subagent "SubagentStop" "a1"))))
+    (should (eq (car (claude-code-ide-tests--state-at status 31)) 'idle))))
+
+(ert-deftest claude-code-ide-test-status-tasks-quiet-boundaries ()
+  "Each task has its own clock; a busy sibling does not hide a quiet task."
+  (let ((claude-code-ide-session-status-agent-quiet-time 600)
+        (claude-code-ide-session-status-task-quiet-time 900))
+    ;; A subagent that runs no tool: 600 s
+    (let ((status (claude-code-ide-tests--feed-at
+                   (claude-code-ide-tests--status)
+                   `((1 "UserPromptSubmit" "{}")
+                     (10 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+                     (11 "Stop" ,(claude-code-ide-tests--stop "Started" (claude-code-ide-tests--agent-task "a1")))))))
+      (should (eq (car (claude-code-ide-tests--state-at status 609)) 'tasks))
+      (should (equal (claude-code-ide-tests--state-at status 611)
+                     '(tasks-quiet "No activity for 10m: Task a1"))))
+    ;; A subagent in one long tool call: 900 s
+    (let ((status (claude-code-ide-tests--feed-at
+                   (claude-code-ide-tests--status)
+                   `((1 "UserPromptSubmit" "{}")
+                     (10 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+                     (11 "Stop" ,(claude-code-ide-tests--stop "Started" (claude-code-ide-tests--agent-task "a1")))
+                     (20 "PreToolUse" ,(claude-code-ide-tests--agent-tool "PreToolUse" "a1" "s1"))))))
+      (should (eq (car (claude-code-ide-tests--state-at status 919)) 'tasks))
+      (should (eq (car (claude-code-ide-tests--state-at status 921)) 'tasks-quiet)))
+    ;; A shell: 900 s from its start; a busy sibling agent does not hide it
+    (let ((status (claude-code-ide-tests--feed-at
+                   (claude-code-ide-tests--status)
+                   `((1 "UserPromptSubmit" "{}")
+                     (10 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a2"))
+                     (11 "Stop" ,(claude-code-ide-tests--stop "Started"
+                                                              (claude-code-ide-tests--shell-task "b1")
+                                                              (claude-code-ide-tests--agent-task "a2")))
+                     (905 "PreToolUse" ,(claude-code-ide-tests--agent-tool "PreToolUse" "a2" "s2"))))))
+      (should (eq (car (claude-code-ide-tests--state-at status 910)) 'tasks))
+      (should (equal (claude-code-ide-tests--state-at status 912)
+                     '(tasks-quiet "No activity for 15m: Run tests")))
+      (should (claude-code-ide-session-status--urgent-p 'tasks-quiet)))))
+
+(ert-deftest claude-code-ide-test-status-tasks-snapshot-keeps-age ()
+  "A later snapshot keeps a task's start and does not count as activity."
+  (let ((claude-code-ide-session-status-agent-quiet-time 600)
+        (status (claude-code-ide-tests--feed-at
+                 (claude-code-ide-tests--status)
+                 `((1 "UserPromptSubmit" "{}")
+                   (10 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+                   (11 "Stop" ,(claude-code-ide-tests--stop "Started" (claude-code-ide-tests--agent-task "a1")))
+                   (300 "UserPromptSubmit" "{}")
+                   (301 "Stop" ,(claude-code-ide-tests--stop "Still running" (claude-code-ide-tests--agent-task "a1")))))))
+    (should (= 10.0 (claude-code-ide-session-status--task-first-seen
+                     (car (claude-code-ide-session-status--running-tasks status)))))
+    (should (eq (car (claude-code-ide-tests--state-at status 611)) 'tasks-quiet))))
+
+(ert-deftest claude-code-ide-test-status-tasks-reset-and-compact ()
+  "Compaction keeps the tasks; /clear drops them."
+  (let ((status (claude-code-ide-tests--feed-at
+                 (claude-code-ide-tests--status)
+                 `((1 "UserPromptSubmit" "{}")
+                   (2 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+                   (3 "Stop" ,(claude-code-ide-tests--stop "Started" (claude-code-ide-tests--agent-task "a1")))
+                   (4 "SessionStart" "{\"source\":\"compact\"}")))))
+    (should (eq (car (claude-code-ide-tests--state-at status 10)) 'tasks))
+    (claude-code-ide-tests--feed-at status '((20 "SessionStart" "{\"source\":\"clear\"}")))
+    (should (equal (claude-code-ide-tests--state-at status 21) '(idle "Ready")))))
+
+(ert-deftest claude-code-ide-test-status-tasks-interrupt-with-busy-subagent ()
+  "Subagent events do not hide an interrupt of the main agent."
+  (claude-code-ide-tests--with-status
+    (let* ((claude-code-ide-session-status-quiet-time 5)
+           (terminal (generate-new-buffer "*cc-terminal*"))
+           (status (claude-code-ide-tests--status)))
+      (unwind-protect
+          (progn
+            (setf (claude-code-ide-session-status-session status)
+                  (make-claude-code-ide-mcp-session :buffer terminal))
+            (with-current-buffer terminal
+              (insert "  ⎿  Interrupted · What should Claude do instead?\n> \n"))
+            (claude-code-ide-tests--feed-at
+             status `((1 "UserPromptSubmit" "{}")
+                      (2 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+                      (8 "PreToolUse" ,(claude-code-ide-tests--agent-tool "PreToolUse" "a1" "s1"))
+                      (9 "PostToolUse" ,(claude-code-ide-tests--agent-tool "PostToolUse" "a1" "s1"))))
+            (should (claude-code-ide-session-status--check-interrupt status 10.0))
+            ;; The guess stands against further subagent tool events
+            (claude-code-ide-tests--feed-at
+             status `((11 "PreToolUse" ,(claude-code-ide-tests--agent-tool "PreToolUse" "a1" "s2"))))
+            (should (claude-code-ide-session-status-guessed status))
+            (should (eq (car (claude-code-ide-tests--state-at status 12)) 'tasks)))
+        (kill-buffer terminal)))))
+
+(ert-deftest claude-code-ide-test-status-tasks-labels-and-order ()
+  "The labels say who waits for whom; quiet tasks rank above a finished turn."
+  (should (equal (mapcar (lambda (state)
+                           (car (alist-get state claude-code-ide-session-status--labels)))
+                         '(waiting error unobserved tasks-quiet idle tasks starting working untracked))
+                 '("NEEDS ANSWER" "FAILED" "NO SIGNAL" "TASKS QUIET" "WAITS FOR YOU"
+                   "WAITS ON TASKS" "STARTING" "WORKING" "UNTRACKED")))
+  (should (< (alist-get 'tasks-quiet claude-code-ide-session-status--rank)
+             (alist-get 'idle claude-code-ide-session-status--rank)
+             (alist-get 'tasks claude-code-ide-session-status--rank)))
+  (should-not (claude-code-ide-session-status--urgent-p 'tasks))
+  (should-not (claude-code-ide-session-status--urgent-p 'idle)))
+
 (ert-deftest claude-code-ide-test-status-unobserved-and-untracked ()
   "A session without events is unobserved after the timeout."
   (let ((status (claude-code-ide-tests--status 0.0))

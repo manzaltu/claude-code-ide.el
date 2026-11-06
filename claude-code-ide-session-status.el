@@ -70,6 +70,22 @@ An interrupt with Esc fires no hook; the transcript shows it."
   :type 'number
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-session-status-agent-quiet-time 600
+  "Seconds without activity after which a background subagent is quiet.
+This applies to a subagent that runs no tool.  A quiet task changes the
+state of its session from WAITS ON TASKS to TASKS QUIET, which asks
+the user to look."
+  :type 'number
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-session-status-task-quiet-time 900
+  "Seconds after which a background shell, or a subagent in one tool, is quiet.
+A shell reports no activity, so its time counts from its start.  A
+server left running in the background shows TASKS QUIET after this
+time, which is true: the agent no longer waits on it."
+  :type 'number
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-session-status-display-action
   '((display-buffer-reuse-window display-buffer-in-side-window)
     (side . top)
@@ -117,6 +133,18 @@ An interrupt with Esc fires no hook; the transcript shows it."
   (detail "" :type string)
   (since 0.0 :type float))
 
+(cl-defstruct (claude-code-ide-session-status--task
+               (:constructor claude-code-ide-session-status--task-create)
+               (:copier nil))
+  "A subagent or shell that runs in the background of a session."
+  (id "" :type string)
+  (type 'subagent :type symbol :documentation "`subagent' or `shell'.")
+  (description "" :type string)
+  (first-seen 0.0 :type float)
+  (last-activity 0.0 :type float :documentation "Time of the task's last event.")
+  (ended nil :type boolean
+         :documentation "Non-nil when the task ended; it then never runs again."))
+
 (cl-defstruct (claude-code-ide-session-status
                (:constructor claude-code-ide-session-status-create)
                (:copier nil))
@@ -134,6 +162,8 @@ An interrupt with Esc fires no hook; the transcript shows it."
             :documentation "(AGENT-ID . TOOL-USE-ID) -> (SEQ NAME INPUT).")
   (tool-seq 0 :type integer)
   (blockers nil :type list :documentation "Open blockers, oldest first.")
+  (tasks (make-hash-table :test 'equal)
+         :documentation "Task id -> `claude-code-ide-session-status--task'.")
   (guessed nil :type boolean
            :documentation "Non-nil when the idle phase is a guess of the interrupt check.
 A sign of work, such as a tool event, ends it.")
@@ -143,7 +173,7 @@ A sign of work, such as a tool event, ends it.")
 (defconst claude-code-ide-session-status--events
   '("SessionStart" "UserPromptSubmit" "PreToolUse" "PermissionRequest"
     "PostToolUse" "PostToolUseFailure" "Notification" "Stop" "StopFailure"
-    "Elicitation" "ElicitationResult")
+    "SubagentStart" "SubagentStop" "Elicitation" "ElicitationResult")
   "CLI hook events that the status is computed from.")
 
 (defconst claude-code-ide-session-status--waiting-notifications
@@ -385,31 +415,129 @@ agent with the same name and input that has no blocker yet is chosen."
              (claude-code-ide-session-status-inflight status))
     best))
 
+(defun claude-code-ide-session-status--running-tasks (status)
+  "Return the tasks of STATUS that run, oldest first."
+  (let ((tasks '()))
+    (maphash (lambda (_id task)
+               (unless (claude-code-ide-session-status--task-ended task)
+                 (push task tasks)))
+             (claude-code-ide-session-status-tasks status))
+    (sort tasks (lambda (a b)
+                  (< (claude-code-ide-session-status--task-first-seen a)
+                     (claude-code-ide-session-status--task-first-seen b))))))
+
+(defun claude-code-ide-session-status--forget-agent-work (status agent)
+  "Remove the tools in flight and the blockers of the subagent AGENT of STATUS."
+  (let ((inflight (claude-code-ide-session-status-inflight status)))
+    (maphash (lambda (key _value)
+               (when (equal (car key) agent)
+                 (remhash key inflight)))
+             inflight))
+  (claude-code-ide-session-status--remove-blockers
+   status (lambda (blocker)
+            (equal (car-safe (claude-code-ide-session-status--blocker-tool blocker)) agent))))
+
+(defun claude-code-ide-session-status--end-task (status id now)
+  "Mark the task ID of STATUS ended at NOW, also when it was never seen.
+An ended task never runs again, so a late start event or an old
+snapshot cannot bring it back."
+  (let* ((tasks (claude-code-ide-session-status-tasks status))
+         (task (or (gethash id tasks)
+                   (puthash id (claude-code-ide-session-status--task-create
+                                :id id :first-seen now :last-activity now)
+                            tasks))))
+    (setf (claude-code-ide-session-status--task-ended task) t
+          (claude-code-ide-session-status--task-last-activity task) now)
+    (claude-code-ide-session-status--forget-agent-work status id)))
+
+(defun claude-code-ide-session-status--apply-snapshot (status items now)
+  "Make ITEMS, the background_tasks of a Stop, the running tasks of STATUS at NOW.
+Running tasks that ITEMS omits end, with their tools and dialogs.
+Ended tasks do not come back.  Tasks that stay keep their times.
+Ended tasks older than an hour are dropped."
+  (let ((tasks (claude-code-ide-session-status-tasks status))
+        (running '()))
+    (dolist (item items)
+      (let ((id (and (consp item) (alist-get 'id item))))
+        (when (and (stringp id) (equal (alist-get 'status item) "running"))
+          (push id running)
+          (let ((task (gethash id tasks))
+                (description (or (alist-get 'description item) (alist-get 'command item) "")))
+            (cond
+             ((null task)
+              (puthash id (claude-code-ide-session-status--task-create
+                           :id id
+                           :type (if (equal (alist-get 'type item) "subagent") 'subagent 'shell)
+                           :description description
+                           :first-seen now :last-activity now)
+                       tasks))
+             ((not (claude-code-ide-session-status--task-ended task))
+              (setf (claude-code-ide-session-status--task-description task) description)))))))
+    (maphash (lambda (id task)
+               (cond
+                ((and (not (claude-code-ide-session-status--task-ended task))
+                      (not (member id running)))
+                 (claude-code-ide-session-status--end-task status id now))
+                ((and (claude-code-ide-session-status--task-ended task)
+                      (> (- now (claude-code-ide-session-status--task-last-activity task)) 3600))
+                 (remhash id tasks))))
+             tasks)
+    ;; Dialogs and tools of subagents that are not running
+    (let ((inflight (claude-code-ide-session-status-inflight status)))
+      (maphash (lambda (key _value)
+                 (when (and (car key) (not (member (car key) running)))
+                   (remhash key inflight)))
+               inflight))
+    (claude-code-ide-session-status--remove-blockers
+     status (lambda (blocker)
+              (let ((agent (car-safe (claude-code-ide-session-status--blocker-tool blocker))))
+                (and agent (not (member agent running))))))))
+
 (defun claude-code-ide-session-status--apply (status event data &optional now)
   "Change STATUS for the hook EVENT with the input DATA, at time NOW.
-A session waits while it has blockers: a permission dialog, a question
-menu, an elicitation or a waiting notification.  Each blocker ends only
-with its own answer, the user's next prompt, the end of the turn or the
-idle notification.  Tool events do not turn an idle session into a
-working one, since the user's turn has come, unless the idle phase is
+A session waits for the user while it has blockers: a permission
+dialog, a question menu, an elicitation or a waiting notification.
+Each blocker ends only with its own answer, the end of its agent, the
+user's next prompt (main agent only), the end of the main turn (main
+agent only) or the idle notification.
+
+The main agent's turn can end while subagents and background shells
+run; the tasks come from the background_tasks of each Stop, from
+SubagentStart and from SubagentStop.  Events of subagents count as
+their activity; they never change the phase of the main agent and do
+not count for the interrupt check.  Tool events of the main agent do
+not turn an idle session into a working one, unless the idle phase is
 a guess of the interrupt check."
   (let* ((now (or now (float-time)))
          (phase (claude-code-ide-session-status-phase status))
          (guessed (claude-code-ide-session-status-guessed status))
+         (agent (let ((id (alist-get 'agent_id data))) (and (stringp id) id)))
+         (main (null agent))
+         (subagent-event (let ((type (alist-get 'agent_type data)))
+                           (and agent (stringp type) (not (string-empty-p type)))))
+         (tasks (claude-code-ide-session-status-tasks status))
          (path (alist-get 'transcript_path data)))
-    (setf (claude-code-ide-session-status-last-event status) now)
+    (when main
+      (setf (claude-code-ide-session-status-last-event status) now))
     (when (stringp path)
       (setf (claude-code-ide-session-status-transcript-path status) path))
+    (when-let* ((task (and agent (gethash agent tasks))))
+      (unless (claude-code-ide-session-status--task-ended task)
+        (setf (claude-code-ide-session-status--task-last-activity task) now)))
     (pcase event
       ("SessionStart"
-       ;; Compaction happens inside a turn: the phase stays
+       ;; Compaction happens inside a turn: the phase and the tasks stay
        (unless (equal (alist-get 'source data) "compact")
          (clrhash (claude-code-ide-session-status-inflight status))
+         (clrhash tasks)
          (setf (claude-code-ide-session-status-blockers status) nil)
          (claude-code-ide-session-status--set-phase status 'idle "Ready" now)))
       ("UserPromptSubmit"
-       (setf (claude-code-ide-session-status-blockers status) nil
-             (claude-code-ide-session-status-transcript-offset status)
+       ;; A wake by a finished task is no answer to a subagent's dialog
+       (claude-code-ide-session-status--remove-blockers
+        status (lambda (blocker)
+                 (null (car-safe (claude-code-ide-session-status--blocker-tool blocker)))))
+       (setf (claude-code-ide-session-status-transcript-offset status)
              (or (claude-code-ide-session-status--transcript-size status) 0))
        (claude-code-ide-session-status--set-phase status 'working "Working" now))
       ("PreToolUse"
@@ -418,12 +546,14 @@ a guess of the interrupt check."
                   (list (cl-incf (claude-code-ide-session-status-tool-seq status))
                         name (alist-get 'tool_input data))
                   (claude-code-ide-session-status-inflight status))
-         (when (or guessed (not (eq phase 'idle)))
+         (when (and main (or guessed (not (eq phase 'idle))))
            (claude-code-ide-session-status--set-phase
             status 'working (format "Working: %s" (or name "tool")) now))))
       ("PermissionRequest"
        (claude-code-ide-session-status--add-blocker
-        status 'permission (claude-code-ide-session-status--match-tool status data)
+        status 'permission
+        ;; An unmatched dialog still belongs to its agent
+        (or (claude-code-ide-session-status--match-tool status data) (cons agent nil))
         (claude-code-ide-session-status--tool-detail (alist-get 'tool_name data)
                                                      (alist-get 'tool_input data))
         now))
@@ -432,8 +562,10 @@ a guess of the interrupt check."
          (remhash key (claude-code-ide-session-status-inflight status))
          (claude-code-ide-session-status--remove-blockers
           status (lambda (blocker)
-                   (equal (claude-code-ide-session-status--blocker-tool blocker) key)))
-         (when (or guessed (eq phase 'starting))
+                   (let ((tool (claude-code-ide-session-status--blocker-tool blocker)))
+                     (or (equal tool key)
+                         (and agent (equal tool (cons agent nil)))))))
+         (when (and main (or guessed (eq phase 'starting)))
            (claude-code-ide-session-status--set-phase status 'working "Working" now))))
       ("Notification"
        (let ((type (alist-get 'notification_type data)))
@@ -446,10 +578,16 @@ a guess of the interrupt check."
                (or (alist-get 'message data) "Waiting for you"))
               now)))
           ((equal type "idle_prompt")
+           ;; No dialog is open; an idle phase keeps the first line of the reply
            (setf (claude-code-ide-session-status-blockers status) nil)
-           (claude-code-ide-session-status--set-phase
-            status 'idle "Waiting for your input" now)))))
+           (if (eq phase 'idle)
+               (setf (claude-code-ide-session-status-guessed status) nil)
+             (claude-code-ide-session-status--set-phase
+              status 'idle "Waiting for your input" now))))))
       ("Stop"
+       (when (assq 'background_tasks data)
+         (claude-code-ide-session-status--apply-snapshot
+          status (alist-get 'background_tasks data) now))
        (claude-code-ide-session-status--end-main-turn status)
        (claude-code-ide-session-status--set-phase
         status 'idle
@@ -458,12 +596,27 @@ a guess of the interrupt check."
           (if (string-empty-p text) "Turn ended" text))
         now))
       ("StopFailure"
+       (when (assq 'background_tasks data)
+         (claude-code-ide-session-status--apply-snapshot
+          status (alist-get 'background_tasks data) now))
        (claude-code-ide-session-status--end-main-turn status)
        (claude-code-ide-session-status--set-phase
         status 'error
         (claude-code-ide-session-status--one-line
          (format "Error: %s" (or (alist-get 'error data) (alist-get 'message data) "API error")))
         now))
+      ("SubagentStart"
+       ;; Helper agents of the CLI itself have no agent type
+       (when (and subagent-event (not (gethash agent tasks)))
+         (puthash agent (claude-code-ide-session-status--task-create
+                         :id agent :type 'subagent
+                         :description (alist-get 'agent_type data)
+                         :first-seen now :last-activity now)
+                  tasks)))
+      ("SubagentStop"
+       ;; Its own background_tasks list is stale: it still lists the agent
+       (when subagent-event
+         (claude-code-ide-session-status--end-task status agent now)))
       ("Elicitation"
        (claude-code-ide-session-status--add-blocker
         status 'elicitation nil
@@ -727,10 +880,33 @@ still forgotten when they end."
 
 ;;; Status of a session
 
+(defun claude-code-ide-session-status--task-quiet-p (status task now)
+  "Return non-nil when TASK of STATUS has been quiet too long at NOW.
+A subagent that runs no tool is quiet after
+`claude-code-ide-session-status-agent-quiet-time' seconds without
+activity; a shell, or a subagent in one tool call, after
+`claude-code-ide-session-status-task-quiet-time'."
+  (let* ((id (claude-code-ide-session-status--task-id task))
+         (in-tool (and (eq (claude-code-ide-session-status--task-type task) 'subagent)
+                       (catch 'found
+                         (maphash (lambda (key _value)
+                                    (when (equal (car key) id)
+                                      (throw 'found t)))
+                                  (claude-code-ide-session-status-inflight status))
+                         nil)))
+         (limit (if (and (eq (claude-code-ide-session-status--task-type task) 'subagent)
+                         (not in-tool))
+                    claude-code-ide-session-status-agent-quiet-time
+                  claude-code-ide-session-status-task-quiet-time)))
+    (> (- now (claude-code-ide-session-status--task-last-activity task)) limit)))
+
 (defun claude-code-ide-session-status--state (status now)
   "Return the state of STATUS at NOW.
-That is `waiting' while it has blockers, `unobserved' when it sent no
-event since it started, else its phase.  A nil STATUS is `untracked'."
+`waiting' while it has blockers, `unobserved' when it sent no event
+since it started.  When the main turn ended: `tasks' while subagents
+or background shells run, `tasks-quiet' when one of them is quiet too
+long, `idle' when nothing runs.  Else the phase.  A nil STATUS is
+`untracked'."
   (cond
    ((null status) 'untracked)
    ((claude-code-ide-session-status-blockers status) 'waiting)
@@ -738,17 +914,51 @@ event since it started, else its phase.  A nil STATUS is `untracked'."
          (> (- now (claude-code-ide-session-status-registered status))
             claude-code-ide-session-status-start-timeout))
     'unobserved)
+   ((eq (claude-code-ide-session-status-phase status) 'idle)
+    (let ((running (claude-code-ide-session-status--running-tasks status)))
+      (cond
+       ((null running) 'idle)
+       ((cl-some (lambda (task) (claude-code-ide-session-status--task-quiet-p status task now))
+                 running)
+        'tasks-quiet)
+       (t 'tasks))))
    (t (claude-code-ide-session-status-phase status))))
 
-(defun claude-code-ide-session-status--detail (status state)
-  "Return the detail of STATUS in STATE."
-  (pcase state
-    ('untracked "Started without status hooks")
-    ('waiting (claude-code-ide-session-status--blocker-detail
-               (car (claude-code-ide-session-status-blockers status))))
-    ('unobserved "No events yet: check the terminal")
-    ('starting "Starting")
-    (_ (claude-code-ide-session-status-detail status))))
+(defun claude-code-ide-session-status--tasks-summary (tasks)
+  "Return a short count of TASKS, such as \"2 agents, 1 shell\"."
+  (let ((agents (cl-count 'subagent tasks :key #'claude-code-ide-session-status--task-type))
+        (shells (cl-count-if-not (lambda (task)
+                                   (eq (claude-code-ide-session-status--task-type task) 'subagent))
+                                 tasks)))
+    (string-join
+     (delq nil (list (and (> agents 0) (format "%d agent%s" agents (if (= agents 1) "" "s")))
+                     (and (> shells 0) (format "%d shell%s" shells (if (= shells 1) "" "s")))))
+     ", ")))
+
+(defun claude-code-ide-session-status--detail (status state &optional now)
+  "Return the detail of STATUS in STATE at NOW."
+  (let ((now (or now (float-time))))
+    (pcase state
+      ('untracked "Started without status hooks")
+      ('waiting (claude-code-ide-session-status--blocker-detail
+                 (car (claude-code-ide-session-status-blockers status))))
+      ('unobserved "No events since the start: check the terminal")
+      ('starting "Starting")
+      ('tasks
+       (let ((running (claude-code-ide-session-status--running-tasks status)))
+         (claude-code-ide-session-status--one-line
+          (format "%s: %s" (claude-code-ide-session-status--tasks-summary running)
+                  (claude-code-ide-session-status--task-description (car running))))))
+      ('tasks-quiet
+       (let ((quiet (cl-find-if (lambda (task)
+                                  (claude-code-ide-session-status--task-quiet-p status task now))
+                                (claude-code-ide-session-status--running-tasks status))))
+         (claude-code-ide-session-status--one-line
+          (format "No activity for %s: %s"
+                  (claude-code-ide-session-status--age
+                   (claude-code-ide-session-status--task-last-activity quiet) now)
+                  (claude-code-ide-session-status--task-description quiet)))))
+      (_ (claude-code-ide-session-status-detail status)))))
 
 (defun claude-code-ide-session-status--state-since (status state)
   "Return the time STATUS entered STATE, or nil."
@@ -760,23 +970,27 @@ event since it started, else its phase.  A nil STATUS is `untracked'."
     (_ (claude-code-ide-session-status-since status))))
 
 (defconst claude-code-ide-session-status--rank
-  '((waiting . 0) (error . 1) (unobserved . 2) (idle . 3)
-    (starting . 4) (working . 5) (untracked . 6))
+  '((waiting . 0) (error . 1) (unobserved . 2) (tasks-quiet . 3) (idle . 4)
+    (tasks . 5) (starting . 6) (working . 7) (untracked . 8))
   "Order of the states in the status buffer: what needs the user first.")
 
 (defconst claude-code-ide-session-status--labels
-  '((waiting "WAITING" claude-code-ide-session-status-waiting)
-    (error "ERROR" claude-code-ide-session-status-waiting)
-    (unobserved "NO EVENTS" claude-code-ide-session-status-waiting)
-    (idle "your turn" claude-code-ide-session-status-idle)
-    (starting "starting" claude-code-ide-session-status-quiet)
-    (working "working" claude-code-ide-session-status-working)
-    (untracked "untracked" claude-code-ide-session-status-quiet))
-  "Label and face of each state.")
+  '((waiting "NEEDS ANSWER" claude-code-ide-session-status-waiting)
+    (error "FAILED" claude-code-ide-session-status-waiting)
+    (unobserved "NO SIGNAL" claude-code-ide-session-status-waiting)
+    (tasks-quiet "TASKS QUIET" claude-code-ide-session-status-idle)
+    (idle "WAITS FOR YOU" claude-code-ide-session-status-idle)
+    (tasks "WAITS ON TASKS" claude-code-ide-session-status-working)
+    (starting "STARTING" claude-code-ide-session-status-quiet)
+    (working "WORKING" claude-code-ide-session-status-working)
+    (untracked "UNTRACKED" claude-code-ide-session-status-quiet))
+  "Label and face of each state.
+Each label says who waits for whom: the agent for the user's answer
+or next message, or the agent for its own background tasks.")
 
 (defun claude-code-ide-session-status--urgent-p (state)
-  "Return non-nil when STATE needs the user at once."
-  (memq state '(waiting error unobserved)))
+  "Return non-nil when STATE asks the user to act or look at once."
+  (memq state '(waiting error unobserved tasks-quiet)))
 
 (defun claude-code-ide-session-status--rows (&optional now)
   "Return (SESSION STATE SINCE DETAIL) for each live session at NOW.
@@ -793,7 +1007,7 @@ oldest first within a state."
                                    (state (claude-code-ide-session-status--state status now)))
                               (list session state
                                     (claude-code-ide-session-status--state-since status state)
-                                    (claude-code-ide-session-status--detail status state))))))
+                                    (claude-code-ide-session-status--detail status state now))))))
                       (claude-code-ide-mcp--active-sessions)))))
     (sort rows
           (lambda (a b)
@@ -840,7 +1054,7 @@ oldest first within a state."
 The sessions that wait for you come first.
 
 \\{claude-code-ide-session-status-list-mode-map}"
-  (setq tabulated-list-format [("Status" 10 nil)
+  (setq tabulated-list-format [("Status" 14 nil)
                                ("Session" 30 nil)
                                ("For" 5 nil :right-align t)
                                ("Detail" 0 nil)])
@@ -887,12 +1101,13 @@ The sessions that wait for you come first.
 
 ;;;###autoload
 (defun claude-code-ide-visit-waiting-session ()
-  "Go to the session that has waited longest for you.
-Sessions that wait for an answer come first, then failed and silent
-ones, then those whose turn ended."
+  "Go to the first session in the status list that needs you.
+Sessions that need an answer come first, then failed and silent ones,
+then those with quiet background tasks, then those that wait for your
+next message; the longest wait first within each state."
   (interactive)
   (let ((row (cl-find-if (lambda (row)
-                           (memq (nth 1 row) '(waiting error unobserved idle)))
+                           (memq (nth 1 row) '(waiting error unobserved tasks-quiet idle)))
                          (claude-code-ide-session-status--rows))))
     (if row
         (claude-code-ide-session-status--visit-session (car row))
@@ -900,7 +1115,7 @@ ones, then those whose turn ended."
 
 (defun claude-code-ide-session-status--lighter ()
   "Return the mode line text: the number of sessions that need you at once.
-These are the waiting, failed and silent ones."
+These need an answer, failed, sent no signal, or have quiet tasks."
   (if (> claude-code-ide-session-status--urgent-count 0)
       (propertize (format " Claude[%d need you]" claude-code-ide-session-status--urgent-count)
                   'face 'claude-code-ide-session-status-waiting)
