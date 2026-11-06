@@ -96,6 +96,11 @@ time, which is true: the agent no longer waits on it."
   :type 'sexp
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-session-status-indent 2
+  "Number of spaces that the session lines are indented under their project line."
+  :type 'integer
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-session-status-max-height 20
   "Maximum height in lines of the status window."
   :type 'integer
@@ -1120,6 +1125,7 @@ line goes to its first session.
                 '("For" 5 nil :right-align t)
                 '("Detail" 0 nil)))
   (setq tabulated-list-sort-key nil)
+  (setq tabulated-list-padding claude-code-ide-session-status-indent)
   (setq-local tabulated-list-printer #'claude-code-ide-session-status--print-entry)
   (add-hook 'tabulated-list-revert-hook #'claude-code-ide-session-status--refresh nil t)
   (tabulated-list-init-header))

@@ -720,6 +720,10 @@ project line."
                                  (list "/tmp/status-b/" waiting sibling
                                        "/tmp/status-a/" working
                                        "/tmp/status-c/" plain))))
+                ;; Session lines are indented under their project line
+                (goto-char (point-min))
+                (forward-line 1)
+                (should (looking-at-p "  NEEDS ANSWER"))
                 (goto-char (point-min))
                 (should (string-prefix-p "status-b  2 sessions"
                                          (buffer-substring-no-properties
