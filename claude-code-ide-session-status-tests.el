@@ -355,18 +355,35 @@ The event name is only for the reader; the text is the same."
      status `((43 "Stop" ,(claude-code-ide-tests--stop "The agent found 3 files"))))
     (should (equal (claude-code-ide-tests--state-at status 50) '(idle "The agent found 3 files")))))
 
-(ert-deftest claude-code-ide-test-status-tasks-terminal-orderings ()
-  "An ended agent never runs again, whatever arrives later."
+(ert-deftest claude-code-ide-test-status-tasks-subagent-turns ()
+  "A subagent that waits on its own subagents ends turns, not its life.
+The main agent waits on it until its next Stop lists it no more."
   (let ((status (claude-code-ide-tests--feed-at
                  (claude-code-ide-tests--status)
                  `((1 "UserPromptSubmit" "{}")
-                   (2 "SubagentStop" ,(claude-code-ide-tests--subagent "SubagentStop" "a1"))
-                   (3 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
-                   (4 "Stop" ,(claude-code-ide-tests--stop "Done" (claude-code-ide-tests--agent-task "a1")))))))
-    (should (equal (claude-code-ide-tests--state-at status 10) '(idle "Done")))))
+                   (2 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+                   (3 "Stop" ,(claude-code-ide-tests--stop "The review agent runs"
+                                                           (claude-code-ide-tests--agent-task "a1" "rp-review")))
+                   ;; a1 starts a child and ends its turn to wait for it
+                   (10 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "c1"))
+                   (11 "SubagentStop" ,(claude-code-ide-tests--subagent "SubagentStop" "a1"))
+                   (40 "SubagentStop" ,(claude-code-ide-tests--subagent "SubagentStop" "c1"))))))
+    (should (equal (claude-code-ide-tests--state-at status 41) '(tasks "1 agent: rp-review")))
+    ;; The child's report wakes a1, which works again
+    (claude-code-ide-tests--feed-at
+     status `((45 "PreToolUse" ,(claude-code-ide-tests--agent-tool "PreToolUse" "a1" "s1"))))
+    (should (equal (claude-code-ide-tests--state-at status 50) '(tasks "1 agent: rp-review")))
+    ;; a1 ends: the CLI wakes the main agent, whose Stop lists no task
+    (claude-code-ide-tests--feed-at
+     status `((90 "SubagentStop" ,(claude-code-ide-tests--subagent "SubagentStop" "a1"))
+              (91 "UserPromptSubmit" "{}")
+              (93 "Stop" ,(claude-code-ide-tests--stop "The review found 2 issues"))))
+    (should (equal (claude-code-ide-tests--state-at status 95) '(idle "The review found 2 issues")))))
 
 (ert-deftest claude-code-ide-test-status-tasks-snapshot-drops-killed ()
-  "A snapshot that omits a running agent ends it, with its dialog."
+  "A Stop list without an agent drops that task; an open dialog stays.
+The dialog may belong to a subagent of a subagent, which the list never
+holds; idle_prompt clears it when no dialog is open."
   (let ((status (claude-code-ide-tests--feed-at
                  (claude-code-ide-tests--status)
                  `((1 "UserPromptSubmit" "{}")
@@ -378,7 +395,10 @@ The event name is only for the reader; the text is the same."
     (should (equal (mapcar #'claude-code-ide-session-status--task-id
                            (claude-code-ide-session-status--running-tasks status))
                    '("a1")))
-    (should (eq (car (claude-code-ide-tests--state-at status 10)) 'tasks))))
+    (should (eq (car (claude-code-ide-tests--state-at status 10)) 'waiting))
+    (claude-code-ide-tests--feed-at
+     status '((65 "Notification" "{\"notification_type\":\"idle_prompt\"}")))
+    (should (eq (car (claude-code-ide-tests--state-at status 66)) 'tasks))))
 
 (ert-deftest claude-code-ide-test-status-tasks-dialogs-and-wakes ()
   "A wake is no answer to a subagent's dialog; a user prompt ends a main one."
@@ -415,10 +435,13 @@ The event name is only for the reader; the text is the same."
     (should (eq (car (claude-code-ide-tests--state-at status 10)) 'waiting))
     (claude-code-ide-tests--feed-at
      status `((30 "SubagentStop" ,(claude-code-ide-tests--subagent "SubagentStop" "a1"))))
-    (should (eq (car (claude-code-ide-tests--state-at status 31)) 'idle))))
+    ;; Its turn ended, so its dialog closed; the main agent still waits on it
+    (should (eq (car (claude-code-ide-tests--state-at status 31)) 'tasks))))
 
 (ert-deftest claude-code-ide-test-status-tasks-quiet-boundaries ()
-  "Each task has its own clock; a busy sibling does not hide a quiet task."
+  "Subagents are quiet after 600 s without any subagent event, or 900 s
+inside one tool call; a shell after 900 s.  A busy subagent does not
+hide a quiet shell."
   (let ((claude-code-ide-session-status-agent-quiet-time 600)
         (claude-code-ide-session-status-task-quiet-time 900))
     ;; A subagent that runs no tool: 600 s
@@ -427,8 +450,9 @@ The event name is only for the reader; the text is the same."
                    `((1 "UserPromptSubmit" "{}")
                      (10 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
                      (11 "Stop" ,(claude-code-ide-tests--stop "Started" (claude-code-ide-tests--agent-task "a1")))))))
-      (should (eq (car (claude-code-ide-tests--state-at status 609)) 'tasks))
-      (should (equal (claude-code-ide-tests--state-at status 611)
+      ;; The clock starts when the Stop lists the task (second 11)
+      (should (eq (car (claude-code-ide-tests--state-at status 611)) 'tasks))
+      (should (equal (claude-code-ide-tests--state-at status 612)
                      '(tasks-quiet "No activity for 10m: Task a1"))))
     ;; A subagent in one long tool call: 900 s
     (let ((status (claude-code-ide-tests--feed-at
@@ -454,7 +478,7 @@ The event name is only for the reader; the text is the same."
       (should (claude-code-ide-session-status--urgent-p 'tasks-quiet)))))
 
 (ert-deftest claude-code-ide-test-status-tasks-snapshot-keeps-age ()
-  "A later snapshot keeps a task's start and does not count as activity."
+  "A later Stop keeps a task's first time; a wake is no subagent activity."
   (let ((claude-code-ide-session-status-agent-quiet-time 600)
         (status (claude-code-ide-tests--feed-at
                  (claude-code-ide-tests--status)
@@ -463,9 +487,10 @@ The event name is only for the reader; the text is the same."
                    (11 "Stop" ,(claude-code-ide-tests--stop "Started" (claude-code-ide-tests--agent-task "a1")))
                    (300 "UserPromptSubmit" "{}")
                    (301 "Stop" ,(claude-code-ide-tests--stop "Still running" (claude-code-ide-tests--agent-task "a1")))))))
-    (should (= 10.0 (claude-code-ide-session-status--task-first-seen
+    (should (= 11.0 (claude-code-ide-session-status--task-first-seen
                      (car (claude-code-ide-session-status--running-tasks status)))))
-    (should (eq (car (claude-code-ide-tests--state-at status 611)) 'tasks-quiet))))
+    (should (eq (car (claude-code-ide-tests--state-at status 611)) 'tasks))
+    (should (eq (car (claude-code-ide-tests--state-at status 612)) 'tasks-quiet))))
 
 (ert-deftest claude-code-ide-test-status-tasks-reset-and-compact ()
   "Compaction keeps the tasks; /clear drops them."
@@ -492,8 +517,9 @@ The event name is only for the reader; the text is the same."
             (with-current-buffer terminal
               (insert "  ⎿  Interrupted · What should Claude do instead?\n> \n"))
             (claude-code-ide-tests--feed-at
-             status `((1 "UserPromptSubmit" "{}")
-                      (2 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+             status `((0 "SubagentStart" ,(claude-code-ide-tests--subagent "SubagentStart" "a1"))
+                      (0 "Stop" ,(claude-code-ide-tests--stop "Started" (claude-code-ide-tests--agent-task "a1")))
+                      (1 "UserPromptSubmit" "{}")
                       (8 "PreToolUse" ,(claude-code-ide-tests--agent-tool "PreToolUse" "a1" "s1"))
                       (9 "PostToolUse" ,(claude-code-ide-tests--agent-tool "PostToolUse" "a1" "s1"))))
             (should (claude-code-ide-session-status--check-interrupt status 10.0))
