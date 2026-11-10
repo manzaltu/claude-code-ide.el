@@ -476,9 +476,10 @@ next Stop lists the rest.  SubagentStop marks the end of a subagent's
 turn, not of the subagent: a subagent that waits on its own subagents
 ends many turns.  Events of subagents count as activity of the
 background work; they never change the phase of the main agent and do
-not count for the interrupt check.  Tool events of the main agent do
-not turn an idle session into a working one, unless the idle phase is
-a guess of the interrupt check."
+not count for the interrupt check.  A tool event of the main agent
+turns an idle session into a working one: a turn that a queued prompt,
+a cross-session message or a task notification started fires no
+UserPromptSubmit, so the tool event is its first sign."
   (let* ((now (or now (float-time)))
          (phase (claude-code-ide-session-status-phase status))
          (guessed (claude-code-ide-session-status-guessed status))
@@ -516,7 +517,7 @@ a guess of the interrupt check."
                   (list (cl-incf (claude-code-ide-session-status-tool-seq status))
                         name (alist-get 'tool_input data))
                   (claude-code-ide-session-status-inflight status))
-         (when (and main (or guessed (not (eq phase 'idle))))
+         (when main
            (claude-code-ide-session-status--set-phase
             status 'working (format "Working: %s" (or name "tool")) now))))
       ("PermissionRequest"
@@ -661,6 +662,36 @@ attention."
           (forward-line -30)
           (re-search-forward claude-code-ide-session-status--busy-regexp nil t))))))
 
+(defun claude-code-ide-session-status--prompt-record-p (text)
+  "Return non-nil when TEXT has a user record that starts a turn.
+That is a user message with text content: a typed or queued prompt, a
+cross-session message (these are meta records) or a task notification.
+Tool results, the interrupt record, local commands such as /rename
+with their caveat, shell commands typed with ! and compaction
+summaries start no turn and do not count."
+  (cl-some
+   (lambda (line)
+     (let* ((record (ignore-errors (claude-code-ide-session-registry--json-decode line)))
+            (message (and (consp record) (alist-get 'message record)))
+            (content (and (consp message) (alist-get 'content message))))
+       (and (equal (alist-get 'type record) "user")
+            (not (alist-get 'isCompactSummary record))
+            (cl-some (lambda (text)
+                       (and (stringp text)
+                            (not (string-empty-p text))
+                            (not (string-prefix-p claude-code-ide-session-status--interrupt-marker text))
+                            (not (string-prefix-p "<command-name>" text))
+                            (not (string-prefix-p "<local-command" text))
+                            (not (string-prefix-p "<bash-" text))))
+                     (if (stringp content)
+                         (list content)
+                       (mapcar (lambda (part)
+                                 (and (consp part)
+                                      (equal (alist-get 'type part) "text")
+                                      (alist-get 'text part)))
+                               content))))))
+   (split-string text "\n" t)))
+
 (defun claude-code-ide-session-status--check-interrupt (status now)
   "Correct STATUS at NOW when it works or stopped although no hook said so.
 An interrupt fires no hook.  When a working session is quiet for
@@ -670,7 +701,10 @@ An interrupt during an answer leaves no record, so a terminal without
 the CLI's spinner line also counts.  Both checks err toward showing
 the session as needing the user.  The result is a guess: when the
 spinner shows again, or a tool event arrives, the session is working
-again.  Return non-nil when STATUS changed."
+again.  An idle session whose transcript gains a prompt record (a queued
+prompt, a cross-session message, a task notification) is working too:
+those turns fire no UserPromptSubmit.  Return non-nil when STATUS
+changed."
   (let ((phase (claude-code-ide-session-status-phase status)))
     (cond
      ((and (eq phase 'idle)
@@ -678,6 +712,14 @@ again.  Return non-nil when STATUS changed."
       (when (claude-code-ide-session-status--terminal-busy-p status)
         (claude-code-ide-session-status--set-phase status 'working "Working" now)
         t))
+     ;; A queued prompt, a cross-session message or a task notification
+     ;; starts a turn without UserPromptSubmit; the transcript shows it
+     ((and (eq phase 'idle)
+           (null (claude-code-ide-session-status-blockers status)))
+      (let ((news (claude-code-ide-session-status--transcript-news status)))
+        (when (and news (claude-code-ide-session-status--prompt-record-p news))
+          (claude-code-ide-session-status--set-phase status 'working "Working" now)
+          t)))
      ((and (eq phase 'working)
            (null (claude-code-ide-session-status-blockers status))
            (> (- now (claude-code-ide-session-status-last-event status))

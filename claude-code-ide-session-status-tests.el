@@ -181,7 +181,7 @@ Timers and file watches are not started."
       (should (equal (claude-code-ide-tests--state status) '(waiting "Help"))))))
 
 (ert-deftest claude-code-ide-test-status-compact-clear-and-late-events ()
-  "Compaction keeps the phase; /clear resets; late tool events keep idle."
+  "Compaction keeps the phase; /clear resets; subagent tool events keep idle."
   (let ((status (claude-code-ide-tests--feed
                  (claude-code-ide-tests--status)
                  (list '("UserPromptSubmit" "{}")
@@ -192,11 +192,12 @@ Timers and file watches are not started."
                   (claude-code-ide-tests--permission)
                   '("SessionStart" "{\"source\":\"clear\"}")))
     (should (equal (claude-code-ide-tests--state status) '(idle "Ready")))
+    ;; Late tool events of a subagent keep the session idle
     (claude-code-ide-tests--feed
      status (list '("UserPromptSubmit" "{}")
                   '("Stop" "{\"last_assistant_message\":\"Done\"}")
-                  (claude-code-ide-tests--tool "PreToolUse" "late")
-                  (claude-code-ide-tests--tool "PostToolUse" "late")))
+                  (claude-code-ide-tests--tool "PreToolUse" "late" nil "agent-3")
+                  (claude-code-ide-tests--tool "PostToolUse" "late" nil "agent-3")))
     (should (equal (claude-code-ide-tests--state status) '(idle "Done")))
     (claude-code-ide-tests--feed status '(("StopFailure" "{\"error\":\"rate_limit\"}")))
     (should (equal (claude-code-ide-tests--state status) '(error "Error: rate_limit")))))
@@ -548,6 +549,79 @@ hide a quiet shell."
     (let ((width (nth 1 (aref tabulated-list-format 0))))
       (dolist (entry claude-code-ide-session-status--labels)
         (should (<= (string-width (nth 1 entry)) width))))))
+
+(ert-deftest claude-code-ide-test-status-turn-without-prompt-hook ()
+  "A main-agent tool event while idle starts a turn that fired no prompt hook.
+A queued prompt, a cross-session message or a task notification starts
+a turn without UserPromptSubmit."
+  (let ((status (claude-code-ide-tests--feed
+                 (claude-code-ide-tests--status)
+                 (list '("UserPromptSubmit" "{}")
+                       '("Stop" "{\"last_assistant_message\":\"Done\"}")))))
+    (should (eq (car (claude-code-ide-tests--state status)) 'idle))
+    (claude-code-ide-tests--feed status (list (claude-code-ide-tests--tool "PreToolUse" "t5")))
+    (should (equal (claude-code-ide-tests--state status) '(working "Working: Bash")))))
+
+(defun claude-code-ide-tests--user-record (content &rest fields)
+  "Return a transcript line of a user record with CONTENT and FIELDS.
+CONTENT is a JSON value as text; FIELDS are extra \"key\":value texts."
+  (format "{\"type\":\"user\"%s,\"message\":{\"role\":\"user\",\"content\":%s}}\n"
+          (mapconcat (lambda (field) (concat "," field)) fields "")
+          content))
+
+(ert-deftest claude-code-ide-test-status-prompt-records ()
+  "Records that start a turn make an idle session work; others do not."
+  (should (claude-code-ide-session-status--prompt-record-p
+           (claude-code-ide-tests--user-record
+            "\"Another Claude session sent a message: please rebase\"" "\"isMeta\":true")))
+  (should (claude-code-ide-session-status--prompt-record-p
+           (claude-code-ide-tests--user-record
+            "\"<task-notification>\\n<task-id>b1</task-id>\\n</task-notification>\"")))
+  (should (claude-code-ide-session-status--prompt-record-p
+           (claude-code-ide-tests--user-record "[{\"type\":\"text\",\"text\":\"Queued: next step\"}]")))
+  (dolist (record (list
+                   ;; /rename and its caveat
+                   (claude-code-ide-tests--user-record
+                    "\"<command-name>/rename</command-name>\\n<command-args>x</command-args>\"")
+                   (claude-code-ide-tests--user-record
+                    "\"<local-command-stdout>Session renamed to: x</local-command-stdout>\"")
+                   (claude-code-ide-tests--user-record
+                    "\"<local-command-caveat>Caveat: local commands</local-command-caveat>\"" "\"isMeta\":true")
+                   ;; A shell command typed with !
+                   (claude-code-ide-tests--user-record "\"<bash-input>ls</bash-input>\"")
+                   (claude-code-ide-tests--user-record "\"<bash-stdout>a.txt</bash-stdout><bash-stderr></bash-stderr>\"")
+                   ;; A manual /compact
+                   (claude-code-ide-tests--user-record "\"Summary of the conversation\"" "\"isCompactSummary\":true")
+                   ;; A tool result and the interrupt record
+                   (claude-code-ide-tests--user-record
+                    "[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"ok\"}]")
+                   (claude-code-ide-tests--user-record
+                    "[{\"type\":\"text\",\"text\":\"[Request interrupted by user]\"}]")))
+    (should-not (claude-code-ide-session-status--prompt-record-p record))))
+
+(ert-deftest claude-code-ide-test-status-idle-session-sees-new-turn ()
+  "An idle session whose transcript gains a cross-session message works."
+  (claude-code-ide-tests--with-status
+    (let* ((transcript (expand-file-name "t.jsonl" registry-dir))
+           (status (claude-code-ide-tests--status)))
+      (with-temp-file transcript (insert "{\"type\":\"system\"}\n"))
+      (claude-code-ide-tests--feed
+       status (list (list "SessionStart" (format "{\"source\":\"startup\",\"transcript_path\":\"%s\"}"
+                                                 transcript))
+                    '("UserPromptSubmit" "{}")
+                    '("Stop" "{\"last_assistant_message\":\"Done\"}")))
+      ;; /rename while idle: still idle
+      (write-region (claude-code-ide-tests--user-record
+                     "\"<command-name>/rename</command-name>\\n<command-args>x</command-args>\"")
+                    nil transcript t 'silent)
+      (should-not (claude-code-ide-session-status--check-interrupt status 20.0))
+      (should (eq (car (claude-code-ide-tests--state status)) 'idle))
+      ;; A message from another session starts a turn
+      (write-region (claude-code-ide-tests--user-record
+                     "\"Another Claude session sent a message: please rebase\"" "\"isMeta\":true")
+                    nil transcript t 'silent)
+      (should (claude-code-ide-session-status--check-interrupt status 30.0))
+      (should (eq (car (claude-code-ide-tests--state status)) 'working)))))
 
 (ert-deftest claude-code-ide-test-status-unobserved-and-untracked ()
   "A session without events is unobserved after the timeout."
