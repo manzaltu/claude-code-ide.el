@@ -604,11 +604,12 @@ Each state says who waits for whom. They are listed in the order of the buffer: 
 | State            | Meaning                                                                                       |
 |------------------+-----------------------------------------------------------------------------------------------|
 | =NEEDS ANSWER=   | A permission dialog, a question menu, a plan approval or an MCP input form is open. The agent is blocked until you answer |
+| =ASKS YOU=       | The turn ended with a reply that asks you something (by default, a line that ends with "?"). The agent waits for your answer, also while its tasks run |
 | =FAILED=         | The turn ended with an API error                                                              |
 | =NO SIGNAL=      | The instance sent nothing since it started, for example at the dialog that asks whether to trust the folder |
-| =TASKS QUIET=    | The turn ended and a background task shows no activity for a long time. Look at it: it may hang, or the agent may have left a server running |
-| =WAITS FOR YOU=  | The turn ended and nothing runs. The agent waits for your next message                       |
-| =WAITS ON TASKS= | The turn ended, but its subagents or background shells still run. The agent continues by itself when they finish |
+| =TASKS QUIET=    | The turn ended and the background subagents show no activity for a long time. Look at it: one may hang |
+| =WAITS FOR YOU=  | The turn ended. The agent waits for your next message. Background shells (tests, watchers, servers) may still run; the detail names them |
+| =WAITS ON TASKS= | The turn ended, but its subagents still run. The agent continues by itself when they finish |
 | =STARTING=       | The instance has started and has not reported yet                                             |
 | =WORKING=        | The agent works                                                                               |
 | =UNTRACKED=      | The instance started without status hooks                                                     |
@@ -627,7 +628,9 @@ In the buffer, =RET= goes to the session on the line, and =w= goes to the first 
 The registry passes Claude Code hooks to each instance it starts. Each hook runs a small shell script that writes the hook input to a file, numbered per instance, in a directory next to the state file. Emacs reads the files in order, deletes them, and updates the status. The script prints nothing and always exits with 0, so it never changes what Claude does. Each hook has a timeout of 5 seconds.
 
 - After you approve a command, the status stays =NEEDS ANSWER= until the command ends, because no hook fires on the approval.
-- Claude Code starts subagents in the background, so the main turn often ends while they work. The list of running tasks comes with the end of each turn, and the subagents report their own steps. A subagent that runs no tool is quiet after =claude-code-ide-session-status-agent-quiet-time= seconds (600) without activity. A background shell, or a subagent inside one long command, is quiet after =claude-code-ide-session-status-task-quiet-time= seconds (900); a shell reports nothing, so its time counts from its start.
+- Claude Code starts subagents in the background, so the main turn often ends while they work. The list of running tasks comes with the end of each turn, and the subagents report their own steps. Subagents are quiet after =claude-code-ide-session-status-agent-quiet-time= seconds (600) without activity, or after =claude-code-ide-session-status-task-quiet-time= seconds (900) while one runs a long command.
+- A background shell does not keep the agent from you: the agent often starts tests, a watcher or a server in the background and then asks you something. Claude Code itself reports that it waits for your input while shells run, but not while subagents run.
+- =claude-code-ide-session-status-ask-regexps= sets which lines of a reply ask you something. For example, add ="\\`Next for Raymond:"= when your sessions end their replies with such a line.
 - An interrupt (=Esc=) fires no hook. When a working instance sends no event for =claude-code-ide-session-status-quiet-time= seconds, Emacs checks two things. If the new part of the transcript has an interrupt marker (an interrupt during a tool), the state becomes =WAITS FOR YOU= with "Interrupted". If the terminal no longer shows Claude's spinner line (for example "✢ Misting… (3s)"), the state becomes =WAITS FOR YOU= with "Interrupted?". If a later version of Claude Code changes the spinner, this check shows a working instance as =WAITS FOR YOU=; it never shows a waiting instance as working. When the spinner shows again, or the agent uses a tool, the state is =WORKING= again.
 - A turn that a queued prompt, a message from another session or a task notification starts fires no prompt hook. Its first tool use, or its record in the transcript, shows the instance as =WORKING=.
 - A denial with =Esc= fires no hook either. The instance stays =NEEDS ANSWER= until Claude reports, 60 seconds later, that it waits for your input.

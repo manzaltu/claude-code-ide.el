@@ -70,6 +70,15 @@ An interrupt with Esc fires no hook; the transcript shows it."
   :type 'number
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-session-status-ask-regexps '("\\?\\'")
+  "Regexps for a line of a reply that asks the user something.
+A reply that ends a turn with such a line shows the session as
+ASKS YOU.  Each line is matched without list markers and Markdown
+markup around it, and lines in code blocks are skipped.  The default
+matches a line that ends with a question mark."
+  :type '(repeat regexp)
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-session-status-agent-quiet-time 600
   "Seconds without activity after which a background subagent is quiet.
 This applies to a subagent that runs no tool.  A quiet task changes the
@@ -169,6 +178,8 @@ time, which is true: the agent no longer waits on it."
 The background tasks of the main agent, as its last Stop listed them.")
   (agent-activity 0.0 :type float
                   :documentation "Time of the last event of any subagent.")
+  (questions nil :type list
+             :documentation "Questions that the reply which ended the turn asks the user.")
   (guessed nil :type boolean
            :documentation "Non-nil when the idle phase is a guess of the interrupt check.
 A sign of work, such as a tool event, ends it.")
@@ -369,7 +380,30 @@ that the CLI killed, and would stop the numbering of its launch."
     (setf (claude-code-ide-session-status-since status) now))
   (setf (claude-code-ide-session-status-phase status) phase
         (claude-code-ide-session-status-detail status) detail
-        (claude-code-ide-session-status-guessed status) nil))
+        (claude-code-ide-session-status-guessed status) nil
+        (claude-code-ide-session-status-questions status) nil))
+
+(defun claude-code-ide-session-status--questions (text)
+  "Return the lines of the reply TEXT that ask the user something, in order.
+A line counts when one of `claude-code-ide-session-status-ask-regexps'
+matches it, without list markers and Markdown markup around it.  Lines
+in code blocks do not count."
+  (let ((in-code nil)
+        (questions '()))
+    (dolist (line (split-string (or text "") "\n"))
+      (let ((trimmed (string-trim line)))
+        (if (string-prefix-p "```" trimmed)
+            (setq in-code (not in-code))
+          (let ((bare (string-trim
+                       (replace-regexp-in-string
+                        "[*_`]+\\'" ""
+                        (replace-regexp-in-string "\\`[-*>#[:digit:].) ]+" "" trimmed)))))
+            (when (and (not in-code)
+                       (not (string-empty-p bare))
+                       (cl-some (lambda (regexp) (string-match-p regexp bare))
+                                claude-code-ide-session-status-ask-regexps))
+              (push bare questions))))))
+    (nreverse questions)))
 
 (defun claude-code-ide-session-status--end-main-turn (status)
   "Remove the blockers and tools in flight of STATUS's main agent.
@@ -565,7 +599,10 @@ UserPromptSubmit, so the tool event is its first sign."
         (let ((text (claude-code-ide-session-status--one-line
                      (alist-get 'last_assistant_message data))))
           (if (string-empty-p text) "Turn ended" text))
-        now))
+        now)
+       (setf (claude-code-ide-session-status-questions status)
+             (claude-code-ide-session-status--questions
+              (alist-get 'last_assistant_message data))))
       ("StopFailure"
        (when (assq 'background_tasks data)
          (claude-code-ide-session-status--apply-snapshot
@@ -913,12 +950,17 @@ seconds after its start."
                   claude-code-ide-session-status-task-quiet-time)))
     (> (- now (claude-code-ide-session-status--task-quiet-since status task)) limit)))
 
+(defun claude-code-ide-session-status--subagent-p (task)
+  "Return non-nil when TASK is a subagent."
+  (eq (claude-code-ide-session-status--task-type task) 'subagent))
+
 (defun claude-code-ide-session-status--state (status now)
   "Return the state of STATUS at NOW.
 `waiting' while it has blockers, `unobserved' when it sent no event
-since it started.  When the main turn ended: `tasks' while subagents
-or background shells run, `tasks-quiet' when one of them is quiet too
-long, `idle' when nothing runs.  Else the phase.  A nil STATUS is
+since it started.  When the main turn ended: `asks' when its reply
+asks the user questions, `tasks' while subagents run, `tasks-quiet'
+when they are quiet too long, else `idle', also while background
+shells run.  Else the phase.  A nil STATUS is
 `untracked'."
   (cond
    ((null status) 'untracked)
@@ -930,8 +972,15 @@ long, `idle' when nothing runs.  Else the phase.  A nil STATUS is
    ((eq (claude-code-ide-session-status-phase status) 'idle)
     (let ((running (claude-code-ide-session-status--running-tasks status)))
       (cond
-       ((null running) 'idle)
-       ((cl-some (lambda (task) (claude-code-ide-session-status--task-quiet-p status task now))
+       ;; A reply that asks questions waits for the user, whatever runs
+       ((claude-code-ide-session-status-questions status) 'asks)
+       ;; Background shells do not keep the agent from the user: tests,
+       ;; watchers and servers run while the user answers.  The CLI also
+       ;; reports idle input while shells run, but not while subagents do.
+       ((not (cl-some #'claude-code-ide-session-status--subagent-p running)) 'idle)
+       ((cl-some (lambda (task)
+                   (and (claude-code-ide-session-status--subagent-p task)
+                        (claude-code-ide-session-status--task-quiet-p status task now)))
                  running)
         'tasks-quiet)
        (t 'tasks))))
@@ -957,6 +1006,19 @@ long, `idle' when nothing runs.  Else the phase.  A nil STATUS is
                  (car (claude-code-ide-session-status-blockers status))))
       ('unobserved "No events since the start: check the terminal")
       ('starting "Starting")
+      ('asks
+       (let* ((questions (claude-code-ide-session-status-questions status))
+              (running (claude-code-ide-session-status--running-tasks status)))
+         (claude-code-ide-session-status--one-line
+          (concat (if (cdr questions)
+                      (format "Asks %d questions: " (length questions))
+                    "Asks: ")
+                  (car questions)
+                  (if running
+                      (format " · %s running"
+                              (claude-code-ide-session-status--tasks-summary running))
+                    ""))
+          140)))
       ('tasks
        (let ((running (claude-code-ide-session-status--running-tasks status)))
          (claude-code-ide-session-status--one-line
@@ -964,13 +1026,22 @@ long, `idle' when nothing runs.  Else the phase.  A nil STATUS is
                   (claude-code-ide-session-status--task-description (car running))))))
       ('tasks-quiet
        (let ((quiet (cl-find-if (lambda (task)
-                                  (claude-code-ide-session-status--task-quiet-p status task now))
+                                  (and (claude-code-ide-session-status--subagent-p task)
+                                       (claude-code-ide-session-status--task-quiet-p status task now)))
                                 (claude-code-ide-session-status--running-tasks status))))
          (claude-code-ide-session-status--one-line
           (format "No activity for %s: %s"
                   (claude-code-ide-session-status--age
                    (claude-code-ide-session-status--task-quiet-since status quiet) now)
                   (claude-code-ide-session-status--task-description quiet)))))
+      ('idle
+       (let ((running (claude-code-ide-session-status--running-tasks status)))
+         (if running
+             (claude-code-ide-session-status--one-line
+              (format "%s · %s running" (claude-code-ide-session-status-detail status)
+                      (claude-code-ide-session-status--tasks-summary running))
+              140)
+           (claude-code-ide-session-status-detail status))))
       (_ (claude-code-ide-session-status-detail status)))))
 
 (defun claude-code-ide-session-status--state-since (status state)
@@ -983,12 +1054,13 @@ long, `idle' when nothing runs.  Else the phase.  A nil STATUS is
     (_ (claude-code-ide-session-status-since status))))
 
 (defconst claude-code-ide-session-status--rank
-  '((waiting . 0) (error . 1) (unobserved . 2) (tasks-quiet . 3) (idle . 4)
-    (tasks . 5) (starting . 6) (working . 7) (untracked . 8))
+  '((waiting . 0) (asks . 1) (error . 2) (unobserved . 3) (tasks-quiet . 4) (idle . 5)
+    (tasks . 6) (starting . 7) (working . 8) (untracked . 9))
   "Order of the states in the status buffer: what needs the user first.")
 
 (defconst claude-code-ide-session-status--labels
   '((waiting "NEEDS ANSWER" claude-code-ide-session-status-waiting)
+    (asks "ASKS YOU" claude-code-ide-session-status-waiting)
     (error "FAILED" claude-code-ide-session-status-waiting)
     (unobserved "NO SIGNAL" claude-code-ide-session-status-waiting)
     (tasks-quiet "TASKS QUIET" claude-code-ide-session-status-idle)
@@ -1008,7 +1080,7 @@ or next message, or the agent for its own background tasks.")
 
 (defun claude-code-ide-session-status--urgent-p (state)
   "Return non-nil when STATE asks the user to act or look at once."
-  (memq state '(waiting error unobserved tasks-quiet)))
+  (memq state '(waiting asks error unobserved tasks-quiet)))
 
 (defun claude-code-ide-session-status--rows (&optional now)
   "Return (SESSION STATE SINCE DETAIL) for each live session at NOW.
@@ -1204,7 +1276,7 @@ then those with quiet background tasks, then those that wait for your
 next message; the longest wait first within each state."
   (interactive)
   (let ((row (cl-find-if (lambda (row)
-                           (memq (nth 1 row) '(waiting error unobserved tasks-quiet idle)))
+                           (memq (nth 1 row) '(waiting asks error unobserved tasks-quiet idle)))
                          (claude-code-ide-session-status--rows))))
     (if row
         (claude-code-ide-session-status--visit-session (car row))

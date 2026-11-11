@@ -312,17 +312,19 @@ The event name is only for the reader; the text is the same."
           agent id))
 
 (ert-deftest claude-code-ide-test-status-tasks-shell-idle-prompt ()
-  "A background shell keeps the session on its tasks through idle_prompt."
+  "A background shell leaves the session waiting for the user; the detail names it."
   (let ((status (claude-code-ide-tests--feed-at
                  (claude-code-ide-tests--status)
                  `((1 "UserPromptSubmit" "{}")
                    (4 "Stop" ,(claude-code-ide-tests--stop
                                "Started the tests" (claude-code-ide-tests--shell-task "b1")))))))
-    (should (equal (claude-code-ide-tests--state-at status 10) '(tasks "1 shell: Run tests")))
+    ;; A shell does not keep the agent from the user
+    (should (equal (claude-code-ide-tests--state-at status 10)
+                   '(idle "Started the tests · 1 shell running")))
     ;; F6: idle_prompt fires while the shell runs
     (claude-code-ide-tests--feed-at
      status '((64 "Notification" "{\"notification_type\":\"idle_prompt\",\"message\":\"Claude is waiting for your input\"}")))
-    (should (eq (car (claude-code-ide-tests--state-at status 70)) 'tasks))
+    (should (eq (car (claude-code-ide-tests--state-at status 70)) 'idle))
     (should (equal (claude-code-ide-session-status-detail status) "Started the tests"))
     ;; The shell ends: the CLI wakes the agent, which reports
     (claude-code-ide-tests--feed-at
@@ -441,8 +443,7 @@ holds; idle_prompt clears it when no dialog is open."
 
 (ert-deftest claude-code-ide-test-status-tasks-quiet-boundaries ()
   "Subagents are quiet after 600 s without any subagent event, or 900 s
-inside one tool call; a shell after 900 s.  A busy subagent does not
-hide a quiet shell."
+inside one tool call.  A shell never makes the session quiet."
   (let ((claude-code-ide-session-status-agent-quiet-time 600)
         (claude-code-ide-session-status-task-quiet-time 900))
     ;; A subagent that runs no tool: 600 s
@@ -464,7 +465,7 @@ hide a quiet shell."
                      (20 "PreToolUse" ,(claude-code-ide-tests--agent-tool "PreToolUse" "a1" "s1"))))))
       (should (eq (car (claude-code-ide-tests--state-at status 919)) 'tasks))
       (should (eq (car (claude-code-ide-tests--state-at status 921)) 'tasks-quiet)))
-    ;; A shell: 900 s from its start; a busy sibling agent does not hide it
+    ;; A shell never makes the session quiet; only the subagent's clock counts
     (let ((status (claude-code-ide-tests--feed-at
                    (claude-code-ide-tests--status)
                    `((1 "UserPromptSubmit" "{}")
@@ -473,9 +474,8 @@ hide a quiet shell."
                                                               (claude-code-ide-tests--shell-task "b1")
                                                               (claude-code-ide-tests--agent-task "a2")))
                      (905 "PreToolUse" ,(claude-code-ide-tests--agent-tool "PreToolUse" "a2" "s2"))))))
-      (should (eq (car (claude-code-ide-tests--state-at status 910)) 'tasks))
-      (should (equal (claude-code-ide-tests--state-at status 912)
-                     '(tasks-quiet "No activity for 15m: Run tests")))
+      (should (eq (car (claude-code-ide-tests--state-at status 1500)) 'tasks))
+      (should (eq (car (claude-code-ide-tests--state-at status 1806)) 'tasks-quiet))
       (should (claude-code-ide-session-status--urgent-p 'tasks-quiet)))))
 
 (ert-deftest claude-code-ide-test-status-tasks-snapshot-keeps-age ()
@@ -535,8 +535,8 @@ hide a quiet shell."
   "The labels say who waits for whom; quiet tasks rank above a finished turn."
   (should (equal (mapcar (lambda (state)
                            (car (alist-get state claude-code-ide-session-status--labels)))
-                         '(waiting error unobserved tasks-quiet idle tasks starting working untracked))
-                 '("NEEDS ANSWER" "FAILED" "NO SIGNAL" "TASKS QUIET" "WAITS FOR YOU"
+                         '(waiting asks error unobserved tasks-quiet idle tasks starting working untracked))
+                 '("NEEDS ANSWER" "ASKS YOU" "FAILED" "NO SIGNAL" "TASKS QUIET" "WAITS FOR YOU"
                    "WAITS ON TASKS" "STARTING" "WORKING" "UNTRACKED")))
   (should (< (alist-get 'tasks-quiet claude-code-ide-session-status--rank)
              (alist-get 'idle claude-code-ide-session-status--rank)
@@ -622,6 +622,50 @@ CONTENT is a JSON value as text; FIELDS are extra \"key\":value texts."
                     nil transcript t 'silent)
       (should (claude-code-ide-session-status--check-interrupt status 30.0))
       (should (eq (car (claude-code-ide-tests--state status)) 'working)))))
+
+(ert-deftest claude-code-ide-test-status-reply-questions ()
+  "Questions are lines that end with a question mark, outside code blocks."
+  (should (equal (claude-code-ide-session-status--questions
+                  (concat "Round 6 was clean.\n\n"
+                          "1. **Should I force-push the rebased branch?**\n"
+                          "- Or do you want a new PR?\n"
+                          "```python\nif x is None:  # why?\n```\n"
+                          "The tests run in the background (see `pytest`).\n"
+                          "Do you agree (yes/no)?"))
+                 '("Should I force-push the rebased branch?"
+                   "Or do you want a new PR?"
+                   "Do you agree (yes/no)?")))
+  (should-not (claude-code-ide-session-status--questions "Done. The file is fixed."))
+  (should-not (claude-code-ide-session-status--questions nil)))
+
+(ert-deftest claude-code-ide-test-status-asks-you-with-tasks ()
+  "A reply with questions waits for the user, even while a shell runs."
+  (let ((status (claude-code-ide-tests--feed-at
+                 (claude-code-ide-tests--status)
+                 `((1 "UserPromptSubmit" "{}")
+                   (4 "Stop" ,(claude-code-ide-tests--stop
+                               "Round 6 was clean.\\nShould I force-push?\\nOr open a new PR?"
+                               (claude-code-ide-tests--shell-task "b1" "Run the broad set")))))))
+    (should (equal (claude-code-ide-tests--state-at status 2000)
+                   '(asks "Asks 2 questions: Should I force-push? · 1 shell running")))
+    (should (claude-code-ide-session-status--urgent-p 'asks))
+    ;; idle_prompt keeps the questions; the user's answer ends them
+    (claude-code-ide-tests--feed-at status '((64 "Notification" "{\"notification_type\":\"idle_prompt\"}")))
+    (should (eq (car (claude-code-ide-tests--state-at status 70)) 'asks))
+    (claude-code-ide-tests--feed-at status '((80 "UserPromptSubmit" "{}")))
+    (should (eq (car (claude-code-ide-tests--state-at status 81)) 'working))
+    ;; A reply without questions while the shell runs
+    (claude-code-ide-tests--feed-at
+     status `((90 "Stop" ,(claude-code-ide-tests--stop
+                           "Force-pushed. I wait for the tests."
+                           (claude-code-ide-tests--shell-task "b1" "Run the broad set")))))
+    (should (equal (claude-code-ide-tests--state-at status 95)
+                   '(idle "Force-pushed. I wait for the tests. · 1 shell running")))
+    ;; A custom regexp: the user's own closing line asks for an answer
+    (let ((claude-code-ide-session-status-ask-regexps '("\\?\\'" "\\`Next for Raymond:")))
+      (should (equal (claude-code-ide-session-status--questions
+                      "Three decisions in the tab.\n**Next for Raymond:** answer in the tab and press Send.")
+                     '("Next for Raymond:** answer in the tab and press Send."))))))
 
 (ert-deftest claude-code-ide-test-status-unobserved-and-untracked ()
   "A session without events is unobserved after the timeout."
