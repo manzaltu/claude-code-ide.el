@@ -1047,6 +1047,13 @@ oldest first within a state."
        ((< seconds 3600) (format "%dm" (/ seconds 60)))
        (t (format "%dh" (/ seconds 3600)))))))
 
+(defvar claude-code-ide-session-status--label-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'claude-code-ide-session-status-visit-click)
+    (define-key map [mouse-2] #'claude-code-ide-session-status-visit-click)
+    map)
+  "Keymap of a status label: a click goes to the session of the line.")
+
 (defconst claude-code-ide-session-status--session-width 30
   "Width of the Session column; longer names are cut.")
 
@@ -1095,7 +1102,12 @@ Each group starts with a header entry whose id is the group."
                             (pcase-let* ((`(,session ,state ,since ,detail) row)
                                          (`(,label ,face) (alist-get state claude-code-ide-session-status--labels)))
                               (list session
-                                    (vector (propertize label 'face face)
+                                    (vector (propertize label
+                                                        'face face
+                                                        'mouse-face 'highlight
+                                                        'help-echo "mouse-1: go to this session"
+                                                        'follow-link t
+                                                        'keymap claude-code-ide-session-status--label-map)
                                             (truncate-string-to-width
                                              (concat "  " (claude-code-ide--session-display-name session))
                                              claude-code-ide-session-status--session-width nil nil "…")
@@ -1168,6 +1180,12 @@ line goes to its first session.
           (select-window window))
       (when-let* ((window (claude-code-ide--display-buffer-in-side-window buffer)))
         (select-window window)))))
+
+(defun claude-code-ide-session-status-visit-click (event)
+  "Go to the session whose status label the mouse EVENT clicked."
+  (interactive "e")
+  (mouse-set-point event)
+  (claude-code-ide-session-status-visit))
 
 (defun claude-code-ide-session-status-visit ()
   "Go to the session on this line, or the first session of a project line."
