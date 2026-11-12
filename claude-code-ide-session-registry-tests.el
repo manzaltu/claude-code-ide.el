@@ -564,6 +564,51 @@ running CLI has are left alone."
                            #'string<)
                      '("crashed" "last-exit"))))))
 
+(ert-deftest claude-code-ide-test-registry-restore-after-a-later-crash ()
+  "An exit is not restored again when a later Emacs ran and crashed.
+The later Emacs restored that exit's sessions, so each session id comes
+back once, from the crashed Emacs's entry."
+  (claude-code-ide-tests--with-registry
+    (let* ((config-dir (expand-file-name "claude" registry-dir))
+           (process-environment (cons (concat "CLAUDE_CONFIG_DIR=" config-dir) process-environment)))
+      (claude-code-ide-session-registry--submit
+       "setup"
+       (lambda (_)
+         (list (claude-code-ide-tests--registry-entry
+                "exit-a" :session-id "id-a" :state 'closed :closed-by "emacs-exit"
+                :closed-at "2026-11-11T18:46:34Z" :emacs-pid 999999992)
+               (claude-code-ide-tests--registry-entry
+                "exit-b" :session-id "id-b" :state 'closed :closed-by "emacs-exit"
+                :closed-at "2026-11-11T18:46:34Z" :emacs-pid 999999992)
+               (claude-code-ide-tests--registry-entry
+                "crashed-a" :session-id "id-a" :started-at "2026-11-11T19:30:00Z"
+                :emacs-pid 999999993)
+               (claude-code-ide-tests--registry-entry
+                "crashed-c" :session-id "id-c" :started-at "2026-11-11T21:00:00Z"
+                :emacs-pid 999999993))))
+      (should (equal (sort (mapcar #'claude-code-ide-session-registry-entry-key
+                                   (claude-code-ide-session-registry--restorable-entries))
+                           #'string<)
+                     '("crashed-a" "crashed-c"))))))
+
+(ert-deftest claude-code-ide-test-registry-restore-one-entry-per-session ()
+  "Two restorable entries with one session id restore once, from the newer."
+  (claude-code-ide-tests--with-registry
+    (let* ((config-dir (expand-file-name "claude" registry-dir))
+           (process-environment (cons (concat "CLAUDE_CONFIG_DIR=" config-dir) process-environment)))
+      (claude-code-ide-session-registry--submit
+       "setup"
+       (lambda (_)
+         (list (claude-code-ide-tests--registry-entry
+                "older" :session-id "id-same" :started-at "2026-11-10T10:00:00Z"
+                :emacs-pid 999999991)
+               (claude-code-ide-tests--registry-entry
+                "newer" :session-id "id-same" :started-at "2026-11-11T10:00:00Z"
+                :emacs-pid 999999993))))
+      (should (equal (mapcar #'claude-code-ide-session-registry-entry-key
+                             (claude-code-ide-session-registry--restorable-entries))
+                     '("newer"))))))
+
 (ert-deftest claude-code-ide-test-registry-adopts-running-sessions ()
   "A session that ran before the registry is recorded with its CLI's id."
   (claude-code-ide-tests--clear-processes)

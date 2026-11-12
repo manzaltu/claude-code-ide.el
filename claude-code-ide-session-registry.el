@@ -912,7 +912,8 @@ and they stay `open', which is what a restore looks for."
 
 (defun claude-code-ide-session-registry--exit-keys (entries)
   "Return the keys of ENTRIES that the last Emacs on this host closed at its exit.
-That Emacs no longer runs.  Older exits are left out."
+That Emacs no longer runs.  Older exits are left out, and so is an exit
+after which another Emacs started sessions: that Emacs ran last."
   (let ((latest nil)
         (latest-pid nil))
     (dolist (entry entries)
@@ -924,7 +925,16 @@ That Emacs no longer runs.  Older exits are left out."
                           (or (claude-code-ide-session-registry-entry-closed-at entry) "")))
         (setq latest (claude-code-ide-session-registry-entry-closed-at entry)
               latest-pid (claude-code-ide-session-registry-entry-emacs-pid entry))))
-    (when latest-pid
+    (when (and latest-pid
+               (not (cl-some
+                     (lambda (entry)
+                       (let ((pid (claude-code-ide-session-registry-entry-emacs-pid entry)))
+                         (and (equal (claude-code-ide-session-registry-entry-host entry) (system-name))
+                              (not (eql pid latest-pid))
+                              (not (eql pid (emacs-pid)))
+                              (string< latest
+                                       (or (claude-code-ide-session-registry-entry-started-at entry) "")))))
+                     entries)))
       (mapcar #'claude-code-ide-session-registry-entry-key
               (cl-remove-if-not
                (lambda (entry)
@@ -961,13 +971,20 @@ process has are left alone.  CONTEXT is a
                       (claude-code-ide-session-registry--restore-context-live-ids context))))))
 
 (defun claude-code-ide-session-registry--restorable-entries ()
-  "Return the entries that a restore starts again, oldest first."
+  "Return the entries that a restore starts again, oldest first.
+A session id appears once, with its newest entry, so a restore never
+resumes one conversation twice."
   (let* ((entries (claude-code-ide-session-registry--entries))
-         (context (claude-code-ide-session-registry--restore-context entries)))
-    (claude-code-ide-session-registry--sort
-     (cl-remove-if-not (lambda (entry)
-                         (claude-code-ide-session-registry--restorable-p entry context))
-                       entries))))
+         (context (claude-code-ide-session-registry--restore-context entries))
+         (newest (make-hash-table :test 'equal)))
+    (dolist (entry (claude-code-ide-session-registry--sort
+                    (cl-remove-if-not (lambda (entry)
+                                        (claude-code-ide-session-registry--restorable-p entry context))
+                                      entries)))
+      (puthash (or (claude-code-ide-session-registry-entry-session-id entry)
+                   (claude-code-ide-session-registry-entry-key entry))
+               entry newest))
+    (claude-code-ide-session-registry--sort (hash-table-values newest))))
 
 ;;; Sessions that ran before the registry
 
