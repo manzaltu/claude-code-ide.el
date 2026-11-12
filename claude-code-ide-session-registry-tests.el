@@ -520,6 +520,21 @@ BODY can refer to that directory as `registry-dir'."
         (delete-process live))
       (claude-code-ide-tests--clear-processes))))
 
+(ert-deftest claude-code-ide-test-cli-environment-unset ()
+  "Names in `claude-code-ide-cli-environment-unset' leave the CLI's environment only."
+  (let* ((claude-code-ide-cli-environment-unset '("CCI_TEST_SECRET"))
+         (claude-code-ide-no-flicker nil)
+         (process-environment (cons "CCI_TEST_SECRET=from-emacs" process-environment))
+         (env (claude-code-ide--cli-environment 4242)))
+    (should (equal (car env) "CCI_TEST_SECRET"))
+    (should (member "CLAUDE_CODE_SSE_PORT=4242" env))
+    (let ((process-environment (append env process-environment)))
+      (should (equal (with-temp-buffer
+                       (call-process "sh" nil t nil "-c" "printf %s \"${CCI_TEST_SECRET-unset}\"")
+                       (buffer-string))
+                     "unset")))
+    (should (equal (getenv "CCI_TEST_SECRET") "from-emacs"))))
+
 (provide 'claude-code-ide-session-registry-tests)
 
 ;; Local Variables:

@@ -438,6 +438,16 @@ You can pass additional flags to the Claude Code CLI:
 
 Note: These flags are appended to the Claude command after any built-in flags like =-d= (debug) or =-r= (resume).
 
+*** CLI Environment
+
+To keep a variable of the Emacs environment away from the Claude Code CLI, name it in =claude-code-ide-cli-environment-unset=. For example, when Emacs holds an API key for other packages, but Claude Code must use your claude.ai login:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-cli-environment-unset '("ANTHROPIC_API_KEY"))
+#+end_src
+
+Only the CLI's environment changes; Emacs and its other processes keep the variable.
+
 *** Custom System Prompt
 
 You can append a custom system prompt to Claude's default prompt, allowing you to customize Claude's behavior for specific projects or contexts:

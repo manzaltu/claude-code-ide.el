@@ -133,6 +133,15 @@ This should be a string of space-separated flags, e.g. \"--model opus\"."
   :type 'string
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-cli-environment-unset nil
+  "Environment variables to remove before the Claude Code CLI starts.
+For example, (\"ANTHROPIC_API_KEY\") makes the CLI use the claude.ai
+login instead of an API key that the Emacs environment holds.  Only
+the CLI's environment changes; Emacs and its other processes keep
+the variables."
+  :type '(repeat string)
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-system-prompt nil
   "System prompt to append to Claude's default system prompt.
 When non-nil, the --append-system-prompt flag will be added with this value.
@@ -1512,6 +1521,19 @@ absolute path sidesteps that lookup."
       program))
 
 
+(defun claude-code-ide--cli-environment (port)
+  "Return the environment entries that the CLI gets in front of Emacs's own.
+PORT is the MCP server port.  Each name of
+`claude-code-ide-cli-environment-unset' is an entry without \"=\",
+which removes that variable from the CLI's environment."
+  (append (cl-remove-if (lambda (name) (string-match-p "=" name))
+                        claude-code-ide-cli-environment-unset)
+          (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
+                "TERM_PROGRAM=emacs"
+                "FORCE_CODE_TERMINAL=true")
+          (when claude-code-ide-no-flicker
+            (list "CLAUDE_CODE_NO_FLICKER=1"))))
+
 (defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id
                                                               &optional extra-args prompt)
   "Create a new terminal session for Claude Code.
@@ -1530,11 +1552,7 @@ Signals an error if terminal fails to initialize."
   (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id
                                                             extra-args prompt))
          (default-directory working-dir)
-         (env-vars (append (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
-                                 "TERM_PROGRAM=emacs"
-                                 "FORCE_CODE_TERMINAL=true")
-                           (when claude-code-ide-no-flicker
-                             (list "CLAUDE_CODE_NO_FLICKER=1")))))
+         (env-vars (claude-code-ide--cli-environment port)))
     ;; Log the command for debugging
     (claude-code-ide-debug "Starting Claude with command: %s" claude-cmd)
     (claude-code-ide-debug "Working directory: %s" working-dir)
