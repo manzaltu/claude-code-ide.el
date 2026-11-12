@@ -814,7 +814,7 @@ CONTENT is a JSON value as text; FIELDS are extra \"key\":value texts."
         (let* ((session (make-claude-code-ide-mcp-session))
                (args (claude-code-ide-session-registry--cli-args
                       session (claude-code-ide-tests--registry-spec)))
-               (parts (split-string-shell-command
+               (parts (claude-code-ide--split-command-line
                        (claude-code-ide--build-claude-command nil nil "sid" args)))
                (hooks (alist-get 'hooks (claude-code-ide-session-registry--json-decode
                                          (cadr (member "--settings" parts))))))

@@ -655,7 +655,7 @@ CLOSED-BY says why.  Entries that are not open do not change."
 The model, the session flags (-c, --continue, -r, --resume,
 --session-id, --fork-session) and their values are removed from the
 rest; a restore adds the model and --resume again."
-  (let ((tokens (split-string-shell-command (or flags "")))
+  (let ((tokens (claude-code-ide--split-command-line (or flags "")))
         (rest '())
         model session-id sets-session fork has-settings permission-mode)
     (while tokens

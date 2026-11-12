@@ -329,7 +329,7 @@ BODY can refer to that directory as `registry-dir'."
                     session (claude-code-ide-tests--registry-spec)))
              (key (gethash session claude-code-ide-session-registry--keys))
              (claude-code-ide-cli-extra-flags "")
-             (parts (split-string-shell-command
+             (parts (claude-code-ide--split-command-line
                      (claude-code-ide--build-claude-command nil nil "sid" args)))
              (settings (claude-code-ide-session-registry--json-decode
                         (cadr (member "--settings" parts))))
@@ -341,6 +341,32 @@ BODY can refer to that directory as `registry-dir'."
                        (concat "cat > " (shell-quote-argument
                                          (claude-code-ide-session-registry--report-file key)))))))))
 
+(ert-deftest claude-code-ide-test-split-command-line ()
+  "The backend command splitter keeps ;, & and |, and unquotes like a shell."
+  (should (equal (claude-code-ide--split-command-line
+                  (concat "claude --name "
+                          (shell-quote-argument "Add calls; right now they queue")))
+                 '("claude" "--name" "Add calls; right now they queue")))
+  (should (equal (claude-code-ide--split-command-line "a 'b & c|d' \"e \\\"f\\\" $g\" h\\ i")
+                 '("a" "b & c|d" "e \"f\" $g" "h i")))
+  (should (equal (claude-code-ide--split-command-line "x '' \"\" y")
+                 '("x" "" "" "y")))
+  (should (equal (claude-code-ide--split-command-line "  ") '()))
+  (should (equal (claude-code-ide--parse-command-string "claude -p 'a;b'")
+                 '("claude" "-p" "a;b"))))
+
+(ert-deftest claude-code-ide-test-registry-restore-title-with-separators ()
+  "A restore passes a title with ;, & or | whole to the CLI."
+  (let* ((claude-code-ide-cli-path "claude")
+         (claude-code-ide-cli-extra-flags
+          (concat "--model opus --name "
+                  (shell-quote-argument "Add support for parallel calls; they queue & wait | now")))
+         (parts (cdr (claude-code-ide--parse-command-string
+                      (concat claude-code-ide-cli-path " " claude-code-ide-cli-extra-flags)))))
+    (should (equal (cadr (member "--name" parts))
+                   "Add support for parallel calls; they queue & wait | now"))
+    (should (equal (cadr (member "--model" parts)) "opus"))))
+
 (ert-deftest claude-code-ide-test-registry-parse-flags ()
   "Model and session flags are split off; other flags stay, quoted."
   (let ((flags (claude-code-ide-session-registry--parse-flags
@@ -350,7 +376,7 @@ BODY can refer to that directory as `registry-dir'."
     (should (claude-code-ide-session-registry--flags-sets-session flags))
     (should (equal (claude-code-ide-session-registry--flags-permission-mode flags)
                    "bypassPermissions"))
-    (should (equal (split-string-shell-command (claude-code-ide-session-registry--flags-rest flags))
+    (should (equal (claude-code-ide--split-command-line (claude-code-ide-session-registry--flags-rest flags))
                    '("--append-system-prompt" "two words" "--dangerously-skip-permissions"))))
   ;; A restore sets the name itself, so a stored name is dropped
   (should (equal (claude-code-ide-session-registry--flags-rest
@@ -437,7 +463,7 @@ BODY can refer to that directory as `registry-dir'."
            (claude-code-ide-mcp-allowed-tools 'auto)
            (command (claude-code-ide--build-claude-command
                      nil nil "sid" (list "--settings" "{\"a\": 1}") "hello there"))
-           (parts (split-string-shell-command command)))
+           (parts (claude-code-ide--split-command-line command)))
       (should (equal (last parts 2) '("--" "hello there")))
       (should (equal (cadr (member "--settings" parts)) "{\"a\": 1}"))
       (should (< (cl-position "--settings" parts :test #'equal)
