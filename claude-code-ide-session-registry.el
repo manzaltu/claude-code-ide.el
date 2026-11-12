@@ -200,6 +200,13 @@ it the backup.")
   "Sessions whose start the registry recorded.
 Only their end changes an entry; a start that failed does not.")
 
+(defvar claude-code-ide-session-registry--adopted
+  (make-hash-table :test 'eq :weakness 'key)
+  "Adoption of each session that ran before the registry.")
+
+(defvar claude-code-ide-session-registry--adopt-timer nil
+  "Timer that reads the session ids of adopted sessions again.")
+
 (defvar claude-code-ide-session-registry--start-key nil
   "Key for the next instance that starts, when it reopens an entry.")
 
@@ -655,6 +662,9 @@ rest; a restore adds the model and --resume again."
       (let ((token (pop tokens)))
         (cond
          ((equal token "--model") (setq model (pop tokens)))
+         ;; A restore sets the name from the transcript
+         ((member token '("--name" "-n")) (pop tokens))
+         ((string-prefix-p "--name=" token))
          ((string-prefix-p "--model=" token) (setq model (substring token 8)))
          ((member token '("-c" "--continue")) (setq sets-session t))
          ((equal token "--fork-session") (setq sets-session t fork t))
@@ -756,6 +766,7 @@ The end of a session whose start failed leaves its entry as it was:
 a failed restore keeps the entry `open' for the next try."
   (when-let* ((key (gethash session claude-code-ide-session-registry--keys)))
     (remhash session claude-code-ide-session-registry--keys)
+    (remhash session claude-code-ide-session-registry--adopted)
     (when (and (gethash session claude-code-ide-session-registry--started)
                (not claude-code-ide-session-registry--exiting))
       (remhash session claude-code-ide-session-registry--started)
@@ -789,6 +800,7 @@ a failed restore keeps the entry `open' for the next try."
   "Close the entries of the sessions that run in this Emacs.
 After a normal exit they are `closed'; after a crash this never runs
 and they stay `open', which is what a restore looks for."
+  (ignore-errors (claude-code-ide-session-registry--refresh-adopted-ids))
   (let ((keys (claude-code-ide-session-registry--live-keys)))
     (setq claude-code-ide-session-registry--exiting t)
     (when keys
@@ -841,13 +853,211 @@ and they stay `open', which is what a restore looks for."
          (let ((command (alist-get 'comm (process-attributes pid))))
            (and command (string-match-p "emacs" (downcase command)))))))
 
-(defun claude-code-ide-session-registry--restorable-p (entry)
-  "Return non-nil when ENTRY was open when its Emacs crashed.
-Entries of another host or of another live Emacs are left alone."
-  (and (eq (claude-code-ide-session-registry-entry-state entry) 'open)
-       (equal (claude-code-ide-session-registry-entry-host entry) (system-name))
-       (not (claude-code-ide-session-registry--live-p entry))
-       (not (claude-code-ide-session-registry--other-emacs-p entry))))
+(cl-defstruct (claude-code-ide-session-registry--cli-session
+               (:constructor claude-code-ide-session-registry--cli-session-create)
+               (:copier nil))
+  "A Claude CLI process that runs, from its file in ~/.claude/sessions."
+  (pid 0 :type integer)
+  (session-id nil :type (or null string))
+  (cwd nil :type (or null string))
+  (name nil :type (or null string))
+  (name-from-user nil :type boolean
+                  :documentation "Non-nil when the user or --name set the name."))
+
+(defun claude-code-ide-session-registry--cli-session-file (pid)
+  "Return the file that the Claude CLI process PID keeps about itself."
+  (expand-file-name (format "sessions/%d.json" pid)
+                    (or (getenv "CLAUDE_CONFIG_DIR") (expand-file-name "~/.claude"))))
+
+(defun claude-code-ide-session-registry--read-cli-session (file)
+  "Return the CLI session in FILE when its process runs, else nil."
+  (let* ((data (ignore-errors
+                 (claude-code-ide-session-registry--json-decode
+                  (claude-code-ide-session-registry--file-string file))))
+         (pid (and (consp data) (alist-get 'pid data))))
+    (when (and (integerp pid) (process-attributes pid))
+      (claude-code-ide-session-registry--cli-session-create
+       :pid pid
+       :session-id (let ((id (alist-get 'sessionId data))) (and (stringp id) id))
+       :cwd (let ((cwd (alist-get 'cwd data))) (and (stringp cwd) cwd))
+       :name (let ((name (alist-get 'name data))) (and (stringp name) name))
+       :name-from-user (equal (alist-get 'nameSource data) "user")))))
+
+(defun claude-code-ide-session-registry--live-cli-sessions ()
+  "Return the CLI sessions that run on this host."
+  (let ((dir (file-name-directory (claude-code-ide-session-registry--cli-session-file 0))))
+    (when (file-directory-p dir)
+      (delq nil (mapcar #'claude-code-ide-session-registry--read-cli-session
+                        (directory-files dir t "\\`[0-9]+\\.json\\'"))))))
+
+(defun claude-code-ide-session-registry--session-pid (session)
+  "Return the PID of SESSION's CLI process, or nil."
+  (or (claude-code-ide-mcp-session-cli-pid session)
+      (let ((process (claude-code-ide-mcp-session-process session)))
+        (and process (process-live-p process) (process-id process)))))
+
+(defun claude-code-ide-session-registry--cli-session-of (session)
+  "Return the CLI session that SESSION runs, or nil."
+  (when-let* ((pid (claude-code-ide-session-registry--session-pid session)))
+    (claude-code-ide-session-registry--read-cli-session
+     (claude-code-ide-session-registry--cli-session-file pid))))
+
+(cl-defstruct (claude-code-ide-session-registry--restore-context
+               (:constructor claude-code-ide-session-registry--restore-context-create)
+               (:copier nil))
+  "What a restore checks each entry against."
+  (live-ids nil :type list :documentation "Session ids of CLI processes that run.")
+  (exit-keys nil :type list
+             :documentation "Keys of the entries that the last Emacs closed at its exit."))
+
+(defun claude-code-ide-session-registry--exit-keys (entries)
+  "Return the keys of ENTRIES that the last Emacs on this host closed at its exit.
+That Emacs no longer runs.  Older exits are left out."
+  (let ((latest nil)
+        (latest-pid nil))
+    (dolist (entry entries)
+      (when (and (equal (claude-code-ide-session-registry-entry-closed-by entry) "emacs-exit")
+                 (equal (claude-code-ide-session-registry-entry-host entry) (system-name))
+                 (not (eql (claude-code-ide-session-registry-entry-emacs-pid entry) (emacs-pid)))
+                 (not (claude-code-ide-session-registry--other-emacs-p entry))
+                 (string< (or latest "")
+                          (or (claude-code-ide-session-registry-entry-closed-at entry) "")))
+        (setq latest (claude-code-ide-session-registry-entry-closed-at entry)
+              latest-pid (claude-code-ide-session-registry-entry-emacs-pid entry))))
+    (when latest-pid
+      (mapcar #'claude-code-ide-session-registry-entry-key
+              (cl-remove-if-not
+               (lambda (entry)
+                 (and (equal (claude-code-ide-session-registry-entry-closed-by entry) "emacs-exit")
+                      (eql (claude-code-ide-session-registry-entry-emacs-pid entry) latest-pid)
+                      (equal (claude-code-ide-session-registry-entry-state entry) 'closed)))
+               entries)))))
+
+(defun claude-code-ide-session-registry--restore-context (entries)
+  "Return the restore context for ENTRIES now."
+  (claude-code-ide-session-registry--restore-context-create
+   :live-ids (delq nil (mapcar #'claude-code-ide-session-registry--cli-session-session-id
+                               (claude-code-ide-session-registry--live-cli-sessions)))
+   :exit-keys (claude-code-ide-session-registry--exit-keys entries)))
+
+(defun claude-code-ide-session-registry--restorable-p (entry &optional context)
+  "Return non-nil when ENTRY ran when its Emacs ended, and runs no more.
+That is an `open' entry of an Emacs that crashed, or an entry that the
+last Emacs closed at its exit; such an exit can also come from a
+signal.  Entries of another host or of another live Emacs, entries
+that run in this Emacs, and entries whose session id a running CLI
+process has are left alone.  CONTEXT is a
+`claude-code-ide-session-registry--restore-context'; nil computes one."
+  (let ((context (or context
+                     (claude-code-ide-session-registry--restore-context
+                      (claude-code-ide-session-registry--entries)))))
+    (and (or (and (eq (claude-code-ide-session-registry-entry-state entry) 'open)
+                  (equal (claude-code-ide-session-registry-entry-host entry) (system-name))
+                  (not (claude-code-ide-session-registry--other-emacs-p entry)))
+             (member (claude-code-ide-session-registry-entry-key entry)
+                     (claude-code-ide-session-registry--restore-context-exit-keys context)))
+         (not (claude-code-ide-session-registry--live-p entry))
+         (not (member (claude-code-ide-session-registry-entry-session-id entry)
+                      (claude-code-ide-session-registry--restore-context-live-ids context))))))
+
+(defun claude-code-ide-session-registry--restorable-entries ()
+  "Return the entries that a restore starts again, oldest first."
+  (let* ((entries (claude-code-ide-session-registry--entries))
+         (context (claude-code-ide-session-registry--restore-context entries)))
+    (claude-code-ide-session-registry--sort
+     (cl-remove-if-not (lambda (entry)
+                         (claude-code-ide-session-registry--restorable-p entry context))
+                       entries))))
+
+;;; Sessions that ran before the registry
+
+(cl-defstruct (claude-code-ide-session-registry--adoption
+               (:constructor claude-code-ide-session-registry--adoption-create)
+               (:copier nil))
+  "A session that ran before the registry, and how to follow its id."
+  (pid 0 :type integer :documentation "PID of its CLI process.")
+  (session-id nil :type (or null string) :documentation "The id last recorded."))
+
+(defun claude-code-ide-session-registry--change-session-id (key session-id)
+  "Return a change that sets the SESSION-ID of the entry KEY."
+  (lambda (entries)
+    (claude-code-ide-session-registry--update
+     entries (list key)
+     (lambda (entry)
+       (setf (claude-code-ide-session-registry-entry-session-id entry) session-id
+             (claude-code-ide-session-registry-entry-transcript-path entry) nil
+             (claude-code-ide-session-registry-entry-last-seen-at entry)
+             (claude-code-ide-session-registry--now))))))
+
+(defun claude-code-ide-session-registry--adopt-running-sessions ()
+  "Record the sessions of this Emacs that run without a registry entry.
+They started before `claude-code-ide-session-registry-mode' was on, so
+their CLI has no hooks.  Their session id comes from the file that the
+CLI process keeps in ~/.claude/sessions; it is read again every minute
+and at exit, since /clear changes it.  Return the number adopted."
+  (let ((live nil)
+        (adopted 0))
+    (dolist (session (claude-code-ide-mcp--active-sessions))
+      (let ((buffer (claude-code-ide-mcp-session-buffer session))
+            (dir (file-name-as-directory
+                  (expand-file-name (claude-code-ide-mcp-session-project-dir session)))))
+        (when (and buffer (buffer-live-p buffer)
+                   (not (gethash session claude-code-ide-session-registry--keys)))
+          (let* ((cli (or (claude-code-ide-session-registry--cli-session-of session)
+                          ;; Without a PID: the only CLI that runs in its directory
+                          (let ((same-dir
+                                 (cl-remove-if-not
+                                  (lambda (cli)
+                                    (equal (file-name-as-directory
+                                            (expand-file-name
+                                             (or (claude-code-ide-session-registry--cli-session-cwd cli) "/")))
+                                           dir))
+                                  (or live (setq live (claude-code-ide-session-registry--live-cli-sessions))))))
+                            (and (= (length same-dir) 1) (car same-dir)))))
+                 (id (and cli (claude-code-ide-session-registry--cli-session-session-id cli))))
+            (when id
+              (let ((key (claude-code-ide-session-registry--uuid))
+                    (now (claude-code-ide-session-registry--now)))
+                (puthash session key claude-code-ide-session-registry--keys)
+                (puthash session t claude-code-ide-session-registry--started)
+                (puthash session (claude-code-ide-session-registry--adoption-create
+                                  :pid (claude-code-ide-session-registry--cli-session-pid cli)
+                                  :session-id id)
+                         claude-code-ide-session-registry--adopted)
+                (claude-code-ide-session-registry--submit
+                 "adopted"
+                 (claude-code-ide-session-registry--change-started
+                  (claude-code-ide-session-registry-entry-create
+                   :key key :session-id id :project-dir dir
+                   :buffer-name (buffer-name buffer)
+                   :instance-name (claude-code-ide-mcp-session-instance-name session)
+                   :extra-flags "" :state 'open :started-at now :last-seen-at now
+                   :emacs-pid (emacs-pid) :host (system-name))))
+                (cl-incf adopted)))))))
+    (when (and (> (hash-table-count claude-code-ide-session-registry--adopted) 0)
+               (not (timerp claude-code-ide-session-registry--adopt-timer)))
+      (setq claude-code-ide-session-registry--adopt-timer
+            (run-with-timer 60 60 #'claude-code-ide-session-registry--refresh-adopted-ids)))
+    adopted))
+
+(defun claude-code-ide-session-registry--refresh-adopted-ids ()
+  "Record the current session id of each adopted session that changed it."
+  (maphash
+   (lambda (session adoption)
+     (let ((key (gethash session claude-code-ide-session-registry--keys))
+           (cli (claude-code-ide-session-registry--read-cli-session
+                 (claude-code-ide-session-registry--cli-session-file
+                  (claude-code-ide-session-registry--adoption-pid adoption)))))
+       (when-let* ((id (and key cli (claude-code-ide-session-registry--cli-session-session-id cli))))
+         (unless (equal id (claude-code-ide-session-registry--adoption-session-id adoption))
+           (setf (claude-code-ide-session-registry--adoption-session-id adoption) id)
+           (claude-code-ide-session-registry--submit
+            "adopted id" (claude-code-ide-session-registry--change-session-id key id))))))
+   claude-code-ide-session-registry--adopted)
+  (when (and (zerop (hash-table-count claude-code-ide-session-registry--adopted))
+             (timerp claude-code-ide-session-registry--adopt-timer))
+    (cancel-timer claude-code-ide-session-registry--adopt-timer)
+    (setq claude-code-ide-session-registry--adopt-timer nil)))
 
 (defun claude-code-ide-session-registry--reopenable-p (entry)
   "Return non-nil when ENTRY can be started again by hand."
@@ -932,6 +1142,18 @@ Transcripts can be hundreds of megabytes, too large to read in full."
   (when-let* ((file (claude-code-ide-session-registry--transcript-file entry)))
     (claude-code-ide-session-registry--transcript-title file)))
 
+(defun claude-code-ide-session-registry--custom-title (entry)
+  "Return the title that the user gave ENTRY's session with /rename or --name.
+A resumed session would otherwise get a derived name, and other
+sessions address it by its name."
+  (when-let* ((file (claude-code-ide-session-registry--transcript-file entry)))
+    (claude-code-ide-session-registry--cached
+     'custom-title file
+     (lambda (file)
+       (claude-code-ide-session-registry--line-field
+        (claude-code-ide-session-registry--grep-last file "-F" "\"type\":\"custom-title\"")
+        'customTitle)))))
+
 (defun claude-code-ide-session-registry--model (entry)
   "Return the model to resume ENTRY with: the transcript's, else the stored one."
   (or (when-let* ((file (claude-code-ide-session-registry--transcript-file entry)))
@@ -967,9 +1189,11 @@ flags and its model, resumed by its session id."
     (unless (file-directory-p dir)
       (user-error "Directory %s does not exist" dir))
     (let* ((model (claude-code-ide-session-registry--model entry))
+           (title (claude-code-ide-session-registry--custom-title entry))
            (flags (string-trim
                    (concat (claude-code-ide-session-registry-entry-extra-flags entry)
-                           (when model (concat " --model " (shell-quote-argument model))))))
+                           (when model (concat " --model " (shell-quote-argument model)))
+                           (when title (concat " --name " (shell-quote-argument title))))))
            (claude-code-ide-session-registry--start-key
             (claude-code-ide-session-registry-entry-key entry)))
       (claude-code-ide--start-session
@@ -1014,18 +1238,18 @@ flags and its model, resumed by its session id."
 
 ;;;###autoload
 (defun claude-code-ide-restore-sessions (&optional pick)
-  "Start again every Claude Code instance that was open when Emacs crashed.
-These are the `open' entries of `claude-code-ide-state-file' that run
-neither in this Emacs nor in another live Emacs.  Each instance resumes
-its conversation in its directory, with its instance name, flags and
-model, and gets `claude-code-ide-restore-note' as its first message.
-With a prefix argument PICK, choose which ones."
+  "Start again every Claude Code instance that ran when the last Emacs ended.
+These are the `open' entries of `claude-code-ide-state-file' of an
+Emacs that crashed, and the entries that the last Emacs closed at its
+exit; see `claude-code-ide-session-registry--restorable-p'.  Sessions
+that run again already are skipped.  Each instance resumes its
+conversation in its directory, with its instance name, flags, model
+and title, and gets `claude-code-ide-restore-note' as its first
+message.  With a prefix argument PICK, choose which ones."
   (interactive "P")
-  (let ((entries (claude-code-ide-session-registry--sort
-                  (cl-remove-if-not #'claude-code-ide-session-registry--restorable-p
-                                    (claude-code-ide-session-registry--entries)))))
+  (let ((entries (claude-code-ide-session-registry--restorable-entries)))
     (if (null entries)
-        (message "No open Claude Code sessions to restore")
+        (message "No Claude Code sessions to restore")
       (when pick
         (let ((candidates (claude-code-ide-session-registry--candidates entries)))
           (setq entries (mapcar (lambda (label) (cdr (assoc label candidates)))
@@ -1200,8 +1424,8 @@ directory, names and flags.  A normal exit of Emacs marks them
         (claude-code-ide-session-registry--start-watch)
         (require 'claude-code-ide-session-status)
         (claude-code-ide-session-status--set-tracking t)
-        (let ((count (cl-count-if #'claude-code-ide-session-registry--restorable-p
-                                  (ignore-errors (claude-code-ide-session-registry--entries)))))
+        (claude-code-ide-session-registry--adopt-running-sessions)
+        (let ((count (length (ignore-errors (claude-code-ide-session-registry--restorable-entries)))))
           (when (> count 0)
             (message "%d Claude Code session%s can be restored: M-x claude-code-ide-restore-sessions"
                      count (if (= count 1) "" "s")))))
@@ -1211,6 +1435,9 @@ directory, names and flags.  A normal exit of Emacs marks them
     (remove-hook 'claude-code-ide-session-rename-functions #'claude-code-ide-session-registry--on-rename)
     (remove-hook 'kill-emacs-hook #'claude-code-ide-session-registry--on-kill-emacs)
     (claude-code-ide-session-registry--stop-watch)
+    (when (timerp claude-code-ide-session-registry--adopt-timer)
+      (cancel-timer claude-code-ide-session-registry--adopt-timer)
+      (setq claude-code-ide-session-registry--adopt-timer nil))
     (when (fboundp 'claude-code-ide-session-status--set-tracking)
       (claude-code-ide-session-status--set-tracking nil))))
 

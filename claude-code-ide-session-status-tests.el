@@ -667,6 +667,26 @@ CONTENT is a JSON value as text; FIELDS are extra \"key\":value texts."
                       "Three decisions in the tab.\n**Next for Raymond:** answer in the tab and press Send.")
                      '("Next for Raymond:** answer in the tab and press Send."))))))
 
+(ert-deftest claude-code-ide-test-status-session-label ()
+  "A row shows the instance name, else the user's title, else the project."
+  (claude-code-ide-tests--with-status
+    (let* ((config-dir (expand-file-name "claude" registry-dir))
+           (process-environment (cons (concat "CLAUDE_CONFIG_DIR=" config-dir) process-environment))
+           (claude-code-ide-session-status--title-cache (make-hash-table :test 'eql))
+           (named (make-claude-code-ide-mcp-session
+                   :project-dir "/tmp/k-and-e-transaction-management-platform/"
+                   :instance-name "Azure block storage events" :cli-pid (emacs-pid)))
+           (titled (make-claude-code-ide-mcp-session :project-dir "/tmp/proj/" :cli-pid (emacs-pid)))
+           (plain (make-claude-code-ide-mcp-session :project-dir "/tmp/proj/")))
+      (claude-code-ide-tests--cli-session-file config-dir "id1" "DEAL-1/fix" "user")
+      (should (equal (claude-code-ide-session-status--session-label named) "Azure block storage events"))
+      (should (equal (claude-code-ide-session-status--session-label titled) "DEAL-1/fix"))
+      (should (equal (claude-code-ide-session-status--session-label plain) "proj"))
+      ;; A name that the CLI derived is no title
+      (claude-code-ide-tests--cli-session-file config-dir "id1" "proj-2d" "derived")
+      (clrhash claude-code-ide-session-status--title-cache)
+      (should (equal (claude-code-ide-session-status--session-label titled) "proj")))))
+
 (ert-deftest claude-code-ide-test-status-unobserved-and-untracked ()
   "A session without events is unobserved after the timeout."
   (let ((status (claude-code-ide-tests--status 0.0))

@@ -528,7 +528,7 @@ To enable it, put this in your init file:
 (setq claude-code-ide-state-file "~/.emacs-claude-code-ide-state.json")
 #+end_src
 
-Enable the mode before you start instances. Instances that were started before the mode was enabled are not recorded.
+When the mode turns on, it also records the instances that already run in this Emacs. Their session id comes from the file that each CLI process keeps in =~/.claude/sessions=, and the registry reads it again every minute and at exit, because =/clear= changes it. These instances have no status hooks; they show as =UNTRACKED= in the status buffer.
 
 *** States
 
@@ -538,13 +538,13 @@ Enable the mode before you start instances. Instances that were started before t
 | =closed=   | The instance ended, its buffer was killed, or Emacs exited normally. =claude-code-ide-reopen-session= starts it again. |
 | =archived= | The work is done. No command starts it again.                                     |
 
-A normal exit of Emacs marks its running instances =closed=, with =closed_by= set to =emacs-exit=. After a crash this cannot happen, so they stay =open=.
+An exit of Emacs marks its running instances =closed=, with =closed_by= set to =emacs-exit=. After a crash this cannot happen, so they stay =open=. An end of Emacs by a signal also runs the exit, so a restore takes both: the =open= instances of an Emacs that crashed, and the instances that the last Emacs closed at its exit.
 
 *** Commands
 
 | Command                                   | Description                                                      |
 |-------------------------------------------+------------------------------------------------------------------|
-| =M-x claude-code-ide-restore-sessions=      | Start every =open= instance again (=C-u=: choose which)            |
+| =M-x claude-code-ide-restore-sessions=      | Start again every instance that ran when the last Emacs ended (=C-u=: choose which) |
 | =M-x claude-code-ide-reopen-session=        | Choose an instance that is not running and start it again        |
 | =M-x claude-code-ide-archive-session=       | Mark an instance =archived=                                      |
 | =M-x claude-code-ide-forget-session=        | Remove an instance from the registry (the transcript stays)      |
@@ -556,10 +556,10 @@ In the list, =RET= switches to a running instance or reopens a stopped one, =a= 
 
 1. Start Emacs. The mode reports how many instances can be restored.
 2. Run =M-x claude-code-ide-restore-sessions=.
-3. Each instance starts in its directory with =claude --resume <id>=, its instance name, its flags, and the model of its last answer.
+3. Each instance starts in its directory with =claude --resume <id>=, its instance name, its flags, the model of its last answer, and its title (=--name=, from =/rename=), so that other sessions find it by name.
 4. Each instance gets =claude-code-ide-restore-note= as its first message. The default note says that the session was resumed after a crash, that its background tasks and unread messages from other sessions are gone, and that it must re-read its last state and re-arm its watches. Set the variable to =nil= to send no message.
 
-The registry does not restore an =open= instance that runs in this Emacs, or that belongs to another live Emacs or to another host.
+The registry does not restore an instance that runs in this Emacs, that belongs to another live Emacs or to another host, or whose session id a running CLI process already has.
 
 *** The state file
 

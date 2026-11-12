@@ -1154,6 +1154,35 @@ session that needs the user most comes first; rows keep their order."
                                              :directory directory :rows (list row))))))))
     groups))
 
+(defvar claude-code-ide-session-status--title-cache (make-hash-table :test 'eql)
+  "PID -> (FILE-TIME . TITLE) of the CLI session files read last.")
+
+(defun claude-code-ide-session-status--user-title (session)
+  "Return the title that the user gave SESSION with /rename or --name, or nil.
+It comes from the file that the CLI process keeps in ~/.claude/sessions."
+  (when-let* ((pid (claude-code-ide-session-registry--session-pid session))
+              (file (claude-code-ide-session-registry--cli-session-file pid))
+              (attributes (file-attributes file)))
+    (let ((time (file-attribute-modification-time attributes))
+          (cached (gethash pid claude-code-ide-session-status--title-cache)))
+      (if (and cached (equal (car cached) time))
+          (cdr cached)
+        (let* ((cli (claude-code-ide-session-registry--read-cli-session file))
+               (title (and cli
+                           (claude-code-ide-session-registry--cli-session-name-from-user cli)
+                           (claude-code-ide-session-registry--cli-session-name cli))))
+          (puthash pid (cons time title) claude-code-ide-session-status--title-cache)
+          title)))))
+
+(defun claude-code-ide-session-status--session-label (session)
+  "Return the name of SESSION in its row, under its project line.
+That is its instance name, else the title that the user gave it, else
+the project name."
+  (or (claude-code-ide-mcp-session-instance-name session)
+      (claude-code-ide-session-status--user-title session)
+      (file-name-nondirectory
+       (directory-file-name (claude-code-ide-mcp-session-project-dir session)))))
+
 (defun claude-code-ide-session-status--group-header (group)
   "Return the header line text of GROUP."
   (let ((count (length (claude-code-ide-session-status--group-rows group)))
@@ -1181,7 +1210,7 @@ Each group starts with a header entry whose id is the group."
                                                         'follow-link t
                                                         'keymap claude-code-ide-session-status--label-map)
                                             (truncate-string-to-width
-                                             (concat "  " (claude-code-ide--session-display-name session))
+                                             (concat "  " (claude-code-ide-session-status--session-label session))
                                              claude-code-ide-session-status--session-width nil nil "…")
                                             (claude-code-ide-session-status--age since now)
                                             (or detail "")))))

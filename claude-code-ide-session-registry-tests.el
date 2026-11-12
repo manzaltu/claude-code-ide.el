@@ -352,6 +352,10 @@ BODY can refer to that directory as `registry-dir'."
                    "bypassPermissions"))
     (should (equal (split-string-shell-command (claude-code-ide-session-registry--flags-rest flags))
                    '("--append-system-prompt" "two words" "--dangerously-skip-permissions"))))
+  ;; A restore sets the name itself, so a stored name is dropped
+  (should (equal (claude-code-ide-session-registry--flags-rest
+                  (claude-code-ide-session-registry--parse-flags "--name 'Old title' --verbose -n x"))
+                 "--verbose"))
   (let ((flags (claude-code-ide-session-registry--parse-flags "-r --fork-session --model=haiku")))
     (should (equal (claude-code-ide-session-registry--flags-model flags) "haiku"))
     (should-not (claude-code-ide-session-registry--flags-session-id flags))
@@ -372,7 +376,8 @@ BODY can refer to that directory as `registry-dir'."
       (make-directory project t)
       (make-directory transcript-dir t)
       (with-temp-file (expand-file-name "id-crashed.jsonl" transcript-dir)
-        (insert "{\"type\":\"user\",\"cwd\":\"x\"}\n"
+        (insert "{\"type\":\"custom-title\",\"customTitle\":\"DEAL-1/fix\"}\n"
+                "{\"type\":\"user\",\"cwd\":\"x\"}\n"
                 "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-old-1\"}}\n"
                 "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-new-2\"}}\n"))
       (claude-code-ide-session-registry--submit
@@ -406,7 +411,7 @@ BODY can refer to that directory as `registry-dir'."
         (should (equal (claude-code-ide-start-spec-resume-id spec) "id-crashed"))
         ;; The transcript's last model wins over the stored --model
         (should (equal (claude-code-ide-start-spec-extra-flags spec)
-                       "--permission-mode plan --model claude-new-2"))
+                       "--permission-mode plan --model claude-new-2 --name DEAL-1/fix"))
         (should (equal (claude-code-ide-start-spec-prompt spec) "Resumed after a crash."))))))
 
 (ert-deftest claude-code-ide-test-registry-transcript-title ()
@@ -519,6 +524,78 @@ BODY can refer to that directory as `registry-dir'."
       (when (process-live-p live)
         (delete-process live))
       (claude-code-ide-tests--clear-processes))))
+
+(defun claude-code-ide-tests--cli-session-file (config-dir id &optional name source)
+  "Write a CLI session file in CONFIG-DIR for this Emacs's PID with session ID.
+NAME and SOURCE are its name and name source.  This Emacs runs, so the
+file counts as a running CLI process."
+  (make-directory (expand-file-name "sessions" config-dir) t)
+  (with-temp-file (expand-file-name (format "sessions/%d.json" (emacs-pid)) config-dir)
+    (insert (format "{\"pid\":%d,\"sessionId\":\"%s\",\"cwd\":\"/tmp\",\"name\":\"%s\",\"nameSource\":\"%s\"}"
+                    (emacs-pid) id (or name "proj-2d") (or source "derived")))))
+
+(ert-deftest claude-code-ide-test-registry-restore-after-exit ()
+  "A restore takes the crashed sessions and those of the last Emacs exit.
+Older exits, sessions that the user ended, and sessions whose id a
+running CLI has are left alone."
+  (claude-code-ide-tests--with-registry
+    (let* ((config-dir (expand-file-name "claude" registry-dir))
+           (process-environment (cons (concat "CLAUDE_CONFIG_DIR=" config-dir) process-environment)))
+      (claude-code-ide-tests--cli-session-file config-dir "id-running")
+      (claude-code-ide-session-registry--submit
+       "setup"
+       (lambda (_)
+         (list (claude-code-ide-tests--registry-entry
+                "old-exit" :session-id "id-old" :state 'closed :closed-by "emacs-exit"
+                :closed-at "2026-11-10T10:00:00Z" :emacs-pid 999999991)
+               (claude-code-ide-tests--registry-entry
+                "last-exit" :session-id "id-last" :state 'closed :closed-by "emacs-exit"
+                :closed-at "2026-11-11T18:46:34Z" :emacs-pid 999999992)
+               (claude-code-ide-tests--registry-entry
+                "last-exit-running" :session-id "id-running" :state 'closed :closed-by "emacs-exit"
+                :closed-at "2026-11-11T18:46:34Z" :emacs-pid 999999992)
+               (claude-code-ide-tests--registry-entry
+                "user-ended" :session-id "id-ended" :state 'closed :closed-by "exited"
+                :closed-at "2026-11-11T18:00:00Z" :emacs-pid 999999992)
+               (claude-code-ide-tests--registry-entry
+                "crashed" :session-id "id-crashed" :emacs-pid 999999993))))
+      (should (equal (sort (mapcar #'claude-code-ide-session-registry-entry-key
+                                   (claude-code-ide-session-registry--restorable-entries))
+                           #'string<)
+                     '("crashed" "last-exit"))))))
+
+(ert-deftest claude-code-ide-test-registry-adopts-running-sessions ()
+  "A session that ran before the registry is recorded with its CLI's id."
+  (claude-code-ide-tests--clear-processes)
+  (claude-code-ide-tests--with-registry
+    (let* ((config-dir (expand-file-name "claude" registry-dir))
+           (process-environment (cons (concat "CLAUDE_CONFIG_DIR=" config-dir) process-environment))
+           (claude-code-ide-session-registry--adopted (make-hash-table :test 'eq :weakness 'key))
+           (claude-code-ide-session-registry--adopt-timer nil)
+           (buffer (generate-new-buffer "*cc-adopt*"))
+           (session (claude-code-ide-tests--make-session
+                     "/tmp/adopt-project/" :buffer buffer :cli-pid (emacs-pid)
+                     :instance-name "docs")))
+      (unwind-protect
+          (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil)))
+            (claude-code-ide-tests--cli-session-file config-dir "id-adopted")
+            (should (= 1 (claude-code-ide-session-registry--adopt-running-sessions)))
+            (should (= 0 (claude-code-ide-session-registry--adopt-running-sessions)))
+            (let ((entry (car (claude-code-ide-session-registry--load))))
+              (should (equal (claude-code-ide-session-registry-entry-session-id entry) "id-adopted"))
+              (should (equal (claude-code-ide-session-registry-entry-project-dir entry) "/tmp/adopt-project/"))
+              (should (equal (claude-code-ide-session-registry-entry-instance-name entry) "docs"))
+              (should (equal (claude-code-ide-session-registry-entry-buffer-name entry) "*cc-adopt*"))
+              (should (eq (claude-code-ide-session-registry-entry-state entry) 'open)))
+            ;; /clear gives the CLI a new id
+            (claude-code-ide-tests--cli-session-file config-dir "id-after-clear")
+            (claude-code-ide-session-registry--refresh-adopted-ids)
+            (should (equal (claude-code-ide-session-registry-entry-session-id
+                            (car (claude-code-ide-session-registry--load)))
+                           "id-after-clear"))
+            (should (gethash session claude-code-ide-session-registry--keys)))
+        (kill-buffer buffer)
+        (claude-code-ide-tests--clear-processes)))))
 
 (ert-deftest claude-code-ide-test-cli-environment-unset ()
   "Names in `claude-code-ide-cli-environment-unset' leave the CLI's environment only."
