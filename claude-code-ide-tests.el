@@ -718,6 +718,22 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should (member "TERM_PROGRAM=emacs" mock-ghostel-env))
             (should (member "FORCE_CODE_TERMINAL=true" mock-ghostel-env))))))))
 
+(ert-deftest claude-code-ide-test-parse-command-string-remote ()
+  "Remote command strings are split with POSIX rules on every platform."
+  (let ((cmd (concat "claude --append-system-prompt IMPORTANT\\:\\ a\\ b"
+                     " --mcp-config "
+                     "\"{\\\"mcpServers\\\":{\\\"e\\\":{\\\"url\\\":"
+                     "\\\"http://localhost:1/mcp\\\"}}}\" --x"))
+        ;; Simulate the Windows default, where escapes are not honored.
+        (shell-file-name-quote-list nil))
+    (cl-letf (((symbol-function 'file-remote-p)
+               (lambda (&rest _) "/ssh:host:")))
+      (should (equal (claude-code-ide--parse-command-string cmd)
+                     '("claude" "--append-system-prompt" "IMPORTANT: a b"
+                       "--mcp-config"
+                       "{\"mcpServers\":{\"e\":{\"url\":\"http://localhost:1/mcp\"}}}"
+                       "--x"))))))
+
 (ert-deftest claude-code-ide-test-resolve-program ()
   "Test CLI program resolution for terminal exec APIs."
   ;; A bare name resolves to an absolute path via `executable-find'.

@@ -60,6 +60,7 @@
 
 (require 'cl-lib)
 (require 'project)
+(require 'shell)
 (require 'claude-code-ide-debug)
 (require 'claude-code-ide-mcp)
 (require 'claude-code-ide-transient)
@@ -1209,8 +1210,20 @@ when navigating between terminal and other buffers."
   "Parse a command string into (program . args) for terminal exec APIs.
 COMMAND-STRING is a shell command line to parse.
 Returns a cons cell (program . args) where program is the executable
-and args is a list of arguments."
-  (let ((parts (split-string-shell-command command-string)))
+and args is a list of arguments.
+
+For a remote `default-directory' the string is split with POSIX
+quoting rules.  `split-string-shell-command' only honors backslash
+escapes when `shell-file-name-quote-list' is non-nil, and that
+defaults to nil on Windows, which would leave escapes in arguments
+such as the --mcp-config JSON."
+  (let* ((shell-file-name-quote-list
+          (if (file-remote-p default-directory)
+              ;; The remote shell is POSIX: use the non-Windows default.
+              (append shell-delimiter-argument-list
+                      '(?\s ?$ ?\* ?\! ?\" ?\' ?\` ?\# ?\\))
+            shell-file-name-quote-list))
+         (parts (split-string-shell-command command-string)))
     (cons (car parts) (cdr parts))))
 
 (defun claude-code-ide--resolve-program (program)
