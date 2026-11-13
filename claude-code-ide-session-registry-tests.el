@@ -398,7 +398,8 @@ BODY can refer to that directory as `registry-dir'."
            (process-environment (cons (concat "CLAUDE_CONFIG_DIR=" config-dir)
                                       process-environment))
            (claude-code-ide-restore-note "Resumed after a crash.")
-           (starts '()))
+           (starts '())
+           (timers '()))
       (make-directory project t)
       (make-directory transcript-dir t)
       (with-temp-file (expand-file-name "id-crashed.jsonl" transcript-dir)
@@ -425,8 +426,14 @@ BODY can refer to that directory as `registry-dir'."
                 ((symbol-function 'claude-code-ide--start-session)
                  (lambda (continue resume spec)
                    (push (list continue resume spec claude-code-ide-session-registry--start-key)
-                         starts))))
-        (claude-code-ide-restore-sessions))
+                         starts)))
+                ;; Each start runs from its own timer: collect them, then run them
+                ((symbol-function 'run-with-timer)
+                 (lambda (_secs _repeat fn &rest args)
+                   (push (cons fn args) timers))))
+        (claude-code-ide-restore-sessions)
+        (dolist (timer (reverse timers))
+          (apply (car timer) (cdr timer))))
       (should (= (length starts) 1))
       (pcase-let ((`(,continue ,resume ,spec ,key) (car starts)))
         (should-not continue)
@@ -682,6 +689,53 @@ back once, from the crashed Emacs's entry."
                        (buffer-string))
                      "unset")))
     (should (equal (getenv "CCI_TEST_SECRET") "from-emacs"))))
+
+(ert-deftest claude-code-ide-test-registry-restore-survives-failures ()
+  "A quit or an error in one start of a restore does not stop the others."
+  (let ((timers '())
+        (started '())
+        (messages '()))
+    (cl-letf (((symbol-function 'run-with-timer)
+               (lambda (_secs _repeat fn &rest args) (push (cons fn args) timers)))
+              ((symbol-function 'claude-code-ide-session-registry--start-entry)
+               (lambda (entry _prompt)
+                 (pcase (claude-code-ide-session-registry-entry-key entry)
+                   ("a" (signal 'quit nil))
+                   ("b" (error "Directory /x does not exist"))
+                   (key (push key started)))))
+              ((symbol-function 'message)
+               (lambda (format-string &rest args) (push (apply #'format format-string args) messages))))
+      (claude-code-ide-session-registry--start-entries
+       (mapcar #'claude-code-ide-tests--registry-entry '("a" "b" "c")) "note")
+      (should (= 3 (length timers)))
+      (dolist (timer (reverse timers))
+        (apply (car timer) (cdr timer))))
+    (should (equal started '("c")))
+    (should (string-match-p "\\`Restored 1 Claude Code session; failed: .*quit; .*Directory /x does not exist"
+                            (car messages)))))
+
+(ert-deftest claude-code-ide-test-registry-hooks-with-shell-characters ()
+  "A report directory with ;, & and | in its path still gets the hooks."
+  (claude-code-ide-tests--with-registry
+    (cl-letf (((symbol-function 'claude-code-ide-mcp-server-ensure-server) #'ignore))
+      (let* ((claude-code-ide-session-registry-report-directory
+              (expand-file-name "a;b&c|d" registry-dir))
+             (claude-code-ide-cli-extra-flags "")
+             (args (claude-code-ide-session-registry--cli-args
+                    (make-claude-code-ide-mcp-session) (claude-code-ide-tests--registry-spec)))
+             (settings (cadr (member "--settings" args)))
+             (parts (cdr (claude-code-ide--parse-command-string
+                          (claude-code-ide--build-claude-command nil nil "sid" args)))))
+        (should settings)
+        ;; The hook command quotes the path for the shell that runs it
+        (let* ((hooks (alist-get 'hooks (claude-code-ide-session-registry--json-decode settings)))
+               (command (alist-get 'command
+                                   (car (alist-get 'hooks (car (alist-get 'SessionStart hooks)))))))
+          (should (string-prefix-p
+                   (concat "cat > " (shell-quote-argument
+                                     (expand-file-name "a;b&c|d" registry-dir)))
+                   command)))
+        (should (equal (cadr (member "--settings" parts)) settings))))))
 
 (provide 'claude-code-ide-session-registry-tests)
 

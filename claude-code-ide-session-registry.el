@@ -75,9 +75,7 @@ plus \"-reports\"."
 (defcustom claude-code-ide-restore-note
   "This session was resumed after a crash of Emacs.  Your background tasks and any unread messages from other sessions are gone.  Re-read your last state and re-arm the watches you had before you continue."
   "First message to each session that `claude-code-ide-restore-sessions' starts.
-nil sends no message.  With the eat and ghostel backends, do not use
-the characters &, ; and |: Emacs drops the text before them when it
-splits the command line."
+nil sends no message."
   :type '(choice (const :tag "No message" nil) string)
   :group 'claude-code-ide)
 
@@ -500,12 +498,6 @@ parse and is ignored until the next read.  The hooks of
                                                        (cdr pair))))))))
                          events))))))
 
-(defun claude-code-ide-session-registry--safe-argument-p (argument)
-  "Return non-nil when ARGUMENT survives the command line of every backend.
-`split-string-shell-command', which the eat and ghostel backends use,
-drops the text before &, ; and | even when they are quoted."
-  (not (string-match-p "[&;|]" argument)))
-
 ;;; The queue
 
 (defun claude-code-ide-session-registry--schedule-retry ()
@@ -722,15 +714,7 @@ the id, unless the flags pass their own --settings, which a second
     (append (when (claude-code-ide-session-registry--own-id-p spec flags)
               (list "--session-id" key))
             (unless (claude-code-ide-session-registry--flags-has-settings flags)
-              (let ((settings (claude-code-ide-session-registry--hook-settings session key)))
-                (if (claude-code-ide-session-registry--safe-argument-p settings)
-                    (list "--settings" settings)
-                  (display-warning 'claude-code-ide
-                                   (format "Session registry: no hooks, because the path %s contains &, ; or |"
-                                           (claude-code-ide-session-registry--report-directory)))
-                  (when (fboundp 'claude-code-ide-session-status--forget)
-                    (claude-code-ide-session-status--forget session))
-                  nil))))))
+              (list "--settings" (claude-code-ide-session-registry--hook-settings session key))))))
 
 (defun claude-code-ide-session-registry--on-start (session spec)
   "Record that SESSION started as SPEC describes."
@@ -1254,6 +1238,46 @@ flags and its model, resumed by its session id."
 ;;; Commands
 
 ;;;###autoload
+(cl-defstruct (claude-code-ide-session-registry--restore-run
+               (:constructor claude-code-ide-session-registry--restore-run-create)
+               (:copier nil))
+  "The progress of one restore."
+  (remaining 0 :type integer)
+  (started 0 :type integer)
+  (failed nil :type list :documentation "Descriptions of the failed starts, newest first."))
+
+(defconst claude-code-ide-session-registry--restore-interval 0.5
+  "Seconds between two starts of a restore.")
+
+(defun claude-code-ide-session-registry--start-entries (entries prompt)
+  "Start ENTRIES again, each from its own timer, with PROMPT as first message.
+An error or a quit in one start does not stop the others, and Emacs
+stays usable between the starts.  The last start reports the result."
+  (let ((run (claude-code-ide-session-registry--restore-run-create
+              :remaining (length entries)))
+        (delay 0))
+    (dolist (entry entries)
+      (run-with-timer
+       delay nil
+       (lambda ()
+         (condition-case err
+             (progn
+               (claude-code-ide-session-registry--start-entry entry prompt)
+               (cl-incf (claude-code-ide-session-registry--restore-run-started run)))
+           ((error quit)
+            (push (format "%s: %s" (claude-code-ide-session-registry--describe entry)
+                          (if (eq (car err) 'quit) "quit" (error-message-string err)))
+                  (claude-code-ide-session-registry--restore-run-failed run))))
+         (when (zerop (cl-decf (claude-code-ide-session-registry--restore-run-remaining run)))
+           (let ((started (claude-code-ide-session-registry--restore-run-started run))
+                 (failed (claude-code-ide-session-registry--restore-run-failed run)))
+             (message "Restored %d Claude Code session%s%s"
+                      started (if (= started 1) "" "s")
+                      (if failed
+                          (format "; failed: %s" (string-join (reverse failed) "; "))
+                        ""))))))
+      (setq delay (+ delay claude-code-ide-session-registry--restore-interval)))))
+
 (defun claude-code-ide-restore-sessions (&optional pick)
   "Start again every Claude Code instance that ran when the last Emacs ended.
 These are the `open' entries of `claude-code-ide-state-file' of an
@@ -1262,7 +1286,9 @@ exit; see `claude-code-ide-session-registry--restorable-p'.  Sessions
 that run again already are skipped.  Each instance resumes its
 conversation in its directory, with its instance name, flags, model
 and title, and gets `claude-code-ide-restore-note' as its first
-message.  With a prefix argument PICK, choose which ones."
+message.  The instances start one after the other, each from its own
+timer, so that one failure or quit does not stop the rest.  With a
+prefix argument PICK, choose which ones."
   (interactive "P")
   (let ((entries (claude-code-ide-session-registry--restorable-entries)))
     (if (null entries)
@@ -1272,22 +1298,9 @@ message.  With a prefix argument PICK, choose which ones."
           (setq entries (mapcar (lambda (label) (cdr (assoc label candidates)))
                                 (completing-read-multiple "Restore sessions: "
                                                           candidates nil t)))))
-      (let ((started 0)
-            (failed '()))
-        (dolist (entry entries)
-          (condition-case err
-              (progn
-                (claude-code-ide-session-registry--start-entry entry claude-code-ide-restore-note)
-                (cl-incf started))
-            (error
-             (push (format "%s: %s" (claude-code-ide-session-registry--describe entry)
-                           (error-message-string err))
-                   failed))))
-        (message "Restored %d Claude Code session%s%s"
-                 started (if (= started 1) "" "s")
-                 (if failed
-                     (format "; failed: %s" (string-join (nreverse failed) "; "))
-                   ""))))))
+      (message "Restoring %d Claude Code session%s"
+               (length entries) (if (cdr entries) "s" ""))
+      (claude-code-ide-session-registry--start-entries entries claude-code-ide-restore-note))))
 
 ;;;###autoload
 (defun claude-code-ide-reopen-session (entry)

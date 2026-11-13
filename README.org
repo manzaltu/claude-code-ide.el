@@ -555,7 +555,7 @@ In the list, =RET= switches to a running instance or reopens a stopped one, =a= 
 *** Restore after a crash
 
 1. Start Emacs. The mode reports how many instances can be restored.
-2. Run =M-x claude-code-ide-restore-sessions=.
+2. Run =M-x claude-code-ide-restore-sessions=. The instances start one after the other, half a second apart; one that fails, or a =C-g=, does not stop the others, and the last start reports the result.
 3. Each instance starts in its directory with =claude --resume <id>=, its instance name, its flags, the model of its last answer, and its title (=--name=, from =/rename=), so that other sessions find it by name.
 4. Each instance gets =claude-code-ide-restore-note= as its first message. The default note says that the session was resumed after a crash, that its background tasks and unread messages from other sessions are gone, and that it must re-read its last state and re-arm its watches. Set the variable to =nil= to send no message.
 
