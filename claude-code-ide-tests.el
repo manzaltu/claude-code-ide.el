@@ -734,7 +734,17 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (equal (claude-code-ide--resolve-program "./bin/claude")
                    "/tmp/bin/claude"))
     (should (equal (claude-code-ide--resolve-program "~/bin/claude")
-                   (expand-file-name "~/bin/claude")))))
+                   (expand-file-name "~/bin/claude"))))
+  ;; In a remote directory the local lookup is skipped entirely, so the
+  ;; remote shell resolves the name against its own PATH.
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (_name) (ert-fail "Local lookup used for remote dir")))
+            ((symbol-function 'file-remote-p)
+             (lambda (file &rest _) (and (string-prefix-p "/ssh:" file) "/ssh:host:"))))
+    (let ((default-directory "/ssh:host:/home/user/"))
+      (should (equal (claude-code-ide--resolve-program "claude") "claude"))
+      (should (equal (claude-code-ide--resolve-program "~/bin/claude")
+                     "~/bin/claude")))))
 
 (ert-deftest claude-code-ide-test-start-session-cli-dies-during-init ()
   "A CLI death during the initialization delay signals a clear error.

@@ -1220,14 +1220,22 @@ component is expanded relative to `default-directory'.  Returns
 PROGRAM unchanged when the lookup fails, leaving the missing
 executable for the terminal backend to report.
 
+When `default-directory' is remote (TRAMP), PROGRAM is returned
+unchanged: a lookup on the local machine says nothing about the
+remote host, and a local absolute path (for example a Windows
+\"c:/.../claude.exe\") would not exist there.  The remote shell
+resolves PROGRAM against its own PATH instead.
+
 Ghostel's native PTY path (ghostel 0.35.x) execs PROGRAM against the
 raw process environment, whose PATH can be missing `exec-path'
 entries that the rest of the package resolves against; passing an
 absolute path sidesteps that lookup."
-  (or (if (file-name-directory program)
-          (expand-file-name program)
-        (executable-find program))
-      program))
+  (if (file-remote-p default-directory)
+      program
+    (or (if (file-name-directory program)
+            (expand-file-name program)
+          (executable-find program))
+        program)))
 
 
 (defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
