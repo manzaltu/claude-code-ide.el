@@ -856,7 +856,8 @@ and they stay `open', which is what a restore looks for."
   (name-from-user nil :type boolean
                   :documentation "Non-nil when the user or --name set the name.")
   (status nil :type (or null string)
-          :documentation "What the CLI reports it does: \"idle\", \"busy\" or \"shell\"."))
+          :documentation "What the CLI reports: \"busy\" while a turn runs, \"idle\"
+at the prompt, \"shell\" at the prompt while a background shell runs."))
 
 (defun claude-code-ide-session-registry--cli-session-file (pid)
   "Return the file that the Claude CLI process PID keeps about itself."
@@ -1099,8 +1100,10 @@ Return non-nil when it ended."
   "Restart the untracked SESSION through the registry, so that its CLI gets hooks.
 The CLI ends, and its conversation resumes in a new CLI with the same
 instance name, title and model, with NOTE as its first message.  A
-session that the CLI reports as busy is refused unless FORCE is
-non-nil, since its running tools and background tasks end."
+session whose turn runs (the CLI reports \"busy\") is refused unless
+FORCE is non-nil.  A session at its prompt is restarted also while a
+background shell runs (\"shell\"); that shell ends, and NOTE asks the
+agent to start it again."
   (let* ((name (claude-code-ide--session-display-name session))
          (key (gethash session claude-code-ide-session-registry--keys))
          (cli (claude-code-ide-session-registry--cli-session-of session))
@@ -1108,8 +1111,7 @@ non-nil, since its running tools and background tasks end."
     (unless key
       (user-error "%s has no registry entry" name))
     (when (and (not force)
-               (member (and cli (claude-code-ide-session-registry--cli-session-status cli))
-                       '("busy" "shell")))
+               (equal (and cli (claude-code-ide-session-registry--cli-session-status cli)) "busy"))
       (user-error "%s is busy; try again when it waits, or use a prefix argument" name))
     (claude-code-ide-session-registry--refresh-adopted-ids)
     (let ((entry (claude-code-ide-session-registry--find

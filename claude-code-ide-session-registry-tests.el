@@ -738,7 +738,7 @@ back once, from the crashed Emacs's entry."
         (should (equal (cadr (member "--settings" parts)) settings))))))
 
 (ert-deftest claude-code-ide-test-registry-track-adopted-session ()
-  "An adopted session restarts through the registry; a busy one only by force."
+  "An adopted session restarts through the registry; one whose turn runs is refused."
   (claude-code-ide-tests--clear-processes)
   (claude-code-ide-tests--with-registry
     (let* ((config-dir (expand-file-name "claude" registry-dir))
@@ -768,8 +768,11 @@ back once, from the crashed Emacs's entry."
             (should-error (claude-code-ide-session-registry--track-session session "note") :type 'user-error)
             (should (buffer-live-p buffer))
             (should-not starts)
-            ;; With force, it restarts: the old buffer ends, the entry resumes
-            (should (claude-code-ide-session-registry--track-session session "note" t))
+            ;; The old buffer ends, and the entry resumes
+            ;; At the prompt with a background shell, it restarts without force
+            (with-temp-file (expand-file-name (format "sessions/%d.json" (emacs-pid)) config-dir)
+              (insert (format "{\"pid\":%d,\"sessionId\":\"id-orch\",\"cwd\":\"/tmp\",\"status\":\"shell\"}" (emacs-pid))))
+            (should (claude-code-ide-session-registry--track-session session "note"))
             (should-not (buffer-live-p buffer))
             (should (equal starts '(("id-orch" "orchestrator" "note")))))
         (when (buffer-live-p buffer)
