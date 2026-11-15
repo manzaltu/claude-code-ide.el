@@ -72,6 +72,14 @@ plus \"-reports\"."
   :type '(choice (const :tag "Next to the state file" nil) directory)
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-session-registry-track-note
+  "Emacs restarted this session to add status tracking.  Your background tasks and any unread messages from other sessions are gone.  Re-read your last state and re-arm the watches you had before you continue."
+  "First message to a session that is restarted to get status hooks.
+See `claude-code-ide-session-registry-track-sessions'.  nil sends no
+message."
+  :type '(choice (const :tag "No message" nil) string)
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-restore-note
   "This session was resumed after a crash of Emacs.  Your background tasks and any unread messages from other sessions are gone.  Re-read your last state and re-arm the watches you had before you continue."
   "First message to each session that `claude-code-ide-restore-sessions' starts.
@@ -846,7 +854,9 @@ and they stay `open', which is what a restore looks for."
   (cwd nil :type (or null string))
   (name nil :type (or null string))
   (name-from-user nil :type boolean
-                  :documentation "Non-nil when the user or --name set the name."))
+                  :documentation "Non-nil when the user or --name set the name.")
+  (status nil :type (or null string)
+          :documentation "What the CLI reports it does: \"idle\", \"busy\" or \"shell\"."))
 
 (defun claude-code-ide-session-registry--cli-session-file (pid)
   "Return the file that the Claude CLI process PID keeps about itself."
@@ -865,7 +875,8 @@ and they stay `open', which is what a restore looks for."
        :session-id (let ((id (alist-get 'sessionId data))) (and (stringp id) id))
        :cwd (let ((cwd (alist-get 'cwd data))) (and (stringp cwd) cwd))
        :name (let ((name (alist-get 'name data))) (and (stringp name) name))
-       :name-from-user (equal (alist-get 'nameSource data) "user")))))
+       :name-from-user (equal (alist-get 'nameSource data) "user")
+       :status (let ((status (alist-get 'status data))) (and (stringp status) status))))))
 
 (defun claude-code-ide-session-registry--live-cli-sessions ()
   "Return the CLI sessions that run on this host."
@@ -1059,6 +1070,90 @@ and at exit, since /clear changes it.  Return the number adopted."
              (timerp claude-code-ide-session-registry--adopt-timer))
     (cancel-timer claude-code-ide-session-registry--adopt-timer)
     (setq claude-code-ide-session-registry--adopt-timer nil)))
+
+(defun claude-code-ide-session-registry--untracked-sessions ()
+  "Return the live sessions of this Emacs that run without status hooks.
+These are the sessions that the registry adopted: they ran before
+`claude-code-ide-session-registry-mode' was on."
+  (let ((sessions '()))
+    (maphash (lambda (session _adoption)
+               (let ((buffer (claude-code-ide-mcp-session-buffer session)))
+                 (when (and buffer (buffer-live-p buffer)
+                            (not (claude-code-ide-mcp-session-cleanup-done session)))
+                   (push session sessions))))
+             claude-code-ide-session-registry--adopted)
+    sessions))
+
+(defun claude-code-ide-session-registry--wait-for-exit (pid)
+  "Wait up to five seconds until the process PID ends; then send it SIGTERM.
+Return non-nil when it ended."
+  (let ((tries 0))
+    (while (and (process-attributes pid) (< tries 50))
+      (when (= tries 30)
+        (ignore-errors (signal-process pid 'SIGTERM)))
+      (sleep-for 0.1)
+      (cl-incf tries))
+    (not (process-attributes pid))))
+
+(defun claude-code-ide-session-registry--track-session (session note &optional force)
+  "Restart the untracked SESSION through the registry, so that its CLI gets hooks.
+The CLI ends, and its conversation resumes in a new CLI with the same
+instance name, title and model, with NOTE as its first message.  A
+session that the CLI reports as busy is refused unless FORCE is
+non-nil, since its running tools and background tasks end."
+  (let* ((name (claude-code-ide--session-display-name session))
+         (key (gethash session claude-code-ide-session-registry--keys))
+         (cli (claude-code-ide-session-registry--cli-session-of session))
+         (pid (and cli (claude-code-ide-session-registry--cli-session-pid cli))))
+    (unless key
+      (user-error "%s has no registry entry" name))
+    (when (and (not force)
+               (member (and cli (claude-code-ide-session-registry--cli-session-status cli))
+                       '("busy" "shell")))
+      (user-error "%s is busy; try again when it waits, or use a prefix argument" name))
+    (claude-code-ide-session-registry--refresh-adopted-ids)
+    (let ((entry (claude-code-ide-session-registry--find
+                  (claude-code-ide-session-registry--entries) key)))
+      (unless (and entry (claude-code-ide-session-registry-entry-session-id entry))
+        (user-error "No Claude session id is known for %s" name))
+      ;; Killing the buffer ends the CLI and closes the entry
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer (claude-code-ide-mcp-session-buffer session)))
+      (when (and pid (not (claude-code-ide-session-registry--wait-for-exit pid)))
+        (user-error "The old CLI of %s (PID %d) does not end" name pid))
+      (claude-code-ide-session-registry--start-entry entry note)
+      t)))
+
+;;;###autoload
+(defun claude-code-ide-session-registry-track-sessions (&optional force)
+  "Restart the sessions that run without status hooks, so that they get them.
+These sessions ran before `claude-code-ide-session-registry-mode' was
+on; the status buffer shows them as UNTRACKED.  Each resumes its
+conversation with its instance name, title and model, and gets
+`claude-code-ide-session-registry-track-note' as its first message.
+Their running tools and background tasks end.  Sessions that are busy
+are skipped, unless FORCE (the prefix argument) is non-nil."
+  (interactive "P")
+  (let ((sessions (claude-code-ide-session-registry--untracked-sessions)))
+    (cond
+     ((null sessions) (message "Every Claude Code session has status hooks"))
+     ((yes-or-no-p (format "Restart %d session%s to add status tracking?  Their background tasks end.  "
+                           (length sessions) (if (cdr sessions) "s" "")))
+      (let ((delay 0))
+        (dolist (session sessions)
+          (run-with-timer
+           delay nil
+           (lambda ()
+             (condition-case err
+                 (progn
+                   (claude-code-ide-session-registry--track-session
+                    session claude-code-ide-session-registry-track-note force)
+                   (message "Restarted %s with status tracking"
+                            (claude-code-ide--session-display-name session)))
+               ((error quit)
+                (message "Not restarted: %s" (if (eq (car err) 'quit) "quit"
+                                               (error-message-string err)))))))
+          (setq delay (+ delay 2))))))))
 
 (defun claude-code-ide-session-registry--reopenable-p (entry)
   "Return non-nil when ENTRY can be started again by hand."
@@ -1454,7 +1549,10 @@ directory, names and flags.  A normal exit of Emacs marks them
         (claude-code-ide-session-registry--start-watch)
         (require 'claude-code-ide-session-status)
         (claude-code-ide-session-status--set-tracking t)
-        (claude-code-ide-session-registry--adopt-running-sessions)
+        (let ((adopted (claude-code-ide-session-registry--adopt-running-sessions)))
+          (when (> adopted 0)
+            (message "%d running Claude Code session%s have no status hooks: M-x claude-code-ide-session-registry-track-sessions restarts them with hooks"
+                     adopted (if (= adopted 1) "" "s"))))
         (let ((count (length (ignore-errors (claude-code-ide-session-registry--restorable-entries)))))
           (when (> count 0)
             (message "%d Claude Code session%s can be restored: M-x claude-code-ide-restore-sessions"

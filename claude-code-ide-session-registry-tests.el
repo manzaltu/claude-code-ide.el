@@ -737,6 +737,45 @@ back once, from the crashed Emacs's entry."
                    command)))
         (should (equal (cadr (member "--settings" parts)) settings))))))
 
+(ert-deftest claude-code-ide-test-registry-track-adopted-session ()
+  "An adopted session restarts through the registry; a busy one only by force."
+  (claude-code-ide-tests--clear-processes)
+  (claude-code-ide-tests--with-registry
+    (let* ((config-dir (expand-file-name "claude" registry-dir))
+           (process-environment (cons (concat "CLAUDE_CONFIG_DIR=" config-dir) process-environment))
+           (claude-code-ide-session-registry--adopted (make-hash-table :test 'eq :weakness 'key))
+           (claude-code-ide-session-registry--adopt-timer nil)
+           (buffer (generate-new-buffer "*cc-track*"))
+           (session (claude-code-ide-tests--make-session
+                     "/tmp/track-project/" :buffer buffer :cli-pid (emacs-pid)
+                     :instance-name "orchestrator"))
+           (starts '()))
+      (unwind-protect
+          (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil))
+                    ((symbol-function 'claude-code-ide-session-registry--wait-for-exit) (lambda (_pid) t))
+                    ((symbol-function 'claude-code-ide-session-registry--start-entry)
+                     (lambda (entry note)
+                       (push (list (claude-code-ide-session-registry-entry-session-id entry)
+                                   (claude-code-ide-session-registry-entry-instance-name entry)
+                                   note)
+                             starts))))
+            ;; The CLI reports busy
+            (make-directory (expand-file-name "sessions" config-dir) t)
+            (with-temp-file (expand-file-name (format "sessions/%d.json" (emacs-pid)) config-dir)
+              (insert (format "{\"pid\":%d,\"sessionId\":\"id-orch\",\"cwd\":\"/tmp\",\"status\":\"busy\"}" (emacs-pid))))
+            (claude-code-ide-session-registry--adopt-running-sessions)
+            (should (equal (claude-code-ide-session-registry--untracked-sessions) (list session)))
+            (should-error (claude-code-ide-session-registry--track-session session "note") :type 'user-error)
+            (should (buffer-live-p buffer))
+            (should-not starts)
+            ;; With force, it restarts: the old buffer ends, the entry resumes
+            (should (claude-code-ide-session-registry--track-session session "note" t))
+            (should-not (buffer-live-p buffer))
+            (should (equal starts '(("id-orch" "orchestrator" "note")))))
+        (when (buffer-live-p buffer)
+          (let ((kill-buffer-query-functions nil)) (kill-buffer buffer)))
+        (claude-code-ide-tests--clear-processes)))))
+
 (provide 'claude-code-ide-session-registry-tests)
 
 ;; Local Variables:

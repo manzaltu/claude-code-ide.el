@@ -1001,7 +1001,7 @@ shells run.  Else the phase.  A nil STATUS is
   "Return the detail of STATUS in STATE at NOW."
   (let ((now (or now (float-time))))
     (pcase state
-      ('untracked "Started without status hooks")
+      ('untracked "No status hooks: T restarts it with them")
       ('waiting (claude-code-ide-session-status--blocker-detail
                  (car (claude-code-ide-session-status-blockers status))))
       ('unobserved "No events since the start: check the terminal")
@@ -1230,6 +1230,7 @@ Each group starts with a header entry whose id is the group."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'claude-code-ide-session-status-visit)
     (define-key map (kbd "w") #'claude-code-ide-visit-waiting-session)
+    (define-key map (kbd "T") #'claude-code-ide-session-status-track)
     map)
   "Keymap of `claude-code-ide-session-status-list-mode'.")
 
@@ -1287,6 +1288,20 @@ line goes to its first session.
   (interactive "e")
   (mouse-set-point event)
   (claude-code-ide-session-status-visit))
+
+(defun claude-code-ide-session-status-track (&optional force)
+  "Restart the untracked session on this line, so that its CLI gets status hooks.
+With a prefix argument FORCE, restart it also while it is busy."
+  (interactive "P")
+  (let ((session (tabulated-list-get-id)))
+    (unless (and session (not (claude-code-ide-session-status--group-p session)))
+      (user-error "No session on this line"))
+    (unless (memq session (claude-code-ide-session-registry--untracked-sessions))
+      (user-error "%s has status hooks already" (claude-code-ide--session-display-name session)))
+    (when (yes-or-no-p (format "Restart %s to add status tracking?  Its background tasks end.  "
+                               (claude-code-ide--session-display-name session)))
+      (claude-code-ide-session-registry--track-session
+       session claude-code-ide-session-registry-track-note force))))
 
 (defun claude-code-ide-session-status-visit ()
   "Go to the session on this line, or the first session of a project line."

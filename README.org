@@ -528,7 +528,7 @@ To enable it, put this in your init file:
 (setq claude-code-ide-state-file "~/.emacs-claude-code-ide-state.json")
 #+end_src
 
-When the mode turns on, it also records the instances that already run in this Emacs. Their session id comes from the file that each CLI process keeps in =~/.claude/sessions=, and the registry reads it again every minute and at exit, because =/clear= changes it. These instances have no status hooks; they show as =UNTRACKED= in the status buffer.
+When the mode turns on, it also records the instances that already run in this Emacs. Their session id comes from the file that each CLI process keeps in =~/.claude/sessions=, and the registry reads it again every minute and at exit, because =/clear= changes it. These instances have no status hooks; they show as =UNTRACKED= in the status buffer. =M-x claude-code-ide-session-registry-track-sessions= restarts them with hooks (=T= does it for the session on a line of the status buffer): each resumes its conversation with its instance name, title and model, and a note as its first message tells it to re-arm its background tasks, which end. A session that is busy is skipped unless you give a prefix argument.
 
 *** States
 
