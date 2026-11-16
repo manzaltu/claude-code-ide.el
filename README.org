@@ -122,6 +122,54 @@ In =config.el=:
 
 After saving the above, run: =doom sync= in the terminal.
 
+*** From a local checkout
+
+Use a local checkout to run a branch that is not on the package archives, for example a fork's =session-registry= branch with the session registry and the status buffer.
+
+1. Get the code. Any folder works; the examples use =~/Source/claude-code-ide.el=:
+
+   #+begin_src bash
+   git clone https://github.com/<you>/claude-code-ide.el ~/Source/claude-code-ide.el
+   cd ~/Source/claude-code-ide.el
+   git checkout session-registry
+   #+end_src
+
+   Or keep your usual branch checked out and put the branch in a worktree: =git worktree add .worktrees/session-registry session-registry=.
+
+2. Load the package from that folder, and nowhere else. Do not use =:vc= or =:straight= for it: such an install puts its own copy early in =load-path=, and that copy hides the checkout without any warning. Use =:demand t=, so that the modes below are on before the first session starts:
+
+   #+begin_src elisp
+   (defconst my/claude-code-ide-dir
+     (expand-file-name "~/Source/claude-code-ide.el")  ; or the worktree folder
+     "The claude-code-ide.el checkout that this Emacs loads.")
+
+   (use-package claude-code-ide
+     :load-path my/claude-code-ide-dir
+     :demand t
+     :bind ("C-c C-'" . claude-code-ide-menu)
+     :config
+     ;; Optional: Claude Code uses your claude.ai login, not an API key
+     ;; that the Emacs environment holds for other packages.
+     (setq claude-code-ide-cli-environment-unset '("ANTHROPIC_API_KEY"))
+     ;; Record sessions for restore, and show their live status.  The
+     ;; checks keep this file working with a checkout that lacks the modes.
+     (when (fboundp 'claude-code-ide-session-registry-mode)
+       (claude-code-ide-session-registry-mode 1))
+     (when (fboundp 'claude-code-ide-session-status-mode)
+       (claude-code-ide-session-status-mode 1)))
+   #+end_src
+
+3. Remove an installed copy, if one exists. Look for =~/.emacs.d/elpa/claude-code-ide*=. Delete it with =M-x package-delete=, or move the folder out of =elpa=. Also remove =claude-code-ide= from =package-vc-selected-packages= in your custom settings, or Emacs installs it again.
+
+4. Restart Emacs, and check:
+
+   #+begin_src elisp
+   (locate-library "claude-code-ide")       ; must name your checkout
+   claude-code-ide-session-registry-mode    ; must be t
+   #+end_src
+
+Sessions that already run when the registry turns on are recorded too, but without status hooks; =M-x claude-code-ide-session-registry-track-sessions= restarts them with hooks (see [[*Session Registry and Restore][Session Registry and Restore]]).
+
 * Usage
 
 ** Basic Commands
