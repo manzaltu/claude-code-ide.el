@@ -1052,7 +1052,7 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
     ;; Select the window to give it focus if configured to do so
     (when (and window claude-code-ide-focus-on-open)
       (select-window window))
-    ;; For bottom/top windows, explicitly set and preserve the height
+    ;; For bottom/top windows, explicitly set the height
     (when (and window
                claude-code-ide-use-side-window
                (memq claude-code-ide-window-side '(top bottom)))
@@ -1061,6 +1061,15 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
     ;; don't reuse a visible instance's window
     (when (and window claude-code-ide-use-side-window)
       (set-window-dedicated-p window t))
+    ;; Keep the side window's width (left/right) or height (top/bottom)
+    ;; through frame resizes and `balance-windows', so the terminal is not
+    ;; resized and reflowed by unrelated window changes.  Dragging the
+    ;; window's divider still resizes it and lifts this until the buffer
+    ;; is displayed again.
+    (when (and window claude-code-ide-use-side-window)
+      (window-preserve-size window
+                            (and (memq claude-code-ide-window-side '(left right)) t)
+                            t))
     ;; Sync terminal dimensions with the actual window size
     ;; This is necessary because vterm/eat may have been created with
     ;; different dimensions before being displayed in this window

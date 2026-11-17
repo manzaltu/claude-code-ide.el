@@ -4044,6 +4044,86 @@ With SESSION-P non-nil the buffer belongs to a Claude Code session."
                        #'claude-code-ide--note-window-selection)
           (claude-code-ide-tests--clear-processes))))))
 
+;;; Side window size preservation
+
+(ert-deftest claude-code-ide-test-side-window-preserves-size ()
+  "Claude side windows keep their size through `balance-windows'."
+  (claude-code-ide-tests--clear-processes)
+  (let ((buffer (generate-new-buffer "*claude-preserve*"))
+        (claude-code-ide-use-side-window t)
+        (claude-code-ide-focus-on-open nil)
+        (claude-code-ide-window-width 30)
+        (claude-code-ide-window-height 8))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          ;; Left and right windows keep their width
+          (dolist (side '(right left))
+            (let* ((claude-code-ide-window-side side)
+                   (window (claude-code-ide--display-buffer-in-side-window buffer))
+                   (width (window-total-width window)))
+              (should (window--preserve-size window t))
+              (should-not (window--preserve-size window nil))
+              (balance-windows)
+              (should (= width (window-total-width window)))
+              (delete-window window)))
+          ;; Top and bottom windows keep the height they were given
+          (dolist (side '(bottom top))
+            (let* ((claude-code-ide-window-side side)
+                   (window (claude-code-ide--display-buffer-in-side-window buffer))
+                   (height (window-total-height window)))
+              (should (= 8 (window-text-height window)))
+              (should (window--preserve-size window nil))
+              (should-not (window--preserve-size window t))
+              (balance-windows)
+              (should (= height (window-total-height window)))
+              (delete-window window))))
+      (kill-buffer buffer)
+      (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-side-window-drag-and-redisplay ()
+  "Dragging resizes a Claude side window; displaying it again preserves it."
+  (claude-code-ide-tests--clear-processes)
+  (let ((buffer (generate-new-buffer "*claude-preserve-drag*"))
+        (claude-code-ide-use-side-window t)
+        (claude-code-ide-focus-on-open nil)
+        (claude-code-ide-window-side 'right)
+        (claude-code-ide-window-width 30))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let* ((main (selected-window))
+                 (window (claude-code-ide--display-buffer-in-side-window buffer)))
+            ;; Dragging the divider resizes the preserved window
+            (adjust-window-trailing-edge main 5 t)
+            (should (= 25 (window-total-width window)))
+            (should-not (window--preserve-size window t))
+            ;; Displaying the buffer again reuses the window, restores
+            ;; the configured width and preserves it
+            (should (eq window (claude-code-ide--display-buffer-in-side-window buffer)))
+            (should (= 30 (window-total-width window)))
+            (should (window--preserve-size window t))
+            (balance-windows)
+            (should (= 30 (window-total-width window)))))
+      (kill-buffer buffer)
+      (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-regular-window-size-not-preserved ()
+  "Without a side window the Claude window's size is not preserved."
+  (claude-code-ide-tests--clear-processes)
+  (let ((buffer (generate-new-buffer "*claude-no-preserve*"))
+        (claude-code-ide-use-side-window nil)
+        (claude-code-ide-focus-on-open nil))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((window (claude-code-ide--display-buffer-in-side-window buffer)))
+            (should (window-live-p window))
+            (should-not (window-preserved-size window t))
+            (should-not (window-preserved-size window nil))))
+      (kill-buffer buffer)
+      (claude-code-ide-tests--clear-processes))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
