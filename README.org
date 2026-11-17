@@ -266,6 +266,8 @@ Claude Code buffers open in a side window by default. You can customize the plac
 (setq claude-code-ide-use-ide-diff nil)
 #+end_src
 
+The side window keeps its width (left/right) or height (top/bottom) when the frame is resized or windows are balanced, so the terminal does not reflow its output. Dragging the window's divider still resizes it; displaying the buffer again restores the configured size.
+
 Or, if you'd prefer to use a regular window:
 
 #+begin_src emacs-lisp
