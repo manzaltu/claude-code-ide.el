@@ -233,7 +233,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-mcp-server-tools~              | Alist of exposed Emacs functions            | ~nil~                                  |
 | ~claude-code-ide-diagnostics-backend~           | Diagnostics backend (auto/flycheck/flymake) | ~'auto~                                |
 | ~claude-code-ide-no-flicker~                    | Enable flicker-free terminal renderer       | ~nil~                                  |
-| ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
+| ~claude-code-ide-prevent-reflow-glitch~         | Skip height-only terminal resizes (#1422)   | ~t~                                    |
 | ~claude-code-ide-enable-execute-code~           | Allow model to evaluate Elisp in Emacs      | ~t~                                    |
 | ~claude-code-ide-share-opened-file~             | Report the open file even without a region  | ~t~                                    |
 
@@ -371,16 +371,13 @@ The =ghostel= backend forwards =C-g= to the terminal, where Claude Code binds =C
 
 =alt+e= is a good replacement because ghostel forwards it to the terminal, unlike the action's other default binding =Ctrl+X Ctrl+E= (=C-x= is kept by Emacs).
 
-**** Terminal Reflow Glitch Prevention (Temporary)
+**** Terminal Reflow Glitch Prevention
 
-Claude Code IDE includes a temporary workaround for a known Claude Code bug ([[https://github.com/anthropics/claude-code/issues/1422][#1422]]) where terminal reflows during window resizes can cause uncontrollable scrolling. This workaround is enabled by default but can be disabled if needed:
+Claude Code repaints its screen whenever the terminal is resized ([[https://github.com/anthropics/claude-code/issues/1422][#1422]]). After the terminal reflows, that repaint makes =vterm= and =eat= scroll uncontrollably and writes earlier output into the =ghostel= scrollback a second time. To avoid the most frequent trigger, Claude Code IDE resizes a Claude Code terminal only when its window's width changes. A height-only change — showing or hiding another instance on the same side, a change of the frame height, a multi-line echo area message — keeps the terminal's row count, so the terminal can be taller or shorter than its window until the next width change. This applies to all three backends, is enabled by default and takes effect when the first Claude Code instance starts. To disable it:
 
 #+begin_src emacs-lisp
-;; Disable the terminal reflow glitch prevention (not recommended until bug is fixed)
 (setq claude-code-ide-prevent-reflow-glitch nil)
 #+end_src
-
-The workaround will be removed once the upstream bug is fixed.
 
 *** Diagnostics Configuration
 
