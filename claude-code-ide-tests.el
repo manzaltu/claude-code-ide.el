@@ -171,6 +171,26 @@ routing tests depend on the carried text, not a placeholder."
   "Mock ghostel resize handler for testing."
   '(80 . 24))
 
+(defvar-local ghostel--term-cols nil)
+(defvar-local ghostel--term-rows nil)
+(defvar-local ghostel--process nil)
+
+(defun ghostel--adjust-size (window &optional force)
+  "Mock of ghostel's resize entry point, as called for WINDOW.
+Like the real function, it sizes the terminal of WINDOW's buffer from
+the default value of `window-adjust-process-window-size-function' and
+resizes only when the result differs from the current size or FORCE is
+non-nil."
+  (with-current-buffer (window-buffer window)
+    (when-let* ((adjust-fn (or (default-value 'window-adjust-process-window-size-function)
+                               #'window-adjust-process-window-size-smallest))
+                (size (funcall adjust-fn ghostel--process (list window))))
+      (when (or force
+                (not (and (eql (car size) ghostel--term-cols)
+                          (eql (cdr size) ghostel--term-rows))))
+        (setq ghostel--term-cols (car size)
+              ghostel--term-rows (cdr size))))))
+
 (provide (quote ghostel))
 
 ;; === Mock evil-ghostel module ===
@@ -3873,6 +3893,156 @@ and pruning drops entries whose tab no longer exists."
             (should (= 3 (length cleaned)))
             (should (memq other cleaned))))
       (claude-code-ide-tests--clear-processes))))
+
+;;; Ghostel reflow filter
+
+(defvar claude-code-ide-tests--window-size nil
+  "Size returned by `claude-code-ide-tests--adjust-window-size'.")
+
+(defun claude-code-ide-tests--adjust-window-size (_process _windows)
+  "Return `claude-code-ide-tests--window-size' as the windows' size."
+  claude-code-ide-tests--window-size)
+
+(defun claude-code-ide-tests--ghostel-terminal (session-p)
+  "Return a mock 80x24 ghostel terminal buffer.
+With SESSION-P non-nil the buffer belongs to a Claude Code session."
+  (let ((buffer (generate-new-buffer "*claude-ghostel-resize*")))
+    (with-current-buffer buffer
+      (setq-local ghostel--term-cols 80
+                  ghostel--term-rows 24
+                  ghostel--process 'terminal-process)
+      (when session-p
+        (setq-local claude-code-ide--session 'session)))
+    buffer))
+
+(defun claude-code-ide-tests--ghostel-size (buffer)
+  "Return BUFFER's mock terminal size as (COLUMNS . ROWS)."
+  (with-current-buffer buffer
+    (cons ghostel--term-cols ghostel--term-rows)))
+
+(ert-deftest claude-code-ide-test-ghostel-keep-rows ()
+  "Height-only sizes keep the rows of a terminal sized to a window."
+  (with-temp-buffer
+    (setq-local ghostel--term-cols 100
+                ghostel--term-rows 40)
+    ;; A terminal that has not taken a window size yet takes any size
+    (should (equal (claude-code-ide--ghostel-keep-rows '(100 . 20)) '(100 . 20)))
+    (setq-local claude-code-ide--ghostel-sized t)
+    (should (equal (claude-code-ide--ghostel-keep-rows '(100 . 20)) '(100 . 40)))
+    (should (equal (claude-code-ide--ghostel-keep-rows '(100 . 60)) '(100 . 40)))
+    (should (equal (claude-code-ide--ghostel-keep-rows '(90 . 20)) '(90 . 20)))
+    (should-not (claude-code-ide--ghostel-keep-rows nil))))
+
+(ert-deftest claude-code-ide-test-ghostel-reflow-filter ()
+  "Claude terminals skip height-only resizes; other terminals follow them."
+  (let ((claude (claude-code-ide-tests--ghostel-terminal t))
+        (plain (claude-code-ide-tests--ghostel-terminal nil))
+        (window (selected-window))
+        (old-buffer (window-buffer (selected-window))))
+    (unwind-protect
+        (cl-letf (((default-value 'window-adjust-process-window-size-function)
+                   #'claude-code-ide-tests--adjust-window-size))
+          (advice-add 'ghostel--adjust-size :around
+                      #'claude-code-ide--ghostel-reflow-filter)
+          (set-window-buffer window claude)
+          ;; The first window size passes through, even at the same width
+          (setq claude-code-ide-tests--window-size '(80 . 30))
+          (ghostel--adjust-size window)
+          (should (equal (claude-code-ide-tests--ghostel-size claude) '(80 . 30)))
+          (should (buffer-local-value 'claude-code-ide--ghostel-sized claude))
+          ;; Height-only changes keep the rows, forced or not
+          (setq claude-code-ide-tests--window-size '(80 . 50))
+          (ghostel--adjust-size window)
+          (ghostel--adjust-size window t)
+          (should (equal (claude-code-ide-tests--ghostel-size claude) '(80 . 30)))
+          (setq claude-code-ide-tests--window-size '(80 . 10))
+          (ghostel--adjust-size window)
+          (should (equal (claude-code-ide-tests--ghostel-size claude) '(80 . 30)))
+          ;; A width change passes with the new height
+          (setq claude-code-ide-tests--window-size '(90 . 50))
+          (ghostel--adjust-size window)
+          (should (equal (claude-code-ide-tests--ghostel-size claude) '(90 . 50)))
+          ;; The adjust function is restored after each call
+          (should (eq (default-value 'window-adjust-process-window-size-function)
+                      #'claude-code-ide-tests--adjust-window-size))
+          ;; A terminal outside Claude Code follows height-only changes
+          (set-window-buffer window plain)
+          (setq claude-code-ide-tests--window-size '(80 . 40))
+          (ghostel--adjust-size window)
+          (should (equal (claude-code-ide-tests--ghostel-size plain) '(80 . 40))))
+      (advice-remove 'ghostel--adjust-size #'claude-code-ide--ghostel-reflow-filter)
+      (set-window-buffer window old-buffer)
+      (kill-buffer claude)
+      (kill-buffer plain))))
+
+(ert-deftest claude-code-ide-test-ghostel-reflow-filter-scope ()
+  "The filter only touches the terminal's own process and restores state."
+  (let ((claude (claude-code-ide-tests--ghostel-terminal t))
+        (window (selected-window))
+        (old-buffer (window-buffer (selected-window)))
+        (default-size (lambda (process window)
+                        (funcall (default-value 'window-adjust-process-window-size-function)
+                                 process (list window)))))
+    (unwind-protect
+        (cl-letf (((default-value 'window-adjust-process-window-size-function)
+                   #'claude-code-ide-tests--adjust-window-size))
+          (set-window-buffer window claude)
+          (with-current-buffer claude
+            (setq-local claude-code-ide--ghostel-sized t))
+          (setq claude-code-ide-tests--window-size '(80 . 50))
+          ;; Sizes computed for other processes are left alone
+          (should (equal (claude-code-ide--ghostel-reflow-filter
+                          (lambda (win &rest _)
+                            (with-current-buffer (window-buffer win)
+                              (list (funcall default-size ghostel--process win)
+                                    (funcall default-size 'other-process win))))
+                          window)
+                         '((80 . 24) (80 . 50))))
+          ;; A size the original function did not apply leaves the
+          ;; terminal unsized, so the next resize passes through again
+          (with-current-buffer claude
+            (setq-local claude-code-ide--ghostel-sized nil))
+          (claude-code-ide--ghostel-reflow-filter
+           (lambda (win &rest _)
+             (with-current-buffer (window-buffer win)
+               (funcall default-size ghostel--process win)))
+           window)
+          (should-not (buffer-local-value 'claude-code-ide--ghostel-sized claude))
+          ;; The adjust function is restored when the resize fails
+          (should-error (claude-code-ide--ghostel-reflow-filter
+                         (lambda (&rest _) (error "Resize failed"))
+                         window))
+          (should (eq (default-value 'window-adjust-process-window-size-function)
+                      #'claude-code-ide-tests--adjust-window-size)))
+      (set-window-buffer window old-buffer)
+      (kill-buffer claude))))
+
+(ert-deftest claude-code-ide-test-reflow-advice-lifecycle ()
+  "Each backend's reflow advice follows the first and last instance."
+  (claude-code-ide-tests--clear-processes)
+  (cl-letf (((symbol-function 'vterm--window-adjust-process-window-size) #'ignore)
+            ((symbol-function 'eat--adjust-process-window-size) #'ignore))
+    (pcase-dolist (`(,backend ,fn . ,advice) claude-code-ide--reflow-advice)
+      (let ((claude-code-ide-terminal-backend backend)
+            (claude-code-ide-prevent-reflow-glitch t)
+            (session nil))
+        (unwind-protect
+            (progn
+              (setq session (claude-code-ide-tests--make-session "/tmp/claude-reflow-advice/"))
+              (claude-code-ide--maybe-install-global-advice)
+              (should (advice-member-p advice fn))
+              (claude-code-ide--cleanup-session session)
+              (should-not (advice-member-p advice fn))
+              ;; With the option off no advice is installed
+              (setq claude-code-ide-prevent-reflow-glitch nil)
+              (setq session (claude-code-ide-tests--make-session "/tmp/claude-reflow-advice/"))
+              (claude-code-ide--maybe-install-global-advice)
+              (should-not (advice-member-p advice fn))
+              (claude-code-ide--cleanup-session session))
+          (advice-remove fn advice)
+          (remove-hook 'window-selection-change-functions
+                       #'claude-code-ide--note-window-selection)
+          (claude-code-ide-tests--clear-processes))))))
 
 (provide 'claude-code-ide-tests)
 
