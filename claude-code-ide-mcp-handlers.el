@@ -358,6 +358,7 @@ ARGUMENTS should contain:
 - `new_file_path': New file path (usually same as old)
 - `new_file_contents': New content to diff against
 - `tab_name': Name for the diff tab"
+  (catch 'auto-accepted
   (let ((old-file-path (alist-get 'old_file_path arguments))
         (new-file-path (alist-get 'new_file_path arguments))
         (new-file-contents (alist-get 'new_file_contents arguments))
@@ -369,6 +370,23 @@ ARGUMENTS should contain:
     ;; Ensure we have a valid session
     (unless session
       (signal 'mcp-error '("No active MCP session found")))
+
+    ;; Auto-accept: skip ediff entirely and return FILE_SAVED
+    ;; via a deferred timer so the dispatcher registers the
+    ;; deferred handler before the response arrives.
+    (when (claude-code-ide-mcp-session-auto-accept session)
+      (let ((sess session)
+            (contents new-file-contents)
+            (tname tab-name))
+        (run-with-idle-timer
+         claude-code-ide-mcp-handlers-idle-timer-delay nil
+         (lambda ()
+           (claude-code-ide-mcp-complete-deferred
+            sess "openDiff"
+            (list `((type . "text") (text . "FILE_SAVED"))
+                  `((type . "text") (text . ,contents)))
+            tname))))
+      (throw 'auto-accepted `((deferred . t) (unique-key . ,tab-name))))
 
     ;; Get the active diffs for this specific session
     (let ((active-diffs (claude-code-ide-mcp--get-active-diffs session)))
@@ -460,7 +478,7 @@ ARGUMENTS should contain:
         ;; Return deferred indicator; the dispatcher correlates the
         ;; response id with the requesting session itself
         `((deferred . t)
-          (unique-key . ,tab-name))))))
+          (unique-key . ,tab-name)))))))
 
 (defun claude-code-ide-mcp--handle-ediff-quit (tab-name session)
   "Handle ediff quit for TAB-NAME in SESSION.

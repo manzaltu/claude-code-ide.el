@@ -154,7 +154,8 @@ Set to nil when cache needs to be invalidated.")
   last-buffer      ; Last active buffer
   active-diffs     ; Hash table of active diffs
   original-tab     ; Original tab-bar tab where Claude was opened
-  cli-pid)         ; PID of the connected CLI process
+  cli-pid          ; PID of the connected CLI process
+  auto-accept)     ; Non-nil: accept this instance's edits without ediff
 
 (defun claude-code-ide-mcp--get-buffer-project ()
   "Get the project directory for the current buffer.
