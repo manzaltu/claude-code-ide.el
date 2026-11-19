@@ -2618,8 +2618,163 @@ sibling instance."
       (delete-file test-file)
       (claude-code-ide-mcp-server-unregister-session session-id))))
 
+(defmacro claude-code-ide-tests--with-imenu-buffer (&rest body)
+  "Run BODY in a temporary buffer of twelve lines.
+Within BODY, (at LINE) is the position where LINE starts and
+\(lines INDEX) is imenu INDEX listed as symbol lines of a file \"f\"."
+  (declare (indent 0))
+  `(with-temp-buffer
+     (dotimes (i 12)
+       (insert (format "line %d\n" (1+ i))))
+     (cl-flet ((at (line)
+                 (save-excursion
+                   (save-restriction
+                     (widen)
+                     (goto-char (point-min))
+                     (forward-line (1- line))
+                     (point))))
+               (lines (index)
+                 (mapcar (lambda (entry)
+                           (claude-code-ide-mcp-imenu--format-entry "f" entry))
+                         (claude-code-ide-mcp-imenu--entries index))))
+       (ignore #'at #'lines)
+       ,@body)))
+
+(defun claude-code-ide-tests--imenu-kill-buffer (file)
+  "Kill the buffer visiting FILE, if any, discarding its edits."
+  (let ((buffer (find-buffer-visiting file)))
+    (when buffer
+      (with-current-buffer buffer
+        (set-buffer-modified-p nil))
+      (kill-buffer buffer))))
+
+(defun claude-code-ide-tests--imenu-listed-p (regexp result)
+  "Return non-nil if a line of RESULT ends with a match for REGEXP.
+RESULT is the list `claude-code-ide-mcp-imenu-list-symbols' returns."
+  (and (listp result)
+       (cl-some (lambda (line)
+                  (string-match-p (concat regexp "\\'") line))
+                result)))
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-entries-nested ()
+  "Test that symbols at every nesting level are listed in index order."
+  (require 'claude-code-ide-emacs-tools)
+  (claude-code-ide-tests--with-imenu-buffer
+   (should (equal (lines `(("a" . ,(at 1))
+                           ("L1"
+                            ("b" . ,(at 2))
+                            ("L2"
+                             ("c" . ,(at 3))
+                             ("L3" ("d" . ,(at 4)))
+                             ("e" . ,(at 5)))
+                            ("f" . ,(at 6)))
+                           ("g" . ,(at 7))))
+                  '("f:1: a"
+                    "f:2: [L1] b"
+                    "f:3: [L1 > L2] c"
+                    "f:4: [L1 > L2 > L3] d"
+                    "f:5: [L1 > L2] e"
+                    "f:6: [L1] f"
+                    "f:7: g")))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-entries-star-names ()
+  "Test that names starting with an asterisk are listed at every level."
+  (require 'claude-code-ide-emacs-tools)
+  (claude-code-ide-tests--with-imenu-buffer
+   (should (equal (lines `(("*top*" . ,(at 1))
+                           ("Variables" ("*earmuffs*" . ,(at 2)))
+                           ("*Menu*" ("x" . ,(at 3)))))
+                  '("f:1: *top*"
+                    "f:2: [Variables] *earmuffs*"
+                    "f:3: [*Menu*] x")))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-entries-blank-name ()
+  "Test that a blank-named symbol is listed as its enclosing menu."
+  (require 'claude-code-ide-emacs-tools)
+  (claude-code-ide-tests--with-imenu-buffer
+   (should (equal (lines `((" " . ,(at 1))
+                           ("Class"
+                            ("Widget"
+                             (" " . ,(at 4))
+                             ("size" . ,(at 7))))))
+                  '("f:4: [Class] Widget"
+                    "f:7: [Class > Widget] size")))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-entries-position-kinds ()
+  "Test the forms of imenu item that count as a symbol."
+  (require 'claude-code-ide-emacs-tools)
+  (claude-code-ide-tests--with-imenu-buffer
+   (let ((index `(("integer" . ,(at 1))
+                  ("marker" . ,(copy-marker (at 2)))
+                  ("overlay" . ,(make-overlay (at 3) (at 4)))
+                  ("special" ,(at 5) ignore 1)
+                  (,(propertize "propertized" 'face 'bold) . ,(at 6))
+                  ("end" . ,(point-max)))))
+     (should (equal (lines index)
+                    '("f:1: integer"
+                      "f:2: marker"
+                      "f:3: overlay"
+                      "f:5: special"
+                      "f:6: propertized"
+                      "f:13: end")))
+     (dolist (entry (claude-code-ide-mcp-imenu--entries index))
+       (should-not (text-properties-at 0 (nth 1 entry)))))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-entries-ignored-items ()
+  "Test that items which are not symbols of this buffer are left out."
+  (require 'claude-code-ide-emacs-tools)
+  (let ((other (generate-new-buffer " *imenu-other*")))
+    (unwind-protect
+        (claude-code-ide-tests--with-imenu-buffer
+         (should (equal (lines `(("*Rescan*" . -99)
+                                 ("zero" . 0)
+                                 ("beyond" . ,(+ 2 (buffer-size)))
+                                 ("detached" . ,(make-marker))
+                                 ("foreign" . ,(with-current-buffer other
+                                                 (insert "x\n")
+                                                 (point-min-marker)))
+                                 ("Empty")
+                                 nil
+                                 "header"
+                                 ("Menu" "header" nil ("kept" . ,(at 3)))))
+                        '("f:3: [Menu] kept"))))
+      (kill-buffer other))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-entries-narrowed ()
+  "Test that line numbers count from the start of a narrowed buffer."
+  (require 'claude-code-ide-emacs-tools)
+  (claude-code-ide-tests--with-imenu-buffer
+   (narrow-to-region (at 5) (at 8))
+   (should (equal (lines `(("inside" . ,(at 6))
+                           ("outside" . ,(at 10))))
+                  '("f:6: inside"
+                    "f:10: outside")))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-create-index ()
+  "Test that the index covers the whole buffer and keeps its state."
+  (require 'claude-code-ide-emacs-tools)
+  (with-temp-buffer
+    (insert "(defun first-fn () 1)\n\n(defun second-fn () 2)\n")
+    (emacs-lisp-mode)
+    (let ((cached (list (cons "cached" 1))))
+      (setq imenu--index-alist cached)
+      (goto-char (point-min))
+      (forward-line 2)
+      (narrow-to-region (point) (point-max))
+      (forward-char 3)
+      (let* ((point (point))
+             (start (point-min))
+             (names (mapcar #'cadr
+                            (claude-code-ide-mcp-imenu--entries
+                             (claude-code-ide-mcp-imenu--create-index)))))
+        (should (member "first-fn" names))
+        (should (member "second-fn" names))
+        (should (eq imenu--index-alist cached))
+        (should (= (point) point))
+        (should (= (point-min) start))))))
+
 (ert-deftest claude-code-ide-emacs-tools-test-imenu-nested-symbols ()
-  "Test imenu-list-symbols with nested symbol structures."
+  "Test imenu-list-symbols on a file with symbols nested two levels deep."
   (require 'claude-code-ide-emacs-tools)
 
   (let ((test-file (make-temp-file "test-imenu-nested-" nil ".py"))
@@ -2627,34 +2782,113 @@ sibling instance."
         (project-dir (temporary-file-directory)))
     (unwind-protect
         (progn
-          ;; Write Python test content (which often has nested imenu structures)
           (with-temp-file test-file
-            (insert "# Test Python file\n\n"
-                    "class TestClass:\n"
-                    "    def method1(self):\n"
+            (insert "class Outer:\n"
+                    "    def outer_method(self):\n"
                     "        pass\n\n"
-                    "    def method2(self, arg):\n"
-                    "        return arg * 2\n\n"
+                    "    class Inner:\n"
+                    "        def inner_method(self):\n"
+                    "            pass\n\n"
                     "def standalone_function():\n"
                     "    return 42\n"))
-
-          ;; Register a mock session
           (claude-code-ide-mcp-server-register-session session-id project-dir nil)
 
-          ;; Test with session context
-          (let ((claude-code-ide-mcp-server--current-session-id session-id))
-            ;; Note: This test might not find nested structures if python-mode
-            ;; isn't properly configured, but it should at least not error
-            (condition-case err
-                (let ((result (claude-code-ide-mcp-imenu-list-symbols test-file)))
-                  ;; Should return either a list or a string (no symbols message)
-                  (should (or (listp result) (stringp result))))
-              (error
-               ;; If python mode isn't available, that's okay for this test
-               (should (string-match "Error" (error-message-string err)))))))
+          (let* ((claude-code-ide-mcp-server--current-session-id session-id)
+                 (result (claude-code-ide-mcp-imenu-list-symbols test-file))
+                 (prefix (regexp-quote test-file)))
+            (should (claude-code-ide-tests--imenu-listed-p
+                     (concat prefix ":2: \\[[^]>]*Outer[^]>]*\\] outer_method.*")
+                     result))
+            (should (claude-code-ide-tests--imenu-listed-p
+                     (concat prefix ":6: \\[[^]>]*Outer[^]>]* > [^]>]*Inner[^]>]*\\]"
+                             " inner_method.*")
+                     result))
+            (should (claude-code-ide-tests--imenu-listed-p
+                     (concat prefix ":9: standalone_function.*")
+                     result))))
 
       ;; Cleanup
+      (claude-code-ide-tests--imenu-kill-buffer test-file)
       (delete-file test-file)
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-unsaved-edits ()
+  "Test that imenu-list-symbols lists a symbol added after an earlier listing."
+  (require 'claude-code-ide-emacs-tools)
+
+  (let ((test-file (make-temp-file "test-imenu-edits-" nil ".el"))
+        (session-id "test-session-imenu-edits")
+        (project-dir (temporary-file-directory)))
+    (unwind-protect
+        (progn
+          (with-temp-file test-file
+            (insert "(defun first-fn () 1)\n"))
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+
+          (let ((claude-code-ide-mcp-server--current-session-id session-id)
+                (prefix (regexp-quote test-file)))
+            (should (claude-code-ide-tests--imenu-listed-p
+                     (concat prefix ":1: first-fn")
+                     (claude-code-ide-mcp-imenu-list-symbols test-file)))
+
+            ;; Index the buffer the way the imenu command does, then edit it
+            ;; without saving.
+            (with-current-buffer (find-buffer-visiting test-file)
+              (imenu--make-index-alist t)
+              (goto-char (point-max))
+              (insert "\n(defun second-fn () 2)\n"))
+
+            (let ((result (claude-code-ide-mcp-imenu-list-symbols test-file)))
+              (should (claude-code-ide-tests--imenu-listed-p
+                       (concat prefix ":1: first-fn") result))
+              (should (claude-code-ide-tests--imenu-listed-p
+                       (concat prefix ":3: second-fn") result)))))
+
+      ;; Cleanup
+      (claude-code-ide-tests--imenu-kill-buffer test-file)
+      (delete-file test-file)
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-nothing-to-list ()
+  "Test the messages imenu-list-symbols returns when it lists nothing."
+  (require 'claude-code-ide-emacs-tools)
+
+  (let* ((empty-file (make-temp-file "test-imenu-empty-" nil ".el"))
+         (plain-file (make-temp-file "test-imenu-plain-" nil ".imenu-none"))
+         (test-dir (make-temp-file "test-imenu-dir-" t))
+         (missing-file (expand-file-name "missing.el" test-dir))
+         (session-id "test-session-imenu-nothing")
+         (project-dir (temporary-file-directory)))
+    (unwind-protect
+        (progn
+          (with-temp-file empty-file
+            (insert ";;; No definitions here\n"))
+          (with-temp-file plain-file
+            (insert "Just some text.\n"))
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+
+          (let ((claude-code-ide-mcp-server--current-session-id session-id))
+            ;; A mode with imenu support, but no symbols in the file
+            (should (equal (claude-code-ide-mcp-imenu-list-symbols empty-file)
+                           (format "No symbols found in %s" empty-file)))
+
+            ;; A mode without imenu support
+            (should (equal (claude-code-ide-mcp-imenu-list-symbols plain-file)
+                           (format "No imenu support for %s" plain-file)))
+
+            ;; A missing file or a directory is reported without visiting it
+            (dolist (path (list missing-file test-dir))
+              (should (equal (claude-code-ide-mcp-imenu-list-symbols path)
+                             (format "Error listing symbols in %s: no such file"
+                                     path)))
+              (should-not (find-buffer-visiting path)))))
+
+      ;; Cleanup
+      (claude-code-ide-tests--imenu-kill-buffer empty-file)
+      (claude-code-ide-tests--imenu-kill-buffer plain-file)
+      (delete-file empty-file)
+      (delete-file plain-file)
+      (delete-directory test-dir t)
       (claude-code-ide-mcp-server-unregister-session session-id))))
 
 (ert-deftest claude-code-ide-test-tool-format-backward-compatibility ()
@@ -2773,7 +3007,7 @@ sibling instance."
     (let ((normalized (claude-code-ide--normalize-tool-spec imenu-tool)))
       ;; Check description
       (should (equal (plist-get normalized :description)
-                     "Navigate and explore a file's structure by listing all its functions, classes, and variables with their locations"))
+                     "Navigate and explore a file's structure by listing all its functions, classes, and variables with their locations. Nested symbols are included, each prefixed with its enclosing scopes as [Outer > Inner]"))
 
       ;; Check args
       (let ((args (plist-get normalized :args)))
