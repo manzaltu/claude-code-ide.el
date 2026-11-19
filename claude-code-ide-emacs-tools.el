@@ -132,62 +132,106 @@ Returns project directory, active buffer, and file count."
                   (length (project-files (project-current nil project-dir)))))
       "No session context available")))
 
+(defun claude-code-ide-mcp-imenu--create-index ()
+  "Return a fresh imenu index of the whole current buffer.
+The index has the format of `imenu--index-alist' and reflects the
+buffer's current text, including unsaved edits.  Point, narrowing and
+the buffer's cached imenu index are left as they are."
+  (let ((imenu-use-markers nil))
+    (save-excursion
+      (save-restriction
+        (widen)
+        (funcall imenu-create-index-function)))))
+
+(defun claude-code-ide-mcp-imenu--position (position)
+  "Return the buffer position imenu POSITION denotes, or nil.
+POSITION is an integer, a marker or an overlay.  The result is nil
+when POSITION belongs to another buffer or lies outside the current
+buffer (e.g. the -99 of the rescan item)."
+  (let ((pos (cond ((integerp position) position)
+                   ((markerp position)
+                    (and (eq (marker-buffer position) (current-buffer))
+                         (marker-position position)))
+                   ((overlayp position)
+                    (and (eq (overlay-buffer position) (current-buffer))
+                         (overlay-start position))))))
+    (and pos (<= 1 pos (1+ (buffer-size))) pos)))
+
+(defun claude-code-ide-mcp-imenu--entries (index &optional path)
+  "Return the symbols of imenu INDEX as a list of (PATH NAME POSITION).
+INDEX has the format of `imenu--index-alist'.  PATH is the list of
+titles of the menus enclosing INDEX, outermost first.  Symbols are
+returned in index order, at every nesting level.
+
+An item is a symbol when it is (NAME . POSITION) or the special form
+\(NAME POSITION FUNCTION ARGS...), and a nested menu when it is
+\(TITLE . ITEMS).  Anything else in INDEX is ignored, as is a symbol
+whose position is not in the current buffer.  A symbol with a blank
+name stands for its enclosing menu (tree-sitter modes mark a
+definition that has children this way), so it is returned under that
+menu's title."
+  (mapcan
+   (lambda (item)
+     (when (and (consp item) (stringp (car item)))
+       (let* ((name (substring-no-properties (car item)))
+              (rest (cdr item))
+              (pos (claude-code-ide-mcp-imenu--position
+                    (if (consp rest) (car rest) rest))))
+         (cond
+          ((not pos)
+           (when (consp rest)
+             (claude-code-ide-mcp-imenu--entries
+              rest (append path (list name)))))
+          ((string-match-p "[^ \t\n\r]" name)
+           (list (list path name pos)))
+          (path
+           (list (list (butlast path) (car (last path)) pos)))))))
+   index))
+
+(defun claude-code-ide-mcp-imenu--format-entry (file-path entry)
+  "Format ENTRY, a (PATH NAME POSITION) list, as a line for FILE-PATH.
+The line is \"FILE-PATH:LINE: NAME\", or \"FILE-PATH:LINE: [OUTER >
+INNER] NAME\" when PATH is non-empty.  LINE counts from the start of
+the buffer even when it is narrowed."
+  (pcase-let ((`(,path ,name ,pos) entry))
+    (format "%s:%d: %s%s"
+            file-path
+            (save-restriction
+              (widen)
+              (line-number-at-pos pos))
+            (if path
+                (format "[%s] " (mapconcat #'identity path " > "))
+              "")
+            name)))
+
 (defun claude-code-ide-mcp-imenu-list-symbols (file-path)
-  "List all symbols in FILE-PATH using imenu.
-Returns a list of symbols with their types and positions."
+  "List the symbols imenu finds in FILE-PATH.
+Return a list with one \"FILE-PATH:LINE: NAME\" string per symbol, in
+index order and at every nesting level.  A nested symbol is listed
+with the menus enclosing it, as \"FILE-PATH:LINE: [OUTER > INNER]
+NAME\".  Return a message string instead when there is nothing to
+list: the file does not exist, its mode has no imenu support, or the
+index holds no symbols."
   (if (not file-path)
       (error "file_path parameter is required")
     (claude-code-ide-mcp-server-with-session-context nil
       (condition-case err
           (let ((target-buffer (or (find-buffer-visiting file-path)
-                                   (find-file-noselect file-path))))
-            (with-current-buffer target-buffer
-              ;; Generate or update imenu index
-              (imenu--make-index-alist)
-              (if imenu--index-alist
-                  (let ((results '()))
-                    ;; Process the imenu index
-                    (dolist (item imenu--index-alist)
-                      (cond
-                       ;; Skip special entries
-                       ((string-match-p "^\\*" (car item)) nil)
-                       ;; Handle simple entries (name . position)
-                       ((markerp (cdr item))
-                        (let ((line (line-number-at-pos (marker-position (cdr item)))))
-                          (push (format "%s:%d: %s"
-                                        file-path
-                                        line
-                                        (car item))
-                                results)))
-                       ;; Handle position numbers
-                       ((numberp (cdr item))
-                        (let ((line (line-number-at-pos (cdr item))))
-                          (push (format "%s:%d: %s"
-                                        file-path
-                                        line
-                                        (car item))
-                                results)))
-                       ;; Handle nested entries (category . items)
-                       ((listp (cdr item))
-                        (let ((category (car item)))
-                          (dolist (subitem (cdr item))
-                            (when (and (consp subitem)
-                                       (or (markerp (cdr subitem))
-                                           (numberp (cdr subitem))))
-                              (let ((line (line-number-at-pos
-                                           (if (markerp (cdr subitem))
-                                               (marker-position (cdr subitem))
-                                             (cdr subitem)))))
-                                (push (format "%s:%d: [%s] %s"
-                                              file-path
-                                              line
-                                              category
-                                              (car subitem))
-                                      results))))))))
-                    (if results
-                        (nreverse results)
-                      (format "No symbols found in %s" file-path)))
-                (format "No imenu support or no symbols found in %s" file-path))))
+                                   (and (file-regular-p file-path)
+                                        (find-file-noselect file-path)))))
+            (if (not target-buffer)
+                (format "Error listing symbols in %s: no such file" file-path)
+              (with-current-buffer target-buffer
+                (let ((entries (claude-code-ide-mcp-imenu--entries
+                                (claude-code-ide-mcp-imenu--create-index))))
+                  (if entries
+                      (mapcar (lambda (entry)
+                                (claude-code-ide-mcp-imenu--format-entry
+                                 file-path entry))
+                              entries)
+                    (format "No symbols found in %s" file-path))))))
+        (imenu-unavailable
+         (format "No imenu support for %s" file-path))
         (error
          (format "Error listing symbols in %s: %s"
                  file-path (error-message-string err)))))))
@@ -379,7 +423,7 @@ If INCLUDE_CHILDREN is non-nil, include child nodes."
   (claude-code-ide-make-tool
    :function #'claude-code-ide-mcp-imenu-list-symbols
    :name "claude-code-ide-mcp-imenu-list-symbols"
-   :description "Navigate and explore a file's structure by listing all its functions, classes, and variables with their locations"
+   :description "Navigate and explore a file's structure by listing all its functions, classes, and variables with their locations. Nested symbols are included, each prefixed with its enclosing scopes as [Outer > Inner]"
    :args '((:name "file_path"
                   :type string
                   :description "Path to the file to analyze for symbols")))
