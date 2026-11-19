@@ -77,6 +77,9 @@
 (defvar ghostel-set-title-function)
 (defvar ghostel-enable-title-tracking)
 (defvar ghostel-kill-buffer-on-exit)
+(defvar ghostel--term-cols)
+(defvar ghostel--term-rows)
+(defvar ghostel--process)
 (defvar evil-ghostel-mode)
 (defvar evil-ghostel--escape-mode)
 
@@ -98,6 +101,7 @@
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
 (declare-function ghostel-send-string "ghostel" (string))
 (declare-function ghostel--window-adjust-process-window-size "ghostel" (process windows))
+(declare-function ghostel--adjust-size "ghostel" (window &optional force))
 
 ;;; Customization
 
@@ -277,11 +281,15 @@ alternative rendering mode that eliminates terminal flicker."
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-prevent-reflow-glitch t
-  "Workaround for Claude Code terminal scrolling bug #1422.
-When non-nil (default), prevents the terminal from reflowing on height-only
-changes which can trigger uncontrollable scrolling in Claude Code.
-See: https://github.com/anthropics/claude-code/issues/1422
-This setting should be removed once the upstream bug is fixed."
+  "Resize Claude Code terminals only when the window width changes.
+When non-nil (default), a height-only window change keeps the
+terminal's row count, so the terminal can be taller or shorter than its
+window until the next width change.  Claude Code repaints its screen on
+every resize, which makes the terminal scroll uncontrollably (vterm,
+eat) or writes earlier output into the scrollback again (ghostel).
+Applies to the vterm, eat and ghostel backends and takes effect when
+the first Claude Code instance starts.
+See: https://github.com/anthropics/claude-code/issues/1422"
   :type 'boolean
   :group 'claude-code-ide)
 
@@ -599,40 +607,46 @@ from the window where it was initially created."
   "Set up keybindings for the Claude Code terminal buffer.
 This function binds:
 - M-RET (Alt-Return) to insert a newline
-- C-<escape> to send escape"
+- C-<escape> to send escape
+- C-c C-x to drop the file or selection shown in the prompt"
   (cond
    ((eq claude-code-ide-terminal-backend 'vterm)
     ;; For vterm, we set up local keybindings in vterm-mode-map
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
+    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape)
+    (local-set-key (kbd "C-c C-x") #'claude-code-ide-clear-selection))
    ((eq claude-code-ide-terminal-backend 'eat)
     ;; For eat, we need to modify the semi-char mode map which is the default
     ;; We use local-set-key to make it buffer-local
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
+    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape)
+    (local-set-key (kbd "C-c C-x") #'claude-code-ide-clear-selection))
    ((eq claude-code-ide-terminal-backend 'ghostel)
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
+    (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape)
+    (local-set-key (kbd "C-c C-x") #'claude-code-ide-clear-selection))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
 ;;; Terminal Reflow Glitch Prevention
 ;;
-;; This section implements a workaround for Claude Code bug #1422
-;; where terminal reflows during height-only changes can cause
-;; uncontrollable scrolling. This code should be removed once
-;; the upstream bug is fixed.
-;; See: https://github.com/anthropics/claude-code/issues/1422
+;; While `claude-code-ide-prevent-reflow-glitch' is non-nil, a Claude
+;; Code terminal is resized only when its window's width changes;
+;; height-only changes keep the terminal's row count (every resize
+;; makes Claude Code repaint its screen, see
+;; https://github.com/anthropics/claude-code/issues/1422).
 
-(defun claude-code-ide--terminal-resize-handler ()
-  "Retrieve the terminal's resize handling function based on backend."
-  (pcase claude-code-ide-terminal-backend
-    ('vterm #'vterm--window-adjust-process-window-size)
-    ('eat #'eat--adjust-process-window-size)
-    ;; Ghostel manages resizing differently enough that the vterm/eat
-    ;; reflow workaround should stay disabled for it.
-    ('ghostel nil)
-    (_ (error "Unsupported terminal backend: %s" claude-code-ide-terminal-backend))))
+(defconst claude-code-ide--reflow-advice
+  '((vterm vterm--window-adjust-process-window-size
+           . claude-code-ide--terminal-reflow-filter)
+    (eat eat--adjust-process-window-size
+         . claude-code-ide--terminal-reflow-filter)
+    (ghostel ghostel--adjust-size
+             . claude-code-ide--ghostel-reflow-filter))
+  "Resize function and `:around' advice per terminal backend.
+Each entry is (BACKEND FUNCTION . ADVICE).  ADVICE is installed on
+FUNCTION when the first Claude Code instance starts and removed when
+the last one exits.")
 
 (defun claude-code-ide--terminal-scroll-mode-active-p ()
   "Determine if terminal is currently in scroll/copy mode."
@@ -678,6 +692,59 @@ width has actually changed, working around the scrolling glitch."
       base-result)
      ;; No width change - suppress reflow
      (t nil))))
+
+(defvar-local claude-code-ide--ghostel-sized nil
+  "Non-nil once this buffer's ghostel terminal has taken a window size.
+Until then `claude-code-ide--ghostel-reflow-filter' lets every resize
+through, so the terminal leaves the size `ghostel-exec' gives a buffer
+that is not displayed yet.")
+
+(defun claude-code-ide--ghostel-keep-rows (size)
+  "Return SIZE, a (COLUMNS . ROWS) pair, keeping the terminal's rows.
+Once the current buffer's terminal has taken a window size, a SIZE
+whose COLUMNS equal the terminal's width gets the terminal's current
+row count as ROWS, so the terminal is not resized.  Any other SIZE is
+returned unchanged."
+  (if (and size
+           claude-code-ide--ghostel-sized
+           (eql (car size) ghostel--term-cols)
+           (integerp ghostel--term-rows))
+      (cons (car size) ghostel--term-rows)
+    size))
+
+(defun claude-code-ide--ghostel-reflow-filter (orig-fn window &rest args)
+  "Call ORIG-FN with WINDOW and ARGS, skipping height-only resizes.
+ORIG-FN is `ghostel--adjust-size', which sizes the terminal of
+WINDOW's buffer from the default value of
+`window-adjust-process-window-size-function'.  When WINDOW shows a
+Claude Code buffer, that value is wrapped for the duration of the call
+so the size computed for the buffer's own process passes through
+`claude-code-ide--ghostel-keep-rows'; other buffers and processes get
+the unwrapped result."
+  (let ((buffer (and (window-live-p window) (window-buffer window))))
+    (if (not (claude-code-ide--session-buffer-p buffer))
+        (apply orig-fn window args)
+      (let* ((adjust-fn (or (default-value 'window-adjust-process-window-size-function)
+                            #'window-adjust-process-window-size-smallest))
+             (computed nil)
+             (result
+              (cl-letf (((default-value 'window-adjust-process-window-size-function)
+                         (lambda (process windows)
+                           (let ((size (funcall adjust-fn process windows)))
+                             (if (and (eq (current-buffer) buffer)
+                                      (eq process ghostel--process))
+                                 (progn
+                                   (setq computed size)
+                                   (claude-code-ide--ghostel-keep-rows size))
+                               size)))))
+                (apply orig-fn window args))))
+        ;; The terminal counts as sized once it holds the size computed
+        ;; from its window(s); a resize ghostel skipped leaves it unsized
+        (when (and computed (buffer-live-p buffer))
+          (with-current-buffer buffer
+            (when (equal computed (cons ghostel--term-cols ghostel--term-rows))
+              (setq claude-code-ide--ghostel-sized t))))
+        result))))
 
 
 ;;; Helper Functions
@@ -924,11 +991,10 @@ most recently used one — only displaying or hiding windows would."
     (when (boundp 'tab-bar-tab-post-open-functions)
       (add-hook 'tab-bar-tab-post-open-functions
                 #'claude-code-ide--strip-new-tab-claude-windows))
-    (when-let* ((resize-handler
-                 (and claude-code-ide-prevent-reflow-glitch
-                      (claude-code-ide--terminal-resize-handler))))
-      (advice-add resize-handler
-                  :around #'claude-code-ide--terminal-reflow-filter))))
+    (when-let* ((advice (and claude-code-ide-prevent-reflow-glitch
+                             (alist-get claude-code-ide-terminal-backend
+                                        claude-code-ide--reflow-advice))))
+      (advice-add (car advice) :around (cdr advice)))))
 
 (defun claude-code-ide--cleanup-dead-sessions ()
   "Fully clean up sessions whose terminal process has died."
@@ -986,7 +1052,7 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
     ;; Select the window to give it focus if configured to do so
     (when (and window claude-code-ide-focus-on-open)
       (select-window window))
-    ;; For bottom/top windows, explicitly set and preserve the height
+    ;; For bottom/top windows, explicitly set the height
     (when (and window
                claude-code-ide-use-side-window
                (memq claude-code-ide-window-side '(top bottom)))
@@ -995,6 +1061,15 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
     ;; don't reuse a visible instance's window
     (when (and window claude-code-ide-use-side-window)
       (set-window-dedicated-p window t))
+    ;; Keep the side window's width (left/right) or height (top/bottom)
+    ;; through frame resizes and `balance-windows', so the terminal is not
+    ;; resized and reflowed by unrelated window changes.  Dragging the
+    ;; window's divider still resizes it and lifts this until the buffer
+    ;; is displayed again.
+    (when (and window claude-code-ide-use-side-window)
+      (window-preserve-size window
+                            (and (memq claude-code-ide-window-side '(left right)) t)
+                            t))
     ;; Sync terminal dimensions with the actual window size
     ;; This is necessary because vterm/eat may have been created with
     ;; different dimensions before being displayed in this window
@@ -1046,10 +1121,9 @@ hook signals wrong-type-argument that way)."
       (when (boundp 'tab-bar-tab-post-open-functions)
         (remove-hook 'tab-bar-tab-post-open-functions
                      #'claude-code-ide--strip-new-tab-claude-windows))
-      (dolist (fn '(vterm--window-adjust-process-window-size
-                    eat--adjust-process-window-size))
+      (pcase-dolist (`(,_backend ,fn . ,advice) claude-code-ide--reflow-advice)
         (when (fboundp fn)
-          (advice-remove fn #'claude-code-ide--terminal-reflow-filter)))
+          (advice-remove fn advice)))
       (when (fboundp 'vterm--filter)
         (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer)))
     ;; Notify MCP tools server about session end
@@ -1691,6 +1765,24 @@ instance, else the most recently used one (prefix argument picks)."
         (progn
           (claude-code-ide-mcp-send-at-mentioned session)
           (claude-code-ide-debug "Sent selection to Claude Code"))
+      (user-error "Claude Code is not connected.  Please start Claude Code first"))))
+
+;;;###autoload
+(defun claude-code-ide-clear-selection ()
+  "Drop the file or selection Claude shows in its prompt.
+The prompt's \"In <file>\" or \"N lines selected\" label disappears and
+the next prompt carries no opened-file or selection reminder.  The file
+stays dismissed while the cursor moves inside it; selecting a region or
+visiting another file shares editor context again.
+Targets one instance: the current terminal, the sole or sole-visible
+instance, else the most recently used one (prefix argument picks)."
+  (interactive)
+  (let ((session (claude-code-ide--resolve-session
+                  'auto "Clear editor context of Claude instance: ")))
+    (if (and session (claude-code-ide-mcp-session-client session))
+        (progn
+          (claude-code-ide-mcp-clear-selection session)
+          (claude-code-ide-debug "Cleared editor context"))
       (user-error "Claude Code is not connected.  Please start Claude Code first"))))
 
 ;;;###autoload

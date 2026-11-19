@@ -171,6 +171,26 @@ routing tests depend on the carried text, not a placeholder."
   "Mock ghostel resize handler for testing."
   '(80 . 24))
 
+(defvar-local ghostel--term-cols nil)
+(defvar-local ghostel--term-rows nil)
+(defvar-local ghostel--process nil)
+
+(defun ghostel--adjust-size (window &optional force)
+  "Mock of ghostel's resize entry point, as called for WINDOW.
+Like the real function, it sizes the terminal of WINDOW's buffer from
+the default value of `window-adjust-process-window-size-function' and
+resizes only when the result differs from the current size or FORCE is
+non-nil."
+  (with-current-buffer (window-buffer window)
+    (when-let* ((adjust-fn (or (default-value 'window-adjust-process-window-size-function)
+                               #'window-adjust-process-window-size-smallest))
+                (size (funcall adjust-fn ghostel--process (list window))))
+      (when (or force
+                (not (and (eql (car size) ghostel--term-cols)
+                          (eql (cdr size) ghostel--term-rows))))
+        (setq ghostel--term-cols (car size)
+              ghostel--term-rows (cdr size))))))
+
 (provide (quote ghostel))
 
 ;; === Mock evil-ghostel module ===
@@ -3034,6 +3054,167 @@ sibling instance."
               (setq buffer-file-name nil))))
       (claude-code-ide-tests--clear-processes))))
 
+(ert-deftest claude-code-ide-test-clear-selection-dismisses-file ()
+  "Clearing makes the instance forget its file and keeps that file dismissed."
+  (claude-code-ide-tests--clear-processes)
+  (let* ((project-dir "/tmp/claude-clear-selection/")
+         (file (expand-file-name "file.txt" project-dir))
+         (other (expand-file-name "other.txt" project-dir))
+         (client (claude-code-ide-tests--make-websocket "ws://127.0.0.1:10012"))
+         (sent '()))
+    (unwind-protect
+        (let ((session (claude-code-ide-tests--make-session project-dir
+                                                            :client client)))
+          (cl-letf (((symbol-function 'websocket-send-text)
+                     (lambda (_ws text)
+                       (push (json-parse-string text :object-type 'alist) sent))))
+            (with-temp-buffer
+              (insert "line 1\nline 2\n")
+              (setq buffer-file-name file)
+              (goto-char (point-min))
+              (claude-code-ide-mcp--send-selection-for-project project-dir)
+              (should (equal file (alist-get 'filePath
+                                             (alist-get 'params (car sent)))))
+
+              ;; Clearing sends a selection that names no file and no text
+              (setq sent '())
+              (claude-code-ide-mcp-clear-selection session)
+              (should (= 1 (length sent)))
+              (let ((params (alist-get 'params (car sent))))
+                (should (equal "selection_changed" (alist-get 'method (car sent))))
+                (should-not (assq 'filePath params))
+                (should-not (assq 'text params))
+                (should (alist-get 'start (alist-get 'selection params)))
+                (should (alist-get 'end (alist-get 'selection params))))
+              (should-not (claude-code-ide-mcp-session-last-selection session))
+              (should (equal file (claude-code-ide-mcp-session-dismissed-file session)))
+
+              ;; Cursor movement inside the dismissed file stays silent
+              (setq sent '())
+              (forward-line 1)
+              (claude-code-ide-mcp--send-selection-for-project project-dir)
+              (should-not sent)
+
+              ;; Selecting a region ends the dismissal
+              (set-mark (point-min))
+              (goto-char (point-max))
+              (let ((transient-mark-mode t))
+                (activate-mark)
+                (claude-code-ide-mcp--send-selection-for-project project-dir)
+                (deactivate-mark))
+              (should (= 1 (length sent)))
+              (should (equal "line 1\nline 2\n"
+                             (alist-get 'text (alist-get 'params (car sent)))))
+              (should-not (claude-code-ide-mcp-session-dismissed-file session))
+
+              ;; Visiting another file ends it as well
+              (claude-code-ide-mcp-clear-selection session)
+              (should (equal file (claude-code-ide-mcp-session-dismissed-file session)))
+              (setq sent '())
+              (setq buffer-file-name other)
+              (claude-code-ide-mcp--send-selection-for-project project-dir)
+              (should (= 1 (length sent)))
+              (should (equal other (alist-get 'filePath
+                                              (alist-get 'params (car sent)))))
+              (should-not (claude-code-ide-mcp-session-dismissed-file session))
+
+              ;; A file outside the project ends it too
+              (claude-code-ide-mcp-clear-selection session)
+              (setq buffer-file-name "/tmp/elsewhere/file.txt")
+              (claude-code-ide-mcp--send-selection-for-project project-dir)
+              (should-not (claude-code-ide-mcp-session-dismissed-file session))
+
+              (set-buffer-modified-p nil)
+              (setq buffer-file-name nil))))
+      (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-terminal-keybindings-bind-clear-selection ()
+  "Every terminal backend binds C-c C-x to clearing the editor context."
+  (dolist (backend '(vterm eat ghostel))
+    (with-temp-buffer
+      (use-local-map (make-sparse-keymap))
+      (let ((claude-code-ide-terminal-backend backend))
+        (claude-code-ide--setup-terminal-keybindings))
+      (should (eq #'claude-code-ide-clear-selection
+                  (lookup-key (current-local-map) (kbd "C-c C-x"))))
+      (should (eq #'claude-code-ide-send-escape
+                  (lookup-key (current-local-map) (kbd "C-<escape>")))))))
+
+(ert-deftest claude-code-ide-test-clear-selection-command ()
+  "The command clears the resolved instance and refuses a disconnected one."
+  (claude-code-ide-tests--clear-processes)
+  (let ((project-dir "/tmp/claude-clear-command/")
+        (cleared '()))
+    (unwind-protect
+        (let ((connected (claude-code-ide-tests--make-session
+                          project-dir
+                          :client (claude-code-ide-tests--make-websocket
+                                   "ws://127.0.0.1:10013")))
+              (idle (claude-code-ide-tests--make-session project-dir
+                                                         :instance-name "b")))
+          (cl-letf (((symbol-function 'claude-code-ide-mcp-clear-selection)
+                     (lambda (session) (push session cleared))))
+            (cl-letf (((symbol-function 'claude-code-ide--resolve-session)
+                       (lambda (&rest _) connected)))
+              (claude-code-ide-clear-selection)
+              (should (equal cleared (list connected))))
+            (cl-letf (((symbol-function 'claude-code-ide--resolve-session)
+                       (lambda (&rest _) idle)))
+              (should-error (claude-code-ide-clear-selection) :type 'user-error))
+            (should (equal cleared (list connected)))))
+      (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-share-opened-file-off-reports-regions-only ()
+  "With `claude-code-ide-share-opened-file' nil only regions reach Claude."
+  (claude-code-ide-tests--clear-processes)
+  (let* ((project-dir "/tmp/claude-regions-only/")
+         (file (expand-file-name "file.txt" project-dir))
+         (client (claude-code-ide-tests--make-websocket "ws://127.0.0.1:10016"))
+         (claude-code-ide-share-opened-file nil)
+         (sent '()))
+    (unwind-protect
+        (let ((session (claude-code-ide-tests--make-session project-dir
+                                                            :client client)))
+          (cl-letf (((symbol-function 'websocket-send-text)
+                     (lambda (_ws text)
+                       (push (json-parse-string text :object-type 'alist) sent))))
+            (with-temp-buffer
+              (insert "line 1\nline 2\n")
+              (setq buffer-file-name file)
+              (goto-char (point-min))
+              ;; A bare cursor position is not reported
+              (claude-code-ide-mcp--send-selection-for-project project-dir)
+              (should-not sent)
+              (should-not (claude-code-ide-mcp-session-last-selection session))
+
+              ;; A region is
+              (set-mark (point-min))
+              (goto-char (point-max))
+              (let ((transient-mark-mode t))
+                (activate-mark)
+                (claude-code-ide-mcp--send-selection-for-project project-dir)
+                (deactivate-mark))
+              (should (= 1 (length sent)))
+              (let ((params (alist-get 'params (car sent))))
+                (should (equal file (alist-get 'filePath params)))
+                (should (equal "line 1\nline 2\n" (alist-get 'text params))))
+
+              ;; Deactivating it makes the instance forget the region
+              (setq sent '())
+              (claude-code-ide-mcp--send-selection-for-project project-dir)
+              (should (= 1 (length sent)))
+              (should-not (assq 'filePath (alist-get 'params (car sent))))
+              (should-not (claude-code-ide-mcp-session-last-selection session))
+
+              ;; Cursor movement stays silent afterwards
+              (setq sent '())
+              (forward-line -1)
+              (claude-code-ide-mcp--send-selection-for-project project-dir)
+              (should-not sent)
+              (set-buffer-modified-p nil)
+              (setq buffer-file-name nil))))
+      (claude-code-ide-tests--clear-processes))))
+
 (ert-deftest claude-code-ide-test-track-selection-debounces-per-project ()
   "Selection tracking arms one debounce timer per project, not per instance."
   (claude-code-ide-tests--clear-processes)
@@ -3712,6 +3893,608 @@ and pruning drops entries whose tab no longer exists."
             (should (= 3 (length cleaned)))
             (should (memq other cleaned))))
       (claude-code-ide-tests--clear-processes))))
+
+;;; Ghostel reflow filter
+
+(defvar claude-code-ide-tests--window-size nil
+  "Size returned by `claude-code-ide-tests--adjust-window-size'.")
+
+(defun claude-code-ide-tests--adjust-window-size (_process _windows)
+  "Return `claude-code-ide-tests--window-size' as the windows' size."
+  claude-code-ide-tests--window-size)
+
+(defun claude-code-ide-tests--ghostel-terminal (session-p)
+  "Return a mock 80x24 ghostel terminal buffer.
+With SESSION-P non-nil the buffer belongs to a Claude Code session."
+  (let ((buffer (generate-new-buffer "*claude-ghostel-resize*")))
+    (with-current-buffer buffer
+      (setq-local ghostel--term-cols 80
+                  ghostel--term-rows 24
+                  ghostel--process 'terminal-process)
+      (when session-p
+        (setq-local claude-code-ide--session 'session)))
+    buffer))
+
+(defun claude-code-ide-tests--ghostel-size (buffer)
+  "Return BUFFER's mock terminal size as (COLUMNS . ROWS)."
+  (with-current-buffer buffer
+    (cons ghostel--term-cols ghostel--term-rows)))
+
+(ert-deftest claude-code-ide-test-ghostel-keep-rows ()
+  "Height-only sizes keep the rows of a terminal sized to a window."
+  (with-temp-buffer
+    (setq-local ghostel--term-cols 100
+                ghostel--term-rows 40)
+    ;; A terminal that has not taken a window size yet takes any size
+    (should (equal (claude-code-ide--ghostel-keep-rows '(100 . 20)) '(100 . 20)))
+    (setq-local claude-code-ide--ghostel-sized t)
+    (should (equal (claude-code-ide--ghostel-keep-rows '(100 . 20)) '(100 . 40)))
+    (should (equal (claude-code-ide--ghostel-keep-rows '(100 . 60)) '(100 . 40)))
+    (should (equal (claude-code-ide--ghostel-keep-rows '(90 . 20)) '(90 . 20)))
+    (should-not (claude-code-ide--ghostel-keep-rows nil))))
+
+(ert-deftest claude-code-ide-test-ghostel-reflow-filter ()
+  "Claude terminals skip height-only resizes; other terminals follow them."
+  (let ((claude (claude-code-ide-tests--ghostel-terminal t))
+        (plain (claude-code-ide-tests--ghostel-terminal nil))
+        (window (selected-window))
+        (old-buffer (window-buffer (selected-window))))
+    (unwind-protect
+        (cl-letf (((default-value 'window-adjust-process-window-size-function)
+                   #'claude-code-ide-tests--adjust-window-size))
+          (advice-add 'ghostel--adjust-size :around
+                      #'claude-code-ide--ghostel-reflow-filter)
+          (set-window-buffer window claude)
+          ;; The first window size passes through, even at the same width
+          (setq claude-code-ide-tests--window-size '(80 . 30))
+          (ghostel--adjust-size window)
+          (should (equal (claude-code-ide-tests--ghostel-size claude) '(80 . 30)))
+          (should (buffer-local-value 'claude-code-ide--ghostel-sized claude))
+          ;; Height-only changes keep the rows, forced or not
+          (setq claude-code-ide-tests--window-size '(80 . 50))
+          (ghostel--adjust-size window)
+          (ghostel--adjust-size window t)
+          (should (equal (claude-code-ide-tests--ghostel-size claude) '(80 . 30)))
+          (setq claude-code-ide-tests--window-size '(80 . 10))
+          (ghostel--adjust-size window)
+          (should (equal (claude-code-ide-tests--ghostel-size claude) '(80 . 30)))
+          ;; A width change passes with the new height
+          (setq claude-code-ide-tests--window-size '(90 . 50))
+          (ghostel--adjust-size window)
+          (should (equal (claude-code-ide-tests--ghostel-size claude) '(90 . 50)))
+          ;; The adjust function is restored after each call
+          (should (eq (default-value 'window-adjust-process-window-size-function)
+                      #'claude-code-ide-tests--adjust-window-size))
+          ;; A terminal outside Claude Code follows height-only changes
+          (set-window-buffer window plain)
+          (setq claude-code-ide-tests--window-size '(80 . 40))
+          (ghostel--adjust-size window)
+          (should (equal (claude-code-ide-tests--ghostel-size plain) '(80 . 40))))
+      (advice-remove 'ghostel--adjust-size #'claude-code-ide--ghostel-reflow-filter)
+      (set-window-buffer window old-buffer)
+      (kill-buffer claude)
+      (kill-buffer plain))))
+
+(ert-deftest claude-code-ide-test-ghostel-reflow-filter-scope ()
+  "The filter only touches the terminal's own process and restores state."
+  (let ((claude (claude-code-ide-tests--ghostel-terminal t))
+        (window (selected-window))
+        (old-buffer (window-buffer (selected-window)))
+        (default-size (lambda (process window)
+                        (funcall (default-value 'window-adjust-process-window-size-function)
+                                 process (list window)))))
+    (unwind-protect
+        (cl-letf (((default-value 'window-adjust-process-window-size-function)
+                   #'claude-code-ide-tests--adjust-window-size))
+          (set-window-buffer window claude)
+          (with-current-buffer claude
+            (setq-local claude-code-ide--ghostel-sized t))
+          (setq claude-code-ide-tests--window-size '(80 . 50))
+          ;; Sizes computed for other processes are left alone
+          (should (equal (claude-code-ide--ghostel-reflow-filter
+                          (lambda (win &rest _)
+                            (with-current-buffer (window-buffer win)
+                              (list (funcall default-size ghostel--process win)
+                                    (funcall default-size 'other-process win))))
+                          window)
+                         '((80 . 24) (80 . 50))))
+          ;; A size the original function did not apply leaves the
+          ;; terminal unsized, so the next resize passes through again
+          (with-current-buffer claude
+            (setq-local claude-code-ide--ghostel-sized nil))
+          (claude-code-ide--ghostel-reflow-filter
+           (lambda (win &rest _)
+             (with-current-buffer (window-buffer win)
+               (funcall default-size ghostel--process win)))
+           window)
+          (should-not (buffer-local-value 'claude-code-ide--ghostel-sized claude))
+          ;; The adjust function is restored when the resize fails
+          (should-error (claude-code-ide--ghostel-reflow-filter
+                         (lambda (&rest _) (error "Resize failed"))
+                         window))
+          (should (eq (default-value 'window-adjust-process-window-size-function)
+                      #'claude-code-ide-tests--adjust-window-size)))
+      (set-window-buffer window old-buffer)
+      (kill-buffer claude))))
+
+(ert-deftest claude-code-ide-test-reflow-advice-lifecycle ()
+  "Each backend's reflow advice follows the first and last instance."
+  (claude-code-ide-tests--clear-processes)
+  (cl-letf (((symbol-function 'vterm--window-adjust-process-window-size) #'ignore)
+            ((symbol-function 'eat--adjust-process-window-size) #'ignore))
+    (pcase-dolist (`(,backend ,fn . ,advice) claude-code-ide--reflow-advice)
+      (let ((claude-code-ide-terminal-backend backend)
+            (claude-code-ide-prevent-reflow-glitch t)
+            (session nil))
+        (unwind-protect
+            (progn
+              (setq session (claude-code-ide-tests--make-session "/tmp/claude-reflow-advice/"))
+              (claude-code-ide--maybe-install-global-advice)
+              (should (advice-member-p advice fn))
+              (claude-code-ide--cleanup-session session)
+              (should-not (advice-member-p advice fn))
+              ;; With the option off no advice is installed
+              (setq claude-code-ide-prevent-reflow-glitch nil)
+              (setq session (claude-code-ide-tests--make-session "/tmp/claude-reflow-advice/"))
+              (claude-code-ide--maybe-install-global-advice)
+              (should-not (advice-member-p advice fn))
+              (claude-code-ide--cleanup-session session))
+          (advice-remove fn advice)
+          (remove-hook 'window-selection-change-functions
+                       #'claude-code-ide--note-window-selection)
+          (claude-code-ide-tests--clear-processes))))))
+
+;;; Side window size preservation
+
+(ert-deftest claude-code-ide-test-side-window-preserves-size ()
+  "Claude side windows keep their size through `balance-windows'."
+  (claude-code-ide-tests--clear-processes)
+  (let ((buffer (generate-new-buffer "*claude-preserve*"))
+        (claude-code-ide-use-side-window t)
+        (claude-code-ide-focus-on-open nil)
+        (claude-code-ide-window-width 30)
+        (claude-code-ide-window-height 8))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          ;; Left and right windows keep their width
+          (dolist (side '(right left))
+            (let* ((claude-code-ide-window-side side)
+                   (window (claude-code-ide--display-buffer-in-side-window buffer))
+                   (width (window-total-width window)))
+              (should (window--preserve-size window t))
+              (should-not (window--preserve-size window nil))
+              (balance-windows)
+              (should (= width (window-total-width window)))
+              (delete-window window)))
+          ;; Top and bottom windows keep the height they were given
+          (dolist (side '(bottom top))
+            (let* ((claude-code-ide-window-side side)
+                   (window (claude-code-ide--display-buffer-in-side-window buffer))
+                   (height (window-total-height window)))
+              (should (= 8 (window-text-height window)))
+              (should (window--preserve-size window nil))
+              (should-not (window--preserve-size window t))
+              (balance-windows)
+              (should (= height (window-total-height window)))
+              (delete-window window))))
+      (kill-buffer buffer)
+      (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-side-window-drag-and-redisplay ()
+  "Dragging resizes a Claude side window; displaying it again preserves it."
+  (claude-code-ide-tests--clear-processes)
+  (let ((buffer (generate-new-buffer "*claude-preserve-drag*"))
+        (claude-code-ide-use-side-window t)
+        (claude-code-ide-focus-on-open nil)
+        (claude-code-ide-window-side 'right)
+        (claude-code-ide-window-width 30))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let* ((main (selected-window))
+                 (window (claude-code-ide--display-buffer-in-side-window buffer)))
+            ;; Dragging the divider resizes the preserved window
+            (adjust-window-trailing-edge main 5 t)
+            (should (= 25 (window-total-width window)))
+            (should-not (window--preserve-size window t))
+            ;; Displaying the buffer again reuses the window, restores
+            ;; the configured width and preserves it
+            (should (eq window (claude-code-ide--display-buffer-in-side-window buffer)))
+            (should (= 30 (window-total-width window)))
+            (should (window--preserve-size window t))
+            (balance-windows)
+            (should (= 30 (window-total-width window)))))
+      (kill-buffer buffer)
+      (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-regular-window-size-not-preserved ()
+  "Without a side window the Claude window's size is not preserved."
+  (claude-code-ide-tests--clear-processes)
+  (let ((buffer (generate-new-buffer "*claude-no-preserve*"))
+        (claude-code-ide-use-side-window nil)
+        (claude-code-ide-focus-on-open nil))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((window (claude-code-ide--display-buffer-in-side-window buffer)))
+            (should (window-live-p window))
+            (should-not (window-preserved-size window t))
+            (should-not (window-preserved-size window nil))))
+      (kill-buffer buffer)
+      (claude-code-ide-tests--clear-processes))))
+
+;;; Authentication Tests
+
+(defmacro claude-code-ide-tests--with-temp-lockfile-dir (&rest body)
+  "Run BODY with lockfiles written to a fresh temporary directory.
+The directory itself does not exist yet, so BODY also exercises its
+creation."
+  (declare (indent 0))
+  (let ((root (make-symbol "root")))
+    `(let ((,root (file-name-as-directory (make-temp-file "claude-ide-lock" t))))
+       (cl-letf (((symbol-function 'claude-code-ide-mcp--lockfile-directory)
+                  (lambda () (expand-file-name "ide/" ,root))))
+         (unwind-protect
+             (progn ,@body)
+           (delete-directory ,root t))))))
+
+(defvar claude-code-ide-debug-buffer)
+
+(defun claude-code-ide-tests--debug-log-of (function)
+  "Call FUNCTION with debug logging on and return the text it logged.
+Both forms of `claude-code-ide-debug' are captured: the stub function
+defined in this file and the macro compiled into the package's files."
+  (let* ((claude-code-ide-debug t)
+         (claude-code-ide-debug-buffer
+          (generate-new-buffer-name " *claude-debug-test*"))
+         (buffer (get-buffer-create claude-code-ide-debug-buffer)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-debug)
+                   (lambda (format-string &rest args)
+                     (with-current-buffer buffer
+                       (goto-char (point-max))
+                       (insert (apply #'format format-string args) "\n")))))
+          (funcall function)
+          (with-current-buffer buffer
+            (buffer-string)))
+      (kill-buffer buffer))))
+
+(defconst claude-code-ide-tests--handshake
+  (concat "GET / HTTP/1.1\r\n"
+          "Host: 127.0.0.1\r\n"
+          "Upgrade: websocket\r\n"
+          "Connection: Upgrade\r\n"
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+          "Sec-WebSocket-Version: 13\r\n"
+          "Sec-WebSocket-Protocol: mcp\r\n")
+  "Opening handshake of a WebSocket client, without the final blank line.")
+
+(ert-deftest claude-code-ide-test-auth-token-generation ()
+  "Tokens are 128-bit hex strings and never repeat."
+  (let ((tokens (make-hash-table :test 'equal)))
+    (dotimes (_ 200)
+      (let ((token (claude-code-ide-mcp--generate-auth-token)))
+        (should (string-match-p "\\`[0-9a-f]\\{32\\}\\'" token))
+        (puthash token t tokens)))
+    (should (= 200 (hash-table-count tokens)))))
+
+(ert-deftest claude-code-ide-test-auth-token-generation-failure ()
+  "A failing system random source is an error, never a weaker token."
+  (cl-letf (((symbol-function 'secure-hash)
+             (lambda (&rest _)
+               (signal 'file-error '("Getting random data")))))
+    (should-error (claude-code-ide-mcp--generate-auth-token)
+                  :type 'file-error)))
+
+(ert-deftest claude-code-ide-test-auth-token-equal ()
+  "Token comparison matches only identical strings."
+  (should (claude-code-ide-mcp--token-equal-p "abc123" "abc123"))
+  (should-not (claude-code-ide-mcp--token-equal-p "abc123" "abc124"))
+  (should-not (claude-code-ide-mcp--token-equal-p "abc123" "abc12"))
+  (should-not (claude-code-ide-mcp--token-equal-p "abc123" ""))
+  (should-not (claude-code-ide-mcp--token-equal-p "abc123" nil))
+  (should-not (claude-code-ide-mcp--token-equal-p nil nil)))
+
+(ert-deftest claude-code-ide-test-handshake-header ()
+  "Header lookup is case-insensitive and trims the value."
+  (let ((headers (concat claude-code-ide-tests--handshake
+                         "X-Claude-Code-IDE-Authorization:   secret  ")))
+    (should (equal (claude-code-ide-mcp--handshake-header
+                    headers "x-claude-code-ide-authorization")
+                   "secret"))
+    (should (equal (claude-code-ide-mcp--handshake-header headers "upgrade")
+                   "websocket"))
+    (should-not (claude-code-ide-mcp--handshake-header headers "Origin"))))
+
+(ert-deftest claude-code-ide-test-handshake-redaction ()
+  "Redaction masks the token and leaves the other headers readable."
+  (let ((redacted (claude-code-ide-mcp--redact-handshake
+                   (concat claude-code-ide-tests--handshake
+                           "X-Claude-Code-Ide-Authorization: secret\r\n"
+                           "Origin: https://example.com"))))
+    (should-not (string-match-p "secret" redacted))
+    (should (string-match-p "^X-Claude-Code-Ide-Authorization: <redacted>\r$"
+                            redacted))
+    (should (string-match-p "^Upgrade: websocket\r$" redacted))
+    (should (string-match-p "^Origin: https://example.com\\'" redacted))))
+
+(ert-deftest claude-code-ide-test-handshake-rejection ()
+  "Only a handshake with the session token and no Origin is accepted."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (let ((session (claude-code-ide-tests--make-session
+                      "/tmp/claude-auth/" :auth-token "secret"))
+            (base claude-code-ide-tests--handshake))
+        (should-not (claude-code-ide-mcp--handshake-rejection
+                     session (concat base "x-claude-code-ide-authorization: secret")))
+        (should-not (claude-code-ide-mcp--handshake-rejection
+                     session (concat base "X-Claude-Code-Ide-Authorization: secret")))
+        (should (equal (claude-code-ide-mcp--handshake-rejection session base)
+                       "401 Unauthorized"))
+        (should (equal (claude-code-ide-mcp--handshake-rejection
+                        session (concat base "x-claude-code-ide-authorization: wrong"))
+                       "401 Unauthorized"))
+        (should (equal (claude-code-ide-mcp--handshake-rejection
+                        session (concat base "x-claude-code-ide-authorization: "))
+                       "401 Unauthorized"))
+        ;; A browser page never passes, even with the right token
+        (should (equal (claude-code-ide-mcp--handshake-rejection
+                        session (concat base "x-claude-code-ide-authorization: secret\r\n"
+                                        "Origin: https://example.com"))
+                       "403 Forbidden")))
+    (claude-code-ide-tests--clear-processes)))
+
+(ert-deftest claude-code-ide-test-lockfile-auth-token ()
+  "The lockfile carries the token in a fresh file private to its owner."
+  (claude-code-ide-tests--with-temp-lockfile-dir
+   (let ((posix (not (eq system-type 'windows-nt)))
+         (dir (claude-code-ide-mcp--lockfile-directory))
+         (path (claude-code-ide-mcp--lockfile-path 12345)))
+     (claude-code-ide-mcp--create-lockfile 12345 "/tmp/claude-auth/" "secret")
+     (should (equal (alist-get 'authToken (json-read-file path)) "secret"))
+     (should (equal (alist-get 'ideName (json-read-file path)) "Emacs"))
+     (when posix
+       (should (= (file-modes path) #o600))
+       (should (= (file-modes dir) #o700)))
+     ;; Creating it again replaces the file
+     (claude-code-ide-mcp--create-lockfile 12345 "/tmp/claude-auth/" "other")
+     (should (equal (alist-get 'authToken (json-read-file path)) "other"))
+     ;; A leftover lockfile is replaced, not written through: one with
+     ;; looser modes ends up private, and the target of a leftover
+     ;; symbolic link is left alone
+     (let ((loose (claude-code-ide-mcp--lockfile-path 12346)))
+       (with-temp-file loose (insert "{}"))
+       (set-file-modes loose #o644)
+       (claude-code-ide-mcp--create-lockfile 12346 "/tmp/claude-auth/" "secret")
+       (should (equal (alist-get 'authToken (json-read-file loose)) "secret"))
+       (when posix
+         (should (= (file-modes loose) #o600))))
+     (when posix
+       (let ((link (claude-code-ide-mcp--lockfile-path 12347))
+             (target (expand-file-name "elsewhere" dir)))
+         (with-temp-file target (insert "untouched"))
+         (make-symbolic-link target link)
+         (claude-code-ide-mcp--create-lockfile 12347 "/tmp/claude-auth/" "secret")
+         (should-not (file-symlink-p link))
+         (should (equal (alist-get 'authToken (json-read-file link)) "secret"))
+         (should (equal (with-temp-buffer
+                          (insert-file-contents target)
+                          (buffer-string))
+                        "untouched"))))
+     ;; Without a token the field is left out
+     (let ((plain (claude-code-ide-mcp--lockfile-path 12348)))
+       (claude-code-ide-mcp--create-lockfile 12348 "/tmp/claude-auth/")
+       (should-not (assq 'authToken (json-read-file plain)))))))
+
+(ert-deftest claude-code-ide-test-lockfile-non-ascii-project ()
+  "The lockfile is UTF-8 whatever the default coding system is."
+  (claude-code-ide-tests--with-temp-lockfile-dir
+   (let ((coding-system-for-write nil)
+         (project-dir "/tmp/claude-äuth-é/"))
+     ;; A buffer whose own coding system would encode the name differently
+     (with-temp-buffer
+       (setq buffer-file-coding-system 'latin-1)
+       (claude-code-ide-mcp--create-lockfile 12345 project-dir "secret"))
+     (let* ((coding-system-for-read 'utf-8)
+            (content (json-read-file (claude-code-ide-mcp--lockfile-path 12345))))
+       (should (equal (aref (alist-get 'workspaceFolders content) 0)
+                      project-dir))))))
+
+(ert-deftest claude-code-ide-test-session-auth-token ()
+  "A session gets a token, shared with its lockfile, only when required."
+  (claude-code-ide-tests--clear-processes)
+  (claude-code-ide-tests--with-temp-lockfile-dir
+   (unwind-protect
+       (let* ((with-token (let ((claude-code-ide-mcp-require-auth-token t))
+                            (claude-code-ide-mcp-create-session
+                             "/tmp/claude-auth/" "auth-with")))
+              (without-token (let ((claude-code-ide-mcp-require-auth-token nil))
+                               (claude-code-ide-mcp-create-session
+                                "/tmp/claude-auth/" "auth-without")))
+              (lockfile (lambda (session)
+                          (json-read-file
+                           (claude-code-ide-mcp--lockfile-path
+                            (claude-code-ide-mcp-session-port session))))))
+         (should (string-match-p "\\`[0-9a-f]\\{32\\}\\'"
+                                 (claude-code-ide-mcp-session-auth-token with-token)))
+         (should (equal (alist-get 'authToken (funcall lockfile with-token))
+                        (claude-code-ide-mcp-session-auth-token with-token)))
+         (should-not (claude-code-ide-mcp-session-auth-token without-token))
+         (should-not (assq 'authToken (funcall lockfile without-token))))
+     (claude-code-ide-tests--stop-all-sessions)
+     (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-session-auth-token-failure ()
+  "A session whose token cannot be generated starts no server at all."
+  (claude-code-ide-tests--clear-processes)
+  (claude-code-ide-tests--with-temp-lockfile-dir
+   (let ((claude-code-ide-mcp-require-auth-token t)
+         (servers 0))
+     (unwind-protect
+         (cl-letf (((symbol-function 'claude-code-ide-mcp--generate-auth-token)
+                    (lambda () (error "No random data")))
+                   ((symbol-function 'websocket-server)
+                    (lambda (&rest _) (cl-incf servers) (list :mock-server t))))
+           (should-error (claude-code-ide-mcp-create-session
+                          "/tmp/claude-auth/" "auth-fail"))
+           (should (= 0 servers))
+           (should (= 0 (hash-table-count claude-code-ide-mcp--sessions)))
+           (should-not (file-exists-p (claude-code-ide-mcp--lockfile-directory))))
+       (claude-code-ide-tests--stop-all-sessions)
+       (claude-code-ide-tests--clear-processes)))))
+
+(ert-deftest claude-code-ide-test-server-filter-authentication ()
+  "The server filter passes on only authenticated handshakes."
+  (claude-code-ide-tests--clear-processes)
+  (let* ((session (claude-code-ide-tests--make-session
+                   "/tmp/claude-auth/" :auth-token "s3cr3t-t0k3n"))
+         (open-session (claude-code-ide-tests--make-session "/tmp/claude-open/"))
+         (auth "x-claude-code-ide-authorization: s3cr3t-t0k3n\r\n")
+         (passed nil)
+         (make-client (lambda ()
+                        (make-pipe-process :name "claude-auth-test" :noquery t))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'websocket-server-filter)
+                   (lambda (_proc string) (push string passed)))
+                  ((symbol-function 'message) #'ignore))
+          ;; Authorized, with the handshake split inside the token
+          (let* ((proc (funcall make-client))
+                 (handshake (concat claude-code-ide-tests--handshake auth "\r\n"))
+                 (split (- (length handshake) (length "t0k3n\r\n\r\n")))
+                 (log (claude-code-ide-tests--debug-log-of
+                       (lambda ()
+                         (claude-code-ide-mcp--server-filter
+                          session proc (substring handshake 0 split))
+                         (should-not passed)
+                         (claude-code-ide-mcp--server-filter
+                          session proc (substring handshake split))
+                         (should (equal passed (list handshake)))
+                         ;; Frames after the handshake go straight through
+                         (claude-code-ide-mcp--server-filter session proc "frame")
+                         (should (equal passed (list "frame" handshake)))))))
+            (should (process-live-p proc))
+            (delete-process proc)
+            ;; The debug log shows the handshake, but no part of the token
+            (should (string-match-p "Sec-WebSocket-Key" log))
+            (should (string-match-p "<redacted>" log))
+            (should-not (string-match-p "s3cr3t\\|t0k3n" log)))
+          ;; Wrong token, browser origin, oversized handshake: closed unseen
+          (dolist (data (list (concat claude-code-ide-tests--handshake
+                                      "x-claude-code-ide-authorization: wrong\r\n\r\n")
+                              (concat claude-code-ide-tests--handshake auth
+                                      "Origin: https://example.com\r\n\r\n")
+                              (make-string (1+ claude-code-ide-mcp--max-handshake-size) ?a)
+                              (concat (make-string (1+ claude-code-ide-mcp--max-handshake-size) ?a)
+                                      "\r\n" auth "\r\n")))
+            (setq passed nil)
+            (let ((proc (funcall make-client)))
+              (claude-code-ide-mcp--server-filter session proc data)
+              (should-not passed)
+              (should-not (process-live-p proc))))
+          ;; The check follows the session, not the option's current value:
+          ;; a session with a token keeps checking after the option is
+          ;; turned off, and one without a token lets everything through
+          (let ((claude-code-ide-mcp-require-auth-token nil)
+                (proc (funcall make-client)))
+            (setq passed nil)
+            (claude-code-ide-mcp--server-filter session proc
+                                                (concat claude-code-ide-tests--handshake "\r\n"))
+            (should-not passed)
+            (should-not (process-live-p proc)))
+          (let ((claude-code-ide-mcp-require-auth-token t)
+                (proc (funcall make-client)))
+            (setq passed nil)
+            (claude-code-ide-mcp--server-filter open-session proc
+                                                claude-code-ide-tests--handshake)
+            (should (equal passed (list claude-code-ide-tests--handshake)))
+            (should (process-live-p proc))
+            (delete-process proc)))
+      (claude-code-ide-tests--clear-processes))))
+
+(defun claude-code-ide-tests--raw-handshake (port extra-headers &optional keep)
+  "Send a WebSocket handshake with EXTRA-HEADERS to 127.0.0.1:PORT.
+Return the status line of the server's answer, or nil if none came.
+With KEEP, leave the connection open and return (STATUS . PROCESS)."
+  (let* ((reply "")
+         (proc (make-network-process
+                :name "claude-auth-client" :host "127.0.0.1" :service port
+                :coding 'binary :noquery t
+                :filter (lambda (_proc string) (setq reply (concat reply string)))))
+         (status nil))
+    (unwind-protect
+        (progn
+          (process-send-string proc (concat claude-code-ide-tests--handshake
+                                            extra-headers "\r\n"))
+          (with-timeout (5 nil)
+            (while (not (string-search "\r\n" reply))
+              (accept-process-output nil 0.05)))
+          ;; Let the server finish handling the connection
+          (accept-process-output nil 0.1)
+          (setq status (car (split-string reply "\r\n" t))))
+      (unless keep
+        (delete-process proc)))
+    (if keep (cons status proc) status)))
+
+(ert-deftest claude-code-ide-test-server-rejects-unauthenticated-clients ()
+  "Over a real socket only a client with the lockfile token connects."
+  (skip-unless (fboundp 'websocket-server-accept)) ; needs the real websocket.el
+  (claude-code-ide-tests--clear-processes)
+  (let ((claude-code-ide-mcp-require-auth-token t)
+        (websocket-server-websockets nil)
+        (session nil)
+        (token nil)
+        (log nil))
+    (claude-code-ide-tests--with-temp-lockfile-dir
+     (unwind-protect
+         (cl-letf (((symbol-function 'message) #'ignore))
+           (setq log
+                 (claude-code-ide-tests--debug-log-of
+                  (lambda ()
+                    (setq session (claude-code-ide-mcp-create-session
+                                   "/tmp/claude-auth/" "auth-1"))
+                    (let* ((port (claude-code-ide-mcp-session-port session))
+                           (auth nil)
+                           (good nil))
+                      (setq token (alist-get 'authToken
+                                             (json-read-file
+                                              (claude-code-ide-mcp--lockfile-path port)))
+                            auth (format "x-claude-code-ide-authorization: %s\r\n" token))
+                      (should (equal token (claude-code-ide-mcp-session-auth-token session)))
+                      (should (string-prefix-p "HTTP/1.1 401"
+                                               (claude-code-ide-tests--raw-handshake port "")))
+                      (should (string-prefix-p "HTTP/1.1 401"
+                                               (claude-code-ide-tests--raw-handshake
+                                                port "x-claude-code-ide-authorization: wrong\r\n")))
+                      (should (string-prefix-p "HTTP/1.1 403"
+                                               (claude-code-ide-tests--raw-handshake
+                                                port (concat auth "Origin: https://example.com\r\n"))))
+                      ;; None of them became the session's client, and
+                      ;; websocket.el keeps no record of them
+                      (should-not (claude-code-ide-mcp-session-client session))
+                      (should-not websocket-server-websockets)
+                      (unwind-protect
+                          (let ((client nil))
+                            (setq good (claude-code-ide-tests--raw-handshake port auth t))
+                            (should (string-prefix-p "HTTP/1.1 101" (car good)))
+                            (setq client (claude-code-ide-mcp-session-client session))
+                            (should client)
+                            (should (equal websocket-server-websockets (list client)))
+                            ;; A refused connection leaves the connected client alone
+                            (should (string-prefix-p "HTTP/1.1 401"
+                                                     (claude-code-ide-tests--raw-handshake port "")))
+                            (should (eq (claude-code-ide-mcp-session-client session) client))
+                            (should (equal websocket-server-websockets (list client))))
+                        (when good
+                          (delete-process (cdr good))))))))
+           ;; The debug log recorded the handshakes without the token
+           (should (string-match-p "Sec-WebSocket-Key" log))
+           (should (string-match-p "<redacted>" log))
+           (should-not (string-match-p (regexp-quote token) log)))
+       (when session
+         (claude-code-ide-mcp--stop-session session))
+       (claude-code-ide-tests--stop-all-sessions)
+       (claude-code-ide-tests--clear-processes)))))
 
 (provide 'claude-code-ide-tests)
 

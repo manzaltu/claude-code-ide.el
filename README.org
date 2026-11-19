@@ -143,6 +143,7 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-list-sessions=       | List all active Claude Code instances and switch  |
 | =M-x claude-code-ide-check-status=        | Check if Claude Code CLI is installed and working |
 | =M-x claude-code-ide-insert-at-mentioned= | Send selected text to Claude prompt               |
+| =M-x claude-code-ide-clear-selection=     | Drop the file/selection shown in Claude's prompt  |
 | =M-x claude-code-ide-send-escape=         | Send escape key to Claude terminal                |
 | =M-x claude-code-ide-insert-newline=      | Insert newline in Claude prompt (sends \ + Enter) |
 | =M-x claude-code-ide-toggle=              | Show/hide the project's Claude windows            |
@@ -151,7 +152,7 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-show-debug=          | Show the debug buffer with WebSocket messages     |
 | =M-x claude-code-ide-clear-debug=         | Clear the debug buffer                            |
 
-Commands that target one instance (stop, switch, send-prompt, insert-at-mentioned, escape, newline) resolve their target automatically: the Claude terminal you are in, the project's only instance, or its only visible one; beyond that, send-type commands use the most recently used instance (echoing the choice) while =claude-code-ide-stop= asks. A prefix argument (=C-u=) always lets you pick the instance explicitly.
+Commands that target one instance (stop, switch, send-prompt, insert-at-mentioned, clear-selection, escape, newline) resolve their target automatically: the Claude terminal you are in, the project's only instance, or its only visible one; beyond that, send-type commands use the most recently used instance (echoing the choice) while =claude-code-ide-stop= asks. A prefix argument (=C-u=) always lets you pick the instance explicitly.
 
 ** Multiple Projects and Instances
 
@@ -164,6 +165,13 @@ Claude Code IDE automatically detects your project using Emacs' built-in =projec
 - Use =claude-code-ide-list-sessions= to see all instances across all projects and switch between them.
 
 Note for =claude-code-ide-continue=: starting a second continued instance in the same directory forks the same "most recent" conversation — that is CLI behavior.
+
+** Editor Context
+
+Every instance of a project is told which file you are looking at and which text you have selected. The Claude prompt shows this as an =⧉ In file.el= or =⧉ 3 lines selected= label, and the prompt you submit next carries a short reminder ("The user opened the file … in the IDE" or the selected lines). The file's content itself is not sent.
+
+- =M-x claude-code-ide-clear-selection= (=x= in the menu, =C-c C-x= in the Claude terminal) drops that context from one instance, like the =x= next to the file name in the VS Code extension. The dismissed file stays out of the prompt while you move around in it; selecting a region or visiting another file shares context again.
+- Set ~claude-code-ide-share-opened-file~ to =nil= (or toggle it under =o= in the configuration menu) to report only selected regions. The file you are in is then never mentioned; a region is shared while it is active and dropped when it is deactivated.
 
 ** Window Management
 
@@ -225,8 +233,10 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-mcp-server-tools~              | Alist of exposed Emacs functions            | ~nil~                                  |
 | ~claude-code-ide-diagnostics-backend~           | Diagnostics backend (auto/flycheck/flymake) | ~'auto~                                |
 | ~claude-code-ide-no-flicker~                    | Enable flicker-free terminal renderer       | ~nil~                                  |
-| ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
+| ~claude-code-ide-prevent-reflow-glitch~         | Skip height-only terminal resizes (#1422)   | ~t~                                    |
 | ~claude-code-ide-enable-execute-code~           | Allow model to evaluate Elisp in Emacs      | ~t~                                    |
+| ~claude-code-ide-share-opened-file~             | Report the open file even without a region  | ~t~                                    |
+| ~claude-code-ide-mcp-require-auth-token~        | Accept only clients with the lockfile token | ~t~                                    |
 
 *** Side Window Configuration
 
@@ -256,6 +266,8 @@ Claude Code buffers open in a side window by default. You can customize the plac
 ;; Disable IDE diff viewer to show diffs in terminal instead
 (setq claude-code-ide-use-ide-diff nil)
 #+end_src
+
+The side window keeps its width (left/right) or height (top/bottom) when the frame is resized or windows are balanced, so the terminal does not reflow its output. Dragging the window's divider still resizes it; displaying the buffer again restores the configured size.
 
 Or, if you'd prefer to use a regular window:
 
@@ -333,10 +345,11 @@ This delay prevents display artifacts such as misaligned prompts and incorrect c
 
 Claude Code IDE adds custom keybindings to the terminal for easier interaction:
 
-| Keybinding | Command                        | Description                          |
-|------------+--------------------------------+--------------------------------------|
-| =M-RET=      | =claude-code-ide-insert-newline= | Insert a newline in the prompt       |
-| =C-<escape>= | =claude-code-ide-send-escape=    | Send escape key to cancel operations |
+| Keybinding   | Command                           | Description                                 |
+|--------------+-----------------------------------+---------------------------------------------|
+| =M-RET=      | =claude-code-ide-insert-newline=  | Insert a newline in the prompt              |
+| =C-<escape>= | =claude-code-ide-send-escape=     | Send escape key to cancel operations        |
+| =C-c C-x=    | =claude-code-ide-clear-selection= | Drop the file/selection shown in the prompt |
 
 These keybindings are automatically set up for =vterm=, =eat=, and =ghostel= backends and only apply within Claude Code terminal buffers.
 
@@ -361,16 +374,13 @@ The =ghostel= backend forwards =C-g= to the terminal, where Claude Code binds =C
 
 =alt+e= is a good replacement because ghostel forwards it to the terminal, unlike the action's other default binding =Ctrl+X Ctrl+E= (=C-x= is kept by Emacs).
 
-**** Terminal Reflow Glitch Prevention (Temporary)
+**** Terminal Reflow Glitch Prevention
 
-Claude Code IDE includes a temporary workaround for a known Claude Code bug ([[https://github.com/anthropics/claude-code/issues/1422][#1422]]) where terminal reflows during window resizes can cause uncontrollable scrolling. This workaround is enabled by default but can be disabled if needed:
+Claude Code repaints its screen whenever the terminal is resized ([[https://github.com/anthropics/claude-code/issues/1422][#1422]]). After the terminal reflows, that repaint makes =vterm= and =eat= scroll uncontrollably and writes earlier output into the =ghostel= scrollback a second time. To avoid the most frequent trigger, Claude Code IDE resizes a Claude Code terminal only when its window's width changes. A height-only change — showing or hiding another instance on the same side, a change of the frame height, a multi-line echo area message — keeps the terminal's row count, so the terminal can be taller or shorter than its window until the next width change. This applies to all three backends, is enabled by default and takes effect when the first Claude Code instance starts. To disable it:
 
 #+begin_src emacs-lisp
-;; Disable the terminal reflow glitch prevention (not recommended until bug is fixed)
 (setq claude-code-ide-prevent-reflow-glitch nil)
 #+end_src
-
-The workaround will be removed once the upstream bug is fixed.
 
 *** Diagnostics Configuration
 
@@ -393,6 +403,18 @@ To disable it:
 
 #+begin_src emacs-lisp
 (setq claude-code-ide-enable-execute-code nil)
+#+end_src
+
+*** Connection Security
+
+Each instance's WebSocket server listens on =127.0.0.1= only, but that address is reachable by every program on the machine, including web pages open in a browser. Each instance therefore writes a random token to its lockfile in =~/.claude/ide/= and accepts a connection only if it presents that token, as the Claude Code CLI does. Connections from web browsers, recognized by their =Origin= header, are always refused.
+
+On Linux, macOS and other POSIX systems the lockfile is readable only by you. On Windows its access follows the permissions of the directory it is in.
+
+If you use a Claude Code CLI version that does not send the token, you can turn the check off for instances started afterwards:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-mcp-require-auth-token nil)
 #+end_src
 
 *** Custom Buffer Naming

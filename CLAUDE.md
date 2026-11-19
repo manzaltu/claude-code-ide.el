@@ -76,5 +76,7 @@ Tests use mocks for external dependencies (vterm, websocket) to run in batch mod
 - MCP handlers (file operations, diagnostics)
 - Edge cases (side windows, multiple sessions)
 
+Tests must pass both from source and byte-compiled: `scripts/compile-and-test.sh` (the Stop hook) compiles every file before running them. Compiled package code inlines the real `claude-code-ide-debug` macro, so the stub function in the test file is not called there; tests that inspect debug output use `claude-code-ide-tests--debug-log-of`, which captures both forms.
+
 ## Committing code
 Never commit changes unless the user explicitly asks you to.

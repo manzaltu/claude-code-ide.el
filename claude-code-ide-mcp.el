@@ -49,6 +49,7 @@
      (claude-code-ide-debug "Failed to load websocket package: %s" (error-message-string err)))))
 (require 'json)
 (require 'cl-lib)
+(require 'subr-x)
 (require 'project)
 (require 'url-parse)
 (require 'claude-code-ide-debug)
@@ -77,8 +78,45 @@
 (defconst claude-code-ide-mcp-selection-delay 0.05
   "Delay in seconds before sending selection changes to avoid flooding.")
 
+(defconst claude-code-ide-mcp--empty-selection
+  '((selection . ((start . ((line . 0) (character . 0)))
+                  (end . ((line . 0) (character . 0))))))
+  "`selection_changed' payload that clears the editor context of a CLI.
+The CLI applies a notification only when `selection' has both ends, and
+one without `filePath' or `text' makes it forget the current file: the
+prompt loses its \"In <file>\" label and the next prompt carries no
+opened-file or selection reminder.")
+
 (defconst claude-code-ide-mcp-initial-notification-delay 0.1
   "Delay in seconds before sending initial notifications after connection.")
+
+;;; Customization
+
+(defcustom claude-code-ide-share-opened-file t
+  "Non-nil reports the file you are in to Claude even without a region.
+The CLI then shows an \"In <file>\" label in its prompt and attaches an
+opened-file reminder to the next prompt.  When nil, only active regions
+are reported: a region is shared while it is active and dropped when it
+is deactivated, and the file itself is never mentioned."
+  :type 'boolean
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-mcp-require-auth-token t
+  "Non-nil means the WebSocket server accepts only authenticated clients.
+A session started while this is non-nil writes a random token to its
+lockfile and accepts a connection only if the opening handshake carries
+that token in the `x-claude-code-ide-authorization' header, as the
+Claude Code CLI does.  A handshake with an `Origin' header, which web
+browsers always send, is refused as well.
+
+The server listens on 127.0.0.1, an address every local program and
+every web page open in a browser can reach; with this set to nil any of
+them can connect and call the IDE tools.  Set it to nil only for a
+Claude Code CLI that does not send the token.
+
+The value is read when a session starts and holds for that session."
+  :type 'boolean
+  :group 'claude-code-ide)
 
 ;;; Variables
 
@@ -130,10 +168,12 @@ Set to nil when cache needs to be invalidated.")
   deferred         ; Hash table of deferred responses
   ping-timer       ; Ping timer
   last-selection   ; Last selection state
+  dismissed-file   ; File dismissed with `claude-code-ide-mcp-clear-selection'
   last-buffer      ; Last active buffer
   active-diffs     ; Hash table of active diffs
   original-tab     ; Original tab-bar tab where Claude was opened
-  cli-pid)         ; PID of the connected CLI process
+  cli-pid          ; PID of the connected CLI process
+  auth-token)      ; Token a client must present to connect, or nil
 
 (defun claude-code-ide-mcp--get-buffer-project ()
   "Get the project directory for the current buffer.
@@ -213,21 +253,32 @@ used session."
   "Return the lockfile path for PORT."
   (format "%s%d.lock" (claude-code-ide-mcp--lockfile-directory) port))
 
-(defun claude-code-ide-mcp--create-lockfile (port project-dir)
-  "Create a lockfile for PORT with server information for PROJECT-DIR."
+(defun claude-code-ide-mcp--create-lockfile (port project-dir &optional auth-token)
+  "Create a lockfile for PORT with server information for PROJECT-DIR.
+AUTH-TOKEN, when non-nil, is recorded as the token clients must present.
+The lockfile is always a newly created file, replacing any leftover one
+for PORT.  On POSIX systems only the current user can read it; elsewhere
+its access follows the permissions of the directory it is in."
   (let* ((lockfile-dir (claude-code-ide-mcp--lockfile-directory))
          (lockfile-path (claude-code-ide-mcp--lockfile-path port))
          (workspace-folders (vector project-dir))
          (lockfile-content `((pid . ,(emacs-pid))
                              (workspaceFolders . ,workspace-folders)
                              (ideName . "Emacs")
-                             (transport . "ws"))))
-    ;; Ensure directory exists
-    (make-directory lockfile-dir t)
-    ;; Write lockfile directly without temp file
+                             (transport . "ws")
+                             ,@(when auth-token
+                                 `((authToken . ,auth-token))))))
+    ;; Ensure directory exists; a directory created here is private
+    (with-file-modes #o700
+      (make-directory lockfile-dir t))
+    ;; Write lockfile directly without temp file.  The CLI reads it as
+    ;; UTF-8 whatever the default coding system of this Emacs is.
     (condition-case err
-        (with-temp-file lockfile-path
-          (insert (json-encode lockfile-content)))
+        (let ((coding-system-for-write 'utf-8-unix))
+          (delete-file lockfile-path)
+          (with-file-modes #o600
+            (write-region (json-encode lockfile-content) nil lockfile-path
+                          nil 'silent nil 'excl)))
       (error
        (claude-code-ide-debug "Failed to create lockfile: %s" err)
        (signal 'mcp-error (list (format "Failed to create lockfile: %s" (error-message-string err))))))))
@@ -507,6 +558,116 @@ socket that sent the request — or be dropped, never to its successor."
        (t
         (claude-code-ide-debug "No response needed for notification: %s" method))))))
 
+;;; Authentication
+
+(defconst claude-code-ide-mcp--auth-header "x-claude-code-ide-authorization"
+  "Handshake header in which a client presents the lockfile token.")
+
+(defconst claude-code-ide-mcp--max-handshake-size 16384
+  "Largest opening handshake accepted from a WebSocket client, in bytes.")
+
+(defun claude-code-ide-mcp--generate-auth-token ()
+  "Return a new random authentication token: 128 bits, hex encoded.
+The bits come from the operating system's random number generator on
+every platform.  Signal an error when it cannot supply them."
+  ;; `iv-auto' makes Emacs draw the hash input from the system generator
+  (substring (secure-hash 'sha256 'iv-auto 32) 0 32))
+
+(defun claude-code-ide-mcp--token-equal-p (a b)
+  "Return non-nil if the strings A and B are equal.
+The comparison takes the same time wherever the strings differ, so its
+duration tells a client nothing about the token."
+  (and (stringp a) (stringp b)
+       (= (length a) (length b))
+       (let ((diff 0))
+         (dotimes (i (length a))
+           (setq diff (logior diff (logxor (aref a i) (aref b i)))))
+         (zerop diff))))
+
+(defun claude-code-ide-mcp--handshake-header (headers name)
+  "Return the value of header NAME in the HTTP HEADERS string, or nil.
+Header names are matched case-insensitively."
+  (let ((case-fold-search t))
+    (when (string-match (concat "^" (regexp-quote name) ":[ \t]*\\([^\r\n]*\\)")
+                        headers)
+      (string-trim (match-string 1 headers)))))
+
+(defun claude-code-ide-mcp--redact-handshake (headers)
+  "Return the HTTP HEADERS string with the authentication token masked."
+  (let ((case-fold-search t))
+    (replace-regexp-in-string
+     (concat "^\\(" (regexp-quote claude-code-ide-mcp--auth-header) ":\\)[^\r\n]*")
+     "\\1 <redacted>" headers)))
+
+(defun claude-code-ide-mcp--handshake-rejection (session headers)
+  "Return why the opening handshake HEADERS must be refused for SESSION.
+The value is an HTTP status line, or nil if the client may connect."
+  (cond
+   ;; Web browsers send an Origin with every handshake; the CLI sends none
+   ((claude-code-ide-mcp--handshake-header headers "Origin")
+    "403 Forbidden")
+   ((not (claude-code-ide-mcp--token-equal-p
+          (claude-code-ide-mcp-session-auth-token session)
+          (claude-code-ide-mcp--handshake-header
+           headers claude-code-ide-mcp--auth-header)))
+    "401 Unauthorized")))
+
+(defun claude-code-ide-mcp--reject-connection (proc status)
+  "Answer the client connection PROC with the HTTP STATUS line and close it.
+The connection never becomes a session's client, so a connected CLI
+keeps its session."
+  (claude-code-ide-log
+   "Refused a WebSocket connection (%s); see `claude-code-ide-mcp-require-auth-token'"
+   status)
+  (ignore-errors
+    (process-send-string
+     proc (format "HTTP/1.1 %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                  status)))
+  ;; Closing through websocket.el also drops its record of the connection
+  (when-let* ((ws (process-get proc :websocket)))
+    (ignore-errors (websocket-close ws)))
+  (when (process-live-p proc)
+    (delete-process proc)))
+
+(defun claude-code-ide-mcp--server-filter (session proc string)
+  "Process filter for client connection PROC of SESSION's server.
+STRING is the data received.  When SESSION has an auth token, the
+opening handshake of a connection is held back until it is complete and
+reaches `websocket-server-filter' only if
+`claude-code-ide-mcp--handshake-rejection' accepts it; a refused or
+oversized handshake closes the connection.  Everything else goes
+straight through."
+  (if (or (not (claude-code-ide-mcp-session-auth-token session))
+          (process-get proc 'claude-code-ide-authorized))
+      (progn
+        (when claude-code-ide-debug
+          ;; Only log if it looks like text (not binary WebSocket frames)
+          (if (string-match-p "^[[:print:][:space:]]+$" string)
+              (claude-code-ide-debug "Server received text data: %S" string)
+            (claude-code-ide-debug "Server received binary frame (%d bytes)"
+                                   (length string))))
+        (websocket-server-filter proc string))
+    (let* ((pending (concat (process-get proc 'claude-code-ide-handshake) string))
+           (end (string-search "\r\n\r\n" pending)))
+      (cond
+       ((and end (<= end claude-code-ide-mcp--max-handshake-size))
+        (process-put proc 'claude-code-ide-handshake nil)
+        (let* ((headers (substring pending 0 end))
+               (status (claude-code-ide-mcp--handshake-rejection session headers)))
+          ;; The handshake is logged once, whole, with the token masked
+          (claude-code-ide-debug "Server received handshake: %S"
+                                 (claude-code-ide-mcp--redact-handshake headers))
+          (if status
+              (claude-code-ide-mcp--reject-connection proc status)
+            (process-put proc 'claude-code-ide-authorized t)
+            (websocket-server-filter proc pending))))
+       ((> (length pending) claude-code-ide-mcp--max-handshake-size)
+        (process-put proc 'claude-code-ide-handshake nil)
+        (claude-code-ide-mcp--reject-connection
+         proc "431 Request Header Fields Too Large"))
+       (t
+        (process-put proc 'claude-code-ide-handshake pending))))))
+
 ;;; WebSocket Server
 
 
@@ -539,15 +700,14 @@ Returns a cons cell (SERVER . PORT)."
                                                          (claude-code-ide-mcp--on-close session ws))
                                              :on-ping #'claude-code-ide-mcp--on-ping
                                              :protocol '("mcp"))))
-                             ;; Add debug filter to see raw data (only if debugging)
-                             (when (and ws-server claude-code-ide-debug)
+                             ;; Client connections inherit the server's
+                             ;; filter, so each handshake is checked
+                             ;; before websocket.el answers it
+                             (when (processp ws-server)
                                (set-process-filter ws-server
                                                    (lambda (proc string)
-                                                     ;; Only log if it looks like text (not binary WebSocket frames)
-                                                     (if (string-match-p "^[[:print:][:space:]]+$" string)
-                                                         (claude-code-ide-debug "Server received text data: %S" string)
-                                                       (claude-code-ide-debug "Server received binary frame (%d bytes)" (length string)))
-                                                     (websocket-server-filter proc string))))
+                                                     (claude-code-ide-mcp--server-filter
+                                                      session proc string))))
                              ws-server))
                        (error
                         (claude-code-ide-debug "Failed to bind to port %d: %s" port err)
@@ -566,7 +726,6 @@ Returns a cons cell (SERVER . PORT)."
 (defun claude-code-ide-mcp--on-open (session ws)
   "Handle new WebSocket connection WS for SESSION."
   (claude-code-ide-debug "=== WebSocket connection opened ===")
-  (claude-code-ide-debug "WebSocket object: %S" ws)
   (claude-code-ide-debug "WebSocket state: %s" (websocket-ready-state ws))
   (claude-code-ide-debug "WebSocket URL: %s" (websocket-url ws))
 
@@ -779,27 +938,55 @@ deduplicated."
          (file-in-project (and file-path
                                (string-prefix-p (expand-file-name project-dir)
                                                 (expand-file-name file-path))))
+         ;; Without `claude-code-ide-share-opened-file' a bare cursor
+         ;; position is nothing to report
+         (reportable (and file-in-project
+                          (or claude-code-ide-share-opened-file (use-region-p))))
          ;; The file path is part of the dedupe state: switching to another
          ;; file at identical coordinates is still a context change
-         (current-state (when file-in-project
+         (current-state (when reportable
                           (let ((cursor-pos (point)))
                             (if (use-region-p)
                                 (list file-path cursor-pos (region-beginning) (region-end))
                               (list file-path cursor-pos cursor-pos cursor-pos)))))
-         (selection (when file-in-project
+         (selection (when reportable
                       (claude-code-ide-mcp--get-current-selection))))
     (dolist (session sessions)
       (cond
-       ;; File in project - send to each client whose state changed
-       ((and file-in-project
+       ;; Something to report - send to each client whose state changed,
+       ;; except cursor movement inside the file the user dismissed
+       ((and reportable
              (claude-code-ide-mcp-session-client session))
-        (unless (equal current-state
-                       (claude-code-ide-mcp-session-last-selection session))
-          (setf (claude-code-ide-mcp-session-last-selection session) current-state)
-          (claude-code-ide-mcp--send-notification "selection_changed" selection session)))
-       ;; File outside project or non-file buffer - reset selection state
+        (cond
+         ((and (equal file-path (claude-code-ide-mcp-session-dismissed-file session))
+               (not (use-region-p))))
+         ((equal current-state
+                 (claude-code-ide-mcp-session-last-selection session)))
+         (t
+          ;; A region, or another file, ends the dismissal
+          (setf (claude-code-ide-mcp-session-dismissed-file session) nil
+                (claude-code-ide-mcp-session-last-selection session) current-state)
+          (claude-code-ide-mcp--send-notification "selection_changed" selection session))))
+       ;; A bare cursor position under region-only reporting - the
+       ;; instance forgets the region it showed
+       ((and file-in-project (not reportable))
+        (claude-code-ide-mcp--clear-selection session))
+       ;; File outside project or non-file buffer - reset selection state;
+       ;; leaving the dismissed file ends its dismissal as well
        ((not file-in-project)
-        (setf (claude-code-ide-mcp-session-last-selection session) nil))))))
+        (setf (claude-code-ide-mcp-session-last-selection session) nil
+              (claude-code-ide-mcp-session-dismissed-file session) nil))))))
+
+(defun claude-code-ide-mcp--clear-selection (session)
+  "Make SESSION's instance forget the file or region it was last told about.
+A nil `last-selection' already means the instance shows nothing (a fresh
+connection starts empty), so only an instance that was told about a
+file receives `claude-code-ide-mcp--empty-selection'."
+  (when (claude-code-ide-mcp-session-last-selection session)
+    (setf (claude-code-ide-mcp-session-last-selection session) nil)
+    (claude-code-ide-mcp--send-notification "selection_changed"
+                                            claude-code-ide-mcp--empty-selection
+                                            session)))
 
 (defun claude-code-ide-mcp--track-active-buffer ()
   "Track active buffer changes for every instance of the current project."
@@ -838,7 +1025,11 @@ concurrent sessions.  Returns the session object."
                    :deferred (make-hash-table :test 'equal)
                    :active-diffs (make-hash-table :test 'equal)
                    :original-tab (when (fboundp 'tab-bar--current-tab)
-                                   (tab-bar--current-tab))))
+                                   (tab-bar--current-tab))
+                   ;; Generated before the server exists, so a failure
+                   ;; here leaves nothing listening
+                   :auth-token (when claude-code-ide-mcp-require-auth-token
+                                 (claude-code-ide-mcp--generate-auth-token))))
          (server-and-port (claude-code-ide-mcp--find-free-port session))
          (server (car server-and-port))
          (port (cdr server-and-port)))
@@ -853,7 +1044,8 @@ concurrent sessions.  Returns the session object."
     (claude-code-ide-debug "Project directory: %s" project-dir)
     (claude-code-ide-debug "Creating lockfile for port %d" port)
     (condition-case err
-        (claude-code-ide-mcp--create-lockfile port project-dir)
+        (claude-code-ide-mcp--create-lockfile
+         port project-dir (claude-code-ide-mcp-session-auth-token session))
       ((error quit)
        (ignore-errors (websocket-server-close server))
        (signal (car err) (cdr err))))
@@ -937,6 +1129,20 @@ phantom session wedged in the registry with the global hooks alive."
             (dolist (session sessions)
               (claude-code-ide-mcp--stop-session session))
           (claude-code-ide-debug "No MCP servers running"))))))
+
+(defun claude-code-ide-mcp-clear-selection (session)
+  "Drop the file or selection shown by SESSION's Claude instance.
+Sends `claude-code-ide-mcp--empty-selection' whenever a client is
+connected, so a stale label cannot survive a lost notification.  The
+file that was showing becomes SESSION's dismissed file: cursor movement
+inside it is no longer reported until a region is selected or another
+file is visited."
+  (setf (claude-code-ide-mcp-session-dismissed-file session)
+        (car (claude-code-ide-mcp-session-last-selection session))
+        (claude-code-ide-mcp-session-last-selection session) nil)
+  (claude-code-ide-mcp--send-notification "selection_changed"
+                                          claude-code-ide-mcp--empty-selection
+                                          session))
 
 (defun claude-code-ide-mcp-send-at-mentioned (session)
   "Send at-mentioned notification to SESSION.

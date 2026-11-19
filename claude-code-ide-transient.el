@@ -41,6 +41,7 @@
 (declare-function claude-code-ide-list-sessions "claude-code-ide" ())
 (declare-function claude-code-ide-switch-to-buffer "claude-code-ide" ())
 (declare-function claude-code-ide-insert-at-mentioned "claude-code-ide" ())
+(declare-function claude-code-ide-clear-selection "claude-code-ide" ())
 (declare-function claude-code-ide-send-prompt "claude-code-ide" (&optional prompt session))
 (declare-function claude-code-ide-send-escape "claude-code-ide" ())
 (declare-function claude-code-ide-insert-newline "claude-code-ide" ())
@@ -75,6 +76,7 @@
 (defvar claude-code-ide-cli-debug)
 (defvar claude-code-ide-cli-extra-flags)
 (defvar claude-code-ide-system-prompt)
+(defvar claude-code-ide-share-opened-file)
 
 ;;; Helper Functions
 
@@ -291,6 +293,13 @@
   (setq claude-code-ide-switch-tab-on-ediff (not claude-code-ide-switch-tab-on-ediff))
   (claude-code-ide-log "Switch tab on ediff %s" (if claude-code-ide-switch-tab-on-ediff "enabled" "disabled")))
 
+(transient-define-suffix claude-code-ide--toggle-share-opened-file ()
+  "Toggle reporting the open file to Claude without a region."
+  (interactive)
+  (setq claude-code-ide-share-opened-file (not claude-code-ide-share-opened-file))
+  (claude-code-ide-log "Sharing the open file %s"
+                       (if claude-code-ide-share-opened-file "enabled" "disabled")))
+
 (transient-define-suffix claude-code-ide--toggle-cli-debug ()
   "Toggle CLI debug mode."
   (interactive)
@@ -312,6 +321,7 @@
   (customize-save-variable 'claude-code-ide-cli-path claude-code-ide-cli-path)
   (customize-save-variable 'claude-code-ide-cli-extra-flags claude-code-ide-cli-extra-flags)
   (customize-save-variable 'claude-code-ide-system-prompt claude-code-ide-system-prompt)
+  (customize-save-variable 'claude-code-ide-share-opened-file claude-code-ide-share-opened-file)
   (claude-code-ide-log "Configuration saved to custom file"))
 
 ;;; Transient Menus
@@ -336,6 +346,7 @@
     ("a" "Show all instances" claude-code-ide-show-all)]
    ["Interaction"
     ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
+    ("x" "Clear editor context" claude-code-ide-clear-selection)
     ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)
     ("e" "Send escape key" claude-code-ide-send-escape)
     ("n" "Insert newline" claude-code-ide-insert-newline)]
@@ -371,7 +382,11 @@
    ["CLI Settings"
     ("p" "Set CLI path" claude-code-ide--set-cli-path)
     ("x" "Set extra CLI flags" claude-code-ide--set-cli-extra-flags)
-    ("a" "Set system prompt" claude-code-ide--set-system-prompt)]]
+    ("a" "Set system prompt" claude-code-ide--set-system-prompt)]
+   ["Editor Context"
+    ("o" "Toggle sharing the open file" claude-code-ide--toggle-share-opened-file
+     :description (lambda () (format "Share open file without region (%s)"
+                                     (if claude-code-ide-share-opened-file "ON" "OFF"))))]]
   ["Save"
    ("S" "Save configuration" claude-code-ide--save-config)])
 
