@@ -47,6 +47,7 @@
 (declare-function claude-code-ide-insert-newline "claude-code-ide" ())
 (declare-function claude-code-ide-toggle "claude-code-ide" (&optional pick))
 (declare-function claude-code-ide-show-all "claude-code-ide" (&optional all-projects))
+(declare-function claude-code-ide-attach-to-tab "claude-code-ide" ())
 (declare-function claude-code-ide-check-status "claude-code-ide" ())
 (declare-function claude-code-ide--ensure-cli "claude-code-ide" ())
 (declare-function claude-code-ide--session-display-name "claude-code-ide" (session))
@@ -343,7 +344,8 @@
     ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
     ("w" "Toggle project windows" claude-code-ide-toggle)
     ("W" "Toggle all windows" claude-code-ide-toggle-recent)
-    ("a" "Show all instances" claude-code-ide-show-all)]
+    ("a" "Show all instances" claude-code-ide-show-all)
+    ("t" "Attach instance to this tab" claude-code-ide-attach-to-tab)]
    ["Interaction"
     ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
     ("x" "Clear editor context" claude-code-ide-clear-selection)

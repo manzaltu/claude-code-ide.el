@@ -1945,6 +1945,22 @@ ALL-PROJECTS, show the instances of all projects."
                (format "Showing %d Claude Code instance%s"
                        shown (if (> shown 1) "s" ""))))))
 
+;;;###autoload
+(defun claude-code-ide-attach-to-tab ()
+  "Attach the Claude Code instance of the current buffer to the current tab.
+The instance's diffs open in the tab it is attached to (see
+`claude-code-ide-switch-tab-on-ediff').  Without `tab-bar-mode' the
+instance is attached to no tab.  Signals a `user-error' outside a
+Claude Code buffer."
+  (interactive)
+  (let ((session (or (claude-code-ide--buffer-session)
+                     (user-error "Not in a Claude Code buffer"))))
+    (setf (claude-code-ide-mcp-session-original-tab session)
+          (when (fboundp 'tab-bar--current-tab)
+            (tab-bar--current-tab)))
+    (message "Attached %s to the current tab"
+             (claude-code-ide--session-display-name session))))
+
 (define-obsolete-function-alias 'claude-code-ide-toggle-window
   #'claude-code-ide-toggle "0.3.0")
 

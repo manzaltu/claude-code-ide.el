@@ -4056,6 +4056,39 @@ and pruning drops entries whose tab no longer exists."
       (kill-buffer buffer-b)
       (claude-code-ide-tests--clear-processes))))
 
+(ert-deftest claude-code-ide-test-attach-to-tab ()
+  "Attaching sets the instance's tab to the current tab."
+  (claude-code-ide-tests--clear-processes)
+  (let ((buffer (generate-new-buffer "*claude-attach-to-tab*")))
+    (unwind-protect
+        (let ((session (claude-code-ide-tests--make-session
+                        "/tmp/claude-attach/" :buffer buffer
+                        :original-tab '(tab (name . "old")))))
+          (with-current-buffer buffer
+            (setq-local claude-code-ide--session session)
+            (cl-letf (((symbol-function 'tab-bar--current-tab)
+                       (lambda (&rest _) '(current-tab (name . "new")))))
+              (claude-code-ide-attach-to-tab)))
+          (should (equal (alist-get 'name (claude-code-ide-mcp-session-original-tab
+                                           session))
+                         "new")))
+      (kill-buffer buffer)
+      (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-attach-to-tab-outside-claude-buffer ()
+  "Attaching fails outside a Claude Code buffer and changes no instance."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (let ((session (claude-code-ide-tests--make-session
+                      "/tmp/claude-attach/"
+                      :original-tab '(tab (name . "old")))))
+        (with-temp-buffer
+          (should-error (claude-code-ide-attach-to-tab) :type 'user-error))
+        (should (equal (alist-get 'name (claude-code-ide-mcp-session-original-tab
+                                         session))
+                       "old")))
+    (claude-code-ide-tests--clear-processes)))
+
 (ert-deftest claude-code-ide-test-rename-session ()
   "Renaming an instance updates its name and its terminal buffer."
   (claude-code-ide-tests--clear-processes)
