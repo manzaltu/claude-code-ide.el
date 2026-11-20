@@ -149,6 +149,7 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-toggle=              | Show/hide the project's Claude windows            |
 | =M-x claude-code-ide-toggle-recent=       | Show/hide all Claude windows globally             |
 | =M-x claude-code-ide-show-all=            | Show every instance of the project (=C-u=: global)  |
+| =M-x claude-code-ide-attach-to-tab=       | Attach the instance of this buffer to this tab    |
 | =M-x claude-code-ide-show-debug=          | Show the debug buffer with WebSocket messages     |
 | =M-x claude-code-ide-clear-debug=         | Clear the debug buffer                            |
 
@@ -178,6 +179,7 @@ Every instance of a project is told which file you are looking at and which text
 - Each instance owns its own side-window slot, so several instances can be visible side by side along =claude-code-ide-window-side=; instances of the same project are grouped next to each other. Emacs' =window-sides-slots= controls how many side windows fit per side; heavy users can e.g. =(setq window-sides-slots '(nil nil 3 nil))= for three windows on the right side
 - =claude-code-ide-toggle= works as a project panel: it hides all of the project's visible Claude windows (remembering the set) or restores them; with =C-u= it toggles a single chosen instance
 - With =tab-bar-mode=, tabs keep independent window layouts, and the toggles follow that model: hiding and restoring apply to the current tab only, and each tab remembers its own sets. Newly created tabs never inherit Claude windows from the cloned layout — use =claude-code-ide-show-all= or the toggles to summon instances into a fresh tab
+- An instance's diffs open in the tab it is attached to: the tab it was started in, or last shown in with =claude-code-ide-toggle=. =claude-code-ide-attach-to-tab=, run in a Claude buffer, attaches that instance to the current tab
 - The window can be closed with standard Emacs window commands (=C-x 0=) without stopping Claude
 - Use =claude-code-ide-toggle-recent= to hide/show all Claude windows from anywhere, regardless of your current project context. This is useful when you're outside a project directory but want to quickly hide/show Claude
 
