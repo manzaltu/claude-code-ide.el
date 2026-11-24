@@ -61,6 +61,8 @@
 (defvar claude-code-ide-mcp-http-server--server nil
   "The web-server instance.")
 
+(define-error 'json-rpc-error "JSON-RPC error")
+
 
 ;;; Helper Functions
 
@@ -150,16 +152,21 @@ with the appropriate session context."
               ;; Still close the connection for HTTP transport
               (claude-code-ide-mcp-http-server--send-empty-response request))
           ;; Process the request with session context
-          (let* ((claude-code-ide-mcp-server--current-session-id url-session-id)
-                 (result (claude-code-ide-mcp-http-server--dispatch method params)))
-            (claude-code-ide-debug "MCP response result computed")
-            ;; Send response
-            (claude-code-ide-mcp-http-server--send-json-response
-             request 200
-             `((jsonrpc . "2.0")
-               (id . ,id)
-               (result . ,result)))
-            (claude-code-ide-debug "MCP response sent"))))
+          (let ((claude-code-ide-mcp-server--current-session-id url-session-id))
+            (condition-case rpc-err
+                (let ((result (claude-code-ide-mcp-http-server--dispatch method params)))
+                  (claude-code-ide-debug "MCP response result computed")
+                  ;; Send response
+                  (claude-code-ide-mcp-http-server--send-json-response
+                   request 200
+                   `((jsonrpc . "2.0")
+                     (id . ,id)
+                     (result . ,result)))
+                  (claude-code-ide-debug "MCP response sent"))
+              (json-rpc-error
+               (claude-code-ide-debug "JSON-RPC error for %s: %S" method (cdr rpc-err))
+               (claude-code-ide-mcp-http-server--send-json-error
+                request id (cadr rpc-err) (nth 2 rpc-err)))))))
 
     (json-parse-error
      (claude-code-ide-mcp-http-server--send-json-error
@@ -190,7 +197,8 @@ PARAMS is the parameters alist."
     ("tools/call"
      (claude-code-ide-mcp-http-server--handle-tools-call params))
     (_
-     (signal 'json-rpc-error (list -32601 "Method not found")))))
+     (signal 'json-rpc-error
+             (list -32601 (format "Method not found: %s" method))))))
 
 (defun claude-code-ide-mcp-http-server--handle-initialize (_params)
   "Handle the initialize method."
