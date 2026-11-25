@@ -1228,11 +1228,14 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
       (when-let* ((config (claude-code-ide-mcp-server-get-config session-id)))
         (let ((json-str (json-encode config)))
           (claude-code-ide-debug "MCP tools config JSON: %s" json-str)
-          ;; For vterm, we need to escape for sh -c context
-          ;; First escape backslashes, then quotes
-          (setq json-str (replace-regexp-in-string "\\\\" "\\\\\\\\" json-str))
-          (setq json-str (replace-regexp-in-string "\"" "\\\\\"" json-str))
-          (setq claude-cmd (concat claude-cmd " --mcp-config \"" json-str "\""))
+          ;; Single-quote the JSON so it reaches Claude unchanged both
+          ;; through `sh -c' (vterm) and through
+          ;; `split-string-shell-command' (eat, ghostel).  Escaping it
+          ;; inside double quotes left literal backslashes in the
+          ;; argument on Windows.  Any single quote in the JSON is
+          ;; encoded as \u0027, so none can end the quoting early.
+          (setq json-str (string-replace "'" "\\u0027" json-str))
+          (setq claude-cmd (concat claude-cmd " --mcp-config '" json-str "'"))
           ;; Add allowedTools flag if configured
           (let ((allowed-tools
                  (cond

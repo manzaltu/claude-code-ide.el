@@ -25,10 +25,10 @@ process_file() {
         *.el)
             echo "Formatting and cleaning: $file" >&2
 
-            emacs -batch -L . --eval "(progn
+            FILE="$file" emacs -batch -L . --eval "(progn
                 (require 'transient nil t)
                 (require 'claude-code-ide-mcp-server nil t)
-                (find-file \"$file\")
+                (find-file (getenv \"FILE\"))
                 (emacs-lisp-mode)
                 (setq-local indent-tabs-mode nil)
                 (setq-local lisp-indent-function 'lisp-indent-function)

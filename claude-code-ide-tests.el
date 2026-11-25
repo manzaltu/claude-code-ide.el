@@ -752,7 +752,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   ;; A name with a directory component expands instead of a PATH lookup.
   (let ((default-directory "/tmp/"))
     (should (equal (claude-code-ide--resolve-program "./bin/claude")
-                   "/tmp/bin/claude"))
+                   (expand-file-name "bin/claude" "/tmp/")))
     (should (equal (claude-code-ide--resolve-program "~/bin/claude")
                    (expand-file-name "~/bin/claude")))))
 
@@ -945,9 +945,12 @@ port, window slot and terminal buffer instead of reusing the first."
                         (lambda (&rest _) "second"))
                        ((symbol-function 'claude-code-ide--create-terminal-session)
                         (lambda (buffer-name &rest _)
-                          (let ((buffer (generate-new-buffer buffer-name))
-                                (process (start-process "mock-claude" nil
-                                                        "sleep" "30")))
+                          (let* ((buffer (generate-new-buffer buffer-name))
+                                 ;; Run outside the temp directory so it can
+                                 ;; be deleted while the process is alive
+                                 (default-directory temporary-file-directory)
+                                 (process (start-process "mock-claude" nil
+                                                         "sleep" "30")))
                             (push process processes)
                             (cons buffer process))))
                        ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
@@ -1365,6 +1368,31 @@ next toggle, independent of which project the instances belong to."
                   (string-match-p "Connected\\\\ to\\\\ Emacs" cmd)))
       ;; The command should contain the escaped version (shell-quote-argument escapes quotes and apostrophes)
       (should (string-match-p "You\\\\'re\\\\ a\\\\ \\\\\"helpful\\\\\"\\\\ assistant\\\\!" cmd)))))
+
+(ert-deftest claude-code-ide-test-build-command-mcp-config-round-trip ()
+  "Test that --mcp-config parses back to the exact JSON for exec backends.
+The eat and ghostel backends split the command with
+`split-string-shell-command' and exec it without a shell, so the
+argument after --mcp-config must be valid JSON with no leftover escapes."
+  (let ((claude-code-ide-cli-path "claude")
+        (claude-code-ide-system-prompt nil)
+        (claude-code-ide-cli-debug nil)
+        (claude-code-ide-cli-extra-flags "")
+        (claude-code-ide-mcp-allowed-tools nil)
+        (config '((mcpServers
+                   . ((emacs-tools
+                       . ((type . "http")
+                          (url . "http://localhost:1234/mcp/it's-a-session"))))))))
+    (cl-letf (((symbol-function 'claude-code-ide-mcp-server-ensure-server)
+               (lambda () t))
+              ((symbol-function 'claude-code-ide-mcp-server-get-config)
+               (lambda (&optional _session-id) config)))
+      (let* ((args (cdr (claude-code-ide--parse-command-string
+                         (claude-code-ide--build-claude-command))))
+             (json (cadr (member "--mcp-config" args))))
+        (should json)
+        (should (equal (json-read-from-string json)
+                       (json-read-from-string (json-encode config))))))))
 
 (ert-deftest claude-code-ide-test-error-handling ()
   "Test error handling in various scenarios."
@@ -3955,8 +3983,9 @@ emacs, emacs, src, src — not the emacs, src, src, emacs creation order."
                                    (claude-code-ide-mcp-session-window-slot b)))))
                (projects (mapcar #'claude-code-ide-mcp-session-project-dir ordered)))
           ;; Grouped: both emacs slots precede both src slots
-          (should (equal projects (list "/tmp/emacs/" "/tmp/emacs/"
-                                        "/tmp/src/" "/tmp/src/")))
+          (should (equal projects (mapcar #'expand-file-name
+                                          '("/tmp/emacs/" "/tmp/emacs/"
+                                            "/tmp/src/" "/tmp/src/"))))
           ;; All slots distinct
           (should (= 4 (length (cl-remove-duplicates
                                 (mapcar #'claude-code-ide-mcp-session-window-slot
