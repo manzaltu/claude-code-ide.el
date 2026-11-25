@@ -1366,6 +1366,31 @@ next toggle, independent of which project the instances belong to."
       ;; The command should contain the escaped version (shell-quote-argument escapes quotes and apostrophes)
       (should (string-match-p "You\\\\'re\\\\ a\\\\ \\\\\"helpful\\\\\"\\\\ assistant\\\\!" cmd)))))
 
+(ert-deftest claude-code-ide-test-build-command-mcp-config-round-trip ()
+  "Test that --mcp-config parses back to the exact JSON for exec backends.
+The eat and ghostel backends split the command with
+`split-string-shell-command' and exec it without a shell, so the
+argument after --mcp-config must be valid JSON with no leftover escapes."
+  (let ((claude-code-ide-cli-path "claude")
+        (claude-code-ide-system-prompt nil)
+        (claude-code-ide-cli-debug nil)
+        (claude-code-ide-cli-extra-flags "")
+        (claude-code-ide-mcp-allowed-tools nil)
+        (config '((mcpServers
+                   . ((emacs-tools
+                       . ((type . "http")
+                          (url . "http://localhost:1234/mcp/it's-a-session"))))))))
+    (cl-letf (((symbol-function 'claude-code-ide-mcp-server-ensure-server)
+               (lambda () t))
+              ((symbol-function 'claude-code-ide-mcp-server-get-config)
+               (lambda (&optional _session-id) config)))
+      (let* ((args (cdr (claude-code-ide--parse-command-string
+                         (claude-code-ide--build-claude-command))))
+             (json (cadr (member "--mcp-config" args))))
+        (should json)
+        (should (equal (json-read-from-string json)
+                       (json-read-from-string (json-encode config))))))))
+
 (ert-deftest claude-code-ide-test-error-handling ()
   "Test error handling in various scenarios."
   ;; Test with nil CLI path
