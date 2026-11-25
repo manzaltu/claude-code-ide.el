@@ -752,7 +752,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   ;; A name with a directory component expands instead of a PATH lookup.
   (let ((default-directory "/tmp/"))
     (should (equal (claude-code-ide--resolve-program "./bin/claude")
-                   "/tmp/bin/claude"))
+                   (expand-file-name "bin/claude" "/tmp/")))
     (should (equal (claude-code-ide--resolve-program "~/bin/claude")
                    (expand-file-name "~/bin/claude")))))
 
@@ -945,9 +945,12 @@ port, window slot and terminal buffer instead of reusing the first."
                         (lambda (&rest _) "second"))
                        ((symbol-function 'claude-code-ide--create-terminal-session)
                         (lambda (buffer-name &rest _)
-                          (let ((buffer (generate-new-buffer buffer-name))
-                                (process (start-process "mock-claude" nil
-                                                        "sleep" "30")))
+                          (let* ((buffer (generate-new-buffer buffer-name))
+                                 ;; Run outside the temp directory so it can
+                                 ;; be deleted while the process is alive
+                                 (default-directory temporary-file-directory)
+                                 (process (start-process "mock-claude" nil
+                                                         "sleep" "30")))
                             (push process processes)
                             (cons buffer process))))
                        ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
@@ -3980,8 +3983,9 @@ emacs, emacs, src, src — not the emacs, src, src, emacs creation order."
                                    (claude-code-ide-mcp-session-window-slot b)))))
                (projects (mapcar #'claude-code-ide-mcp-session-project-dir ordered)))
           ;; Grouped: both emacs slots precede both src slots
-          (should (equal projects (list "/tmp/emacs/" "/tmp/emacs/"
-                                        "/tmp/src/" "/tmp/src/")))
+          (should (equal projects (mapcar #'expand-file-name
+                                          '("/tmp/emacs/" "/tmp/emacs/"
+                                            "/tmp/src/" "/tmp/src/"))))
           ;; All slots distinct
           (should (= 4 (length (cl-remove-duplicates
                                 (mapcar #'claude-code-ide-mcp-session-window-slot
