@@ -42,6 +42,46 @@
 
 ;;; Tool Functions
 
+(defun claude-code-ide-mcp--goto-identifier (identifier)
+  "Move point to the first code occurrence of IDENTIFIER in the current buffer.
+Skips occurrences inside comments, strings and #include/import lines.
+Return non-nil if an occurrence was found; otherwise leave point unchanged."
+  (let ((re (concat "\\_<" (regexp-quote identifier) "\\_>"))
+        (start (point))
+        found)
+    (goto-char (point-min))
+    (while (and (not found) (re-search-forward re nil t))
+      (let ((beg (match-beginning 0)))
+        ;; save-excursion: syntax-ppss moves point to BEG, which would make
+        ;; re-search-forward re-find the same match forever.
+        (unless (save-excursion
+                  (or (nth 8 (syntax-ppss beg))
+                      (progn
+                        (goto-char beg)
+                        (beginning-of-line)
+                        (looking-at-p "[ \t]*\\(#[ \t]*include\\|import\\)\\_>"))))
+          (goto-char beg)
+          (setq found t))))
+    (unless found (goto-char start))
+    found))
+
+(declare-function lsp "lsp-mode" (&optional arg))
+(declare-function lsp-session "lsp-mode" ())
+(declare-function lsp-find-session-folder "lsp-mode" (session file-name))
+
+(defun claude-code-ide-mcp--ensure-lsp ()
+  "Start lsp-mode now if it was deferred until the buffer became visible.
+Buffers opened with `find-file-noselect' are never displayed, so
+`lsp-deferred' never starts lsp in them.  Only start lsp when the file
+is inside a folder already in the lsp session, so `lsp' never prompts
+\(a prompt would block Emacs inside the MCP handler)."
+  (when (and (bound-and-true-p lsp--buffer-deferred)
+             (not (bound-and-true-p lsp-mode))
+             (fboundp 'lsp)
+             buffer-file-name
+             (lsp-find-session-folder (lsp-session) buffer-file-name))
+    (lsp)))
+
 (defun claude-code-ide-mcp-xref-find-references (identifier file-path)
   "Find references to IDENTIFIER in the current session's project.
 FILE-PATH specifies which file's buffer context to use for the search.
@@ -54,10 +94,21 @@ This function uses the session context to operate in the correct project."
             (identifier-str (format "%s" identifier)))
         (with-current-buffer target-buffer
           (condition-case err
-              (let ((backend (xref-find-backend)))
+              (let ((backend (progn (claude-code-ide-mcp--ensure-lsp)
+                                    (xref-find-backend))))
                 (if (not backend)
                     (format "No xref backend available for %s" file-path)
-                  (let ((xref-items (xref-backend-references backend identifier-str)))
+                  ;; Position-based backends (lsp-mode, eglot) need the
+                  ;; identifier to come from point, not a bare string.
+                  ;; Move point to an occurrence and let the backend build
+                  ;; its own identifier there; fall back to the plain string.
+                  (let ((xref-items
+                         (save-excursion
+                           (xref-backend-references
+                            backend
+                            (or (and (claude-code-ide-mcp--goto-identifier identifier-str)
+                                     (xref-backend-identifier-at-point backend))
+                                identifier-str)))))
                     (if xref-items
                         (mapcar (lambda (item)
                                   (let* ((location (xref-item-location item))
